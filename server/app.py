@@ -17,16 +17,19 @@ from server.core.middleware import RequestIDMiddleware
 from server.core.auth import APIKeyMiddleware
 from server.core.ratelimit import RateLimitMiddleware
 from server.core.tenant import TenantMiddleware
+from server.core.tracing import setup_tracing
 
 logger = structlog.stdlib.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Configure tracing (no-op if opentelemetry not installed)
+    setup_tracing()
     # Configure webhooks
     from server.services import webhooks
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
-    logger.info("app_startup", version="0.3.0", debug=settings.debug)
+    logger.info("app_startup", version="0.4.0", debug=settings.debug)
     yield
     from server.db.engine import engine
     await engine.dispose()
@@ -44,17 +47,20 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.3.0",
+        version="0.4.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
     )
 
-    # -- Middleware (outermost first) ----------------------------------------
-    app.add_middleware(RequestIDMiddleware)
+    # -- Middleware -----------------------------------------------------------
+    # Starlette executes add_middleware in REVERSE order (last-added = outermost).
+    # Desired execution: CORS → RequestID → Auth → RateLimit → Tenant → App
+    # So we register innermost first:
     app.add_middleware(TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant)
-    app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
     app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
+    app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
+    app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

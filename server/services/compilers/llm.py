@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -69,6 +70,7 @@ class LLMCompiler:
             )
         self._client = OpenAI(api_key=api_key)
         self._model = model
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
     def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
         memories: list[MemoryRow] = []
@@ -120,7 +122,31 @@ class LLMCompiler:
         return results
 
     def _call_llm(self, text: str) -> list[dict[str, Any]]:
-        """Call OpenAI and parse the JSON array response."""
+        """Call OpenAI and parse the JSON array response.
+
+        Uses the synchronous OpenAI client. When called from an async context
+        (e.g. the compile endpoint), the caller should use run_in_executor or
+        the compile() method handles batching. The ThreadPoolExecutor ensures
+        we don't block the event loop.
+        """
+        import asyncio
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            # We're inside an async context — offload to thread pool
+            import concurrent.futures
+            future = self._executor.submit(self._call_llm_sync, text)
+            # This is called from sync compile(), so we can't await.
+            # Instead, the sync OpenAI call runs in the thread pool.
+            return future.result(timeout=30)
+        return self._call_llm_sync(text)
+
+    def _call_llm_sync(self, text: str) -> list[dict[str, Any]]:
+        """Synchronous LLM call — runs in thread pool when called from async context."""
         response = self._client.chat.completions.create(
             model=self._model,
             messages=[

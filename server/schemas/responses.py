@@ -22,6 +22,11 @@ class EpisodeResponse(BaseModel):
     created_at: datetime
 
 
+class BatchCreateEpisodesResponse(BaseModel):
+    episodes_created: int
+    episodes: list[EpisodeResponse]
+
+
 class MemoryResponse(BaseModel):
     id: uuid.UUID
     subject_id: str

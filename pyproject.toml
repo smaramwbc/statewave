@@ -1,6 +1,6 @@
 [project]
 name = "statewave"
-version = "0.3.0"
+version = "0.4.0"
 description = "Memory OS — trusted context runtime for AI agents and applications"
 readme = "README.md"
 license = {text = "AGPL-3.0"}
@@ -27,6 +27,11 @@ dev = [
 ]
 openai = [
     "openai>=1.12,<2",
+]
+otel = [
+    "opentelemetry-api>=1.24,<2",
+    "opentelemetry-sdk>=1.24,<2",
+    "opentelemetry-exporter-otlp>=1.24,<2",
 ]
 
 [build-system]

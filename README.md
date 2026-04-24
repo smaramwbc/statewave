@@ -4,13 +4,22 @@
 
 Statewave helps developers build AI systems that remember across sessions, compile durable memories, retrieve trusted context, and govern data by subject.
 
-## v0.2 guarantees
+## v0.3.5 capabilities
 
 - **Idempotent compilation** — recompiling the same subject produces no duplicates
+- **Pluggable compilers** — heuristic (regex) or LLM (OpenAI chat) memory extraction
+- **Embedding generation** — OpenAI or stub providers, stored on memories
+- **Semantic search** — pgvector cosine similarity with text-search fallback
 - **Token-bounded context** — context bundles respect a configurable token budget
-- **Ranked retrieval** — memories are scored by kind priority, recency, and task relevance
+- **Ranked retrieval** — kind priority × recency × task relevance × temporal validity × semantic similarity
+- **Memory conflict resolution** — auto-supersede older overlapping memories
 - **Provenance** — every memory traces back to its source episodes
 - **Subject deletion** — all data for a subject can be permanently removed
+- **Authentication** — optional API key via `X-API-Key` header
+- **Rate limiting** — per-IP sliding window
+- **Webhooks** — event hooks for episode, compile, and delete events
+- **Structured errors** — consistent JSON error format with request ID correlation
+- **Structured logging** — structlog with JSON in prod, console in dev
 
 ## Quick start
 
@@ -41,7 +50,7 @@ The API is available at `http://localhost:8100`.
 |--------|------|-------------|
 | POST | /v1/episodes | Ingest a raw episode (append-only) |
 | POST | /v1/memories/compile | Compile memories from episodes (idempotent) |
-| GET | /v1/memories/search | Search memories by kind or text |
+| GET | /v1/memories/search | Search memories by kind, text, or semantic similarity |
 | POST | /v1/context | Assemble ranked, token-bounded context |
 | GET | /v1/timeline | Get chronological subject timeline |
 | DELETE | /v1/subjects/{id} | Delete all data for a subject |
@@ -70,9 +79,16 @@ All settings can be set via environment variables with `STATEWAVE_` prefix:
 |----------|---------|-------------|
 | `STATEWAVE_DATABASE_URL` | `postgresql+asyncpg://...` | Postgres connection string |
 | `STATEWAVE_DEBUG` | `false` | Enable debug logging |
-| `STATEWAVE_CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
+| `STATEWAVE_COMPILER_TYPE` | `heuristic` | `heuristic` or `llm` |
+| `STATEWAVE_EMBEDDING_PROVIDER` | `stub` | `stub`, `openai`, or `none` |
+| `STATEWAVE_OPENAI_API_KEY` | — | Required for `llm` compiler and `openai` embeddings |
+| `STATEWAVE_API_KEY` | — | API key for auth (empty = open access) |
+| `STATEWAVE_RATE_LIMIT_RPM` | `0` | Requests/min/IP (0 = disabled) |
+| `STATEWAVE_WEBHOOK_URL` | — | Webhook callback URL (empty = disabled) |
 | `STATEWAVE_DEFAULT_MAX_CONTEXT_TOKENS` | `4000` | Default token budget |
-| `STATEWAVE_COMPILER_TYPE` | `heuristic` | Memory compiler backend |
+| `STATEWAVE_CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
+
+See the full [configuration reference](../statewave-docs/api/v1-contract.md) for all options.
 
 ## License
 

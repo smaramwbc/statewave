@@ -277,3 +277,35 @@ async def test_custom_request_id_propagated(client: AsyncClient):
     """If the client sends X-Request-ID, it should be echoed back."""
     resp = await client.get("/healthz", headers={"X-Request-ID": "test-req-42"})
     assert resp.headers["x-request-id"] == "test-req-42"
+
+
+# ---------------------------------------------------------------------------
+# Subject listing
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_list_subjects(client: AsyncClient, subject_id: str):
+    """GET /v1/subjects returns known subjects with counts."""
+    await _ingest(client, subject_id, {"messages": [{"role": "user", "content": "Hello"}]})
+    await _compile(client, subject_id)
+
+    resp = await client.get("/v1/subjects")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] > 0
+    found = [s for s in data["subjects"] if s["subject_id"] == subject_id]
+    assert len(found) == 1
+    assert found[0]["episode_count"] >= 1
+    assert found[0]["memory_count"] >= 1
+
+    await _cleanup(client, subject_id)
+
+
+@pytest.mark.anyio
+async def test_list_subjects_empty(client: AsyncClient):
+    """GET /v1/subjects with pagination returns valid shape."""
+    resp = await client.get("/v1/subjects", params={"limit": 1, "offset": 99999})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["subjects"] == []
+    assert data["total"] == 0

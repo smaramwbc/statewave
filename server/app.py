@@ -81,11 +81,13 @@ def create_app() -> FastAPI:
 
     # -- Ops endpoints -------------------------------------------------------
     @app.get("/healthz", tags=["ops"], summary="Liveness check")
+    @app.get("/health", tags=["ops"], summary="Liveness check (alias)", include_in_schema=False)
     async def healthz():
         """Returns 200 if the process is alive."""
         return {"status": "ok"}
 
     @app.get("/readyz", tags=["ops"], summary="Readiness check")
+    @app.get("/ready", tags=["ops"], summary="Readiness check (alias)", include_in_schema=False)
     async def readyz():
         """Returns 200 if the app can reach the database."""
         from server.db.engine import engine

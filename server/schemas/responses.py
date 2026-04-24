@@ -74,3 +74,14 @@ class DeleteSubjectResponse(BaseModel):
     subject_id: str
     episodes_deleted: int
     memories_deleted: int
+
+
+class SubjectSummary(BaseModel):
+    subject_id: str
+    episode_count: int
+    memory_count: int
+
+
+class ListSubjectsResponse(BaseModel):
+    subjects: list[SubjectSummary]
+    total: int

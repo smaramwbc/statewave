@@ -17,7 +17,7 @@ from starlette.responses import JSONResponse, Response
 logger = structlog.stdlib.get_logger()
 
 # Paths that never require authentication
-_PUBLIC_PATHS = {"/healthz", "/readyz", "/docs", "/redoc", "/openapi.json"}
+_PUBLIC_PATHS = {"/healthz", "/readyz", "/health", "/ready", "/docs", "/redoc", "/openapi.json"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):

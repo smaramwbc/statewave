@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.tables import EpisodeRow, MemoryRow
@@ -203,3 +203,51 @@ async def search_memories_by_embedding(
     stmt = stmt.order_by(distance_expr).limit(limit)
     result = await session.execute(stmt)
     return [(row, dist) for row, dist in result.all()]
+
+
+# ---------------------------------------------------------------------------
+# Subject listing
+# ---------------------------------------------------------------------------
+
+async def list_subjects(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Return distinct subject IDs with episode and memory counts."""
+    ep_count = (
+        select(
+            EpisodeRow.subject_id,
+            func.count().label("episode_count"),
+        )
+        .group_by(EpisodeRow.subject_id)
+        .subquery()
+    )
+    mem_count = (
+        select(
+            MemoryRow.subject_id,
+            func.count().label("memory_count"),
+        )
+        .group_by(MemoryRow.subject_id)
+        .subquery()
+    )
+    # UNION of subject_ids from both tables
+    all_subjects = select(EpisodeRow.subject_id).union(select(MemoryRow.subject_id)).subquery()
+    stmt = (
+        select(
+            all_subjects.c.subject_id,
+            func.coalesce(ep_count.c.episode_count, 0).label("episode_count"),
+            func.coalesce(mem_count.c.memory_count, 0).label("memory_count"),
+        )
+        .outerjoin(ep_count, all_subjects.c.subject_id == ep_count.c.subject_id)
+        .outerjoin(mem_count, all_subjects.c.subject_id == mem_count.c.subject_id)
+        .order_by(all_subjects.c.subject_id)
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    return [
+        {"subject_id": row.subject_id, "episode_count": row.episode_count, "memory_count": row.memory_count}
+        for row in result.all()
+    ]

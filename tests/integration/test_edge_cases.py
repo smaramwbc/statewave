@@ -232,7 +232,7 @@ async def test_search_by_query(client: AsyncClient, subject_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Healthz
+# Healthz / Readyz
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
@@ -240,3 +240,40 @@ async def test_healthz(client: AsyncClient):
     resp = await client.get("/healthz")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_readyz(client: AsyncClient):
+    resp = await client.get("/readyz")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ready"}
+
+
+# ---------------------------------------------------------------------------
+# Structured errors
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_validation_error_returns_structured_json(client: AsyncClient):
+    """Missing required fields should return a structured error, not a raw 422."""
+    resp = await client.post("/v1/episodes", json={})
+    assert resp.status_code == 422
+    body = resp.json()
+    assert "error" in body
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["message"] == "Request validation failed"
+    assert isinstance(body["error"]["details"], list)
+
+
+@pytest.mark.anyio
+async def test_request_id_in_response_header(client: AsyncClient):
+    """Every response should include X-Request-ID."""
+    resp = await client.get("/healthz")
+    assert "x-request-id" in resp.headers
+
+
+@pytest.mark.anyio
+async def test_custom_request_id_propagated(client: AsyncClient):
+    """If the client sends X-Request-ID, it should be echoed back."""
+    resp = await client.get("/healthz", headers={"X-Request-ID": "test-req-42"})
+    assert resp.headers["x-request-id"] == "test-req-42"

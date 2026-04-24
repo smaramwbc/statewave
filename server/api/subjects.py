@@ -12,11 +12,12 @@ from server.schemas.responses import DeleteSubjectResponse
 router = APIRouter(prefix="/v1/subjects", tags=["subjects"])
 
 
-@router.delete("/{subject_id}", response_model=DeleteSubjectResponse)
+@router.delete("/{subject_id}", response_model=DeleteSubjectResponse, summary="Delete all subject data")
 async def delete_subject(
     subject_id: str,
     session: AsyncSession = Depends(get_session),
 ):
+    """Permanently delete all episodes and memories for a subject. This is irreversible."""
     ep_count = await repo.delete_episodes_by_subject(session, subject_id)
     mem_count = await repo.delete_memories_by_subject(session, subject_id)
     await session.commit()

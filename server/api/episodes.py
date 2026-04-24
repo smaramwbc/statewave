@@ -13,11 +13,12 @@ from server.schemas.responses import EpisodeResponse
 router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 
 
-@router.post("", response_model=EpisodeResponse, status_code=201)
+@router.post("", response_model=EpisodeResponse, status_code=201, summary="Ingest an episode")
 async def create_episode(
     body: CreateEpisodeRequest,
     session: AsyncSession = Depends(get_session),
 ):
+    """Record a raw interaction episode. Episodes are append-only and immutable."""
     row = EpisodeRow(
         subject_id=body.subject_id,
         source=body.source,

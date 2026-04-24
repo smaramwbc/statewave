@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 
 from server.db.tables import EpisodeRow
-from server.services.compilers import BaseCompiler, get_compiler
+from server.services.compilers import get_compiler
 from server.services.compilers.heuristic import HeuristicCompiler, extract_payload_text
 
 

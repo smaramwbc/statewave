@@ -5,7 +5,6 @@ Import from server.services.compilers instead for new code.
 
 from __future__ import annotations
 
-from typing import Sequence
 
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services.compilers.heuristic import HeuristicCompiler

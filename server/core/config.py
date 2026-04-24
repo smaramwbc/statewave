@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = 8100
 
+    # CORS
+    cors_origins: list[str] = ["*"]
+
     # Token estimation model
     tiktoken_model: str = "cl100k_base"
 

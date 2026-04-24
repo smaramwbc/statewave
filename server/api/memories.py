@@ -14,11 +14,12 @@ from server.services.compilers import get_compiler
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
 
-@router.post("/compile", response_model=CompileMemoriesResponse)
+@router.post("/compile", response_model=CompileMemoriesResponse, summary="Compile memories from episodes")
 async def compile_memories(
     body: CompileMemoriesRequest,
     session: AsyncSession = Depends(get_session),
 ):
+    """Compile new memories from unprocessed episodes. Idempotent — recompiling the same subject produces no duplicates."""
     # Only compile episodes that haven't been compiled yet (idempotent)
     episodes = await repo.list_uncompiled_episodes(session, body.subject_id)
     if not episodes:
@@ -44,7 +45,7 @@ async def compile_memories(
     )
 
 
-@router.get("/search", response_model=SearchMemoriesResponse)
+@router.get("/search", response_model=SearchMemoriesResponse, summary="Search memories")
 async def search_memories(
     subject_id: str = Query(...),
     kind: str | None = Query(None),

@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: statewave
+          POSTGRES_PASSWORD: statewave
+          POSTGRES_DB: statewave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U statewave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      STATEWAVE_DATABASE_URL: postgresql+asyncpg://statewave:statewave@localhost:5432/statewave
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check server/ tests/
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Unit tests
+        run: pytest tests/test_*.py -v
+
+      - name: Create test database
+        run: PGPASSWORD=statewave createdb -h localhost -U statewave statewave_test
+
+      - name: Integration tests
+        run: pytest tests/integration/ -v

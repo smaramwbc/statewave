@@ -12,7 +12,7 @@ from server.schemas.responses import EpisodeResponse, MemoryResponse, TimelineRe
 router = APIRouter(tags=["timeline"])
 
 
-@router.get("/v1/timeline", response_model=TimelineResponse)
+@router.get("/v1/timeline", response_model=TimelineResponse, summary="Get subject timeline")
 async def get_timeline(
     subject_id: str = Query(...),
     session: AsyncSession = Depends(get_session),

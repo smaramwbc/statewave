@@ -41,4 +41,4 @@ pytest
 
 ## License
 
-BUSL-1.1
+AGPL-3.0

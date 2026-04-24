@@ -3,7 +3,7 @@ name = "statewave"
 version = "0.1.0"
 description = "Memory OS — trusted context runtime for AI agents and applications"
 readme = "README.md"
-license = {text = "BUSL-1.1"}
+license = {text = "AGPL-3.0"}
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111,<1",

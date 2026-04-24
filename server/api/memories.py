@@ -9,7 +9,7 @@ from server.db import repositories as repo
 from server.db.engine import get_session
 from server.schemas.requests import CompileMemoriesRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
-from server.services.compiler import compile_memories_from_episodes
+from server.services.compilers import get_compiler
 
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
@@ -19,12 +19,22 @@ async def compile_memories(
     body: CompileMemoriesRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    episodes = await repo.list_episodes_by_subject(session, body.subject_id)
-    new_rows = compile_memories_from_episodes(list(episodes))
+    # Only compile episodes that haven't been compiled yet (idempotent)
+    episodes = await repo.list_uncompiled_episodes(session, body.subject_id)
+    if not episodes:
+        return CompileMemoriesResponse(
+            subject_id=body.subject_id,
+            memories_created=0,
+            memories=[],
+        )
+    new_rows = get_compiler().compile(list(episodes))
     for row in new_rows:
         session.add(row)
+    # Mark episodes as compiled so they won't be reprocessed
+    await repo.mark_episodes_compiled(
+        session, [ep.id for ep in episodes]
+    )
     await session.commit()
-    # refresh
     for row in new_rows:
         await session.refresh(row)
     return CompileMemoriesResponse(

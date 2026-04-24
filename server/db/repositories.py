@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.tables import EpisodeRow, MemoryRow
@@ -35,6 +35,39 @@ async def list_episodes_by_subject(
     )
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def list_uncompiled_episodes(
+    session: AsyncSession,
+    subject_id: str,
+    *,
+    limit: int = 500,
+) -> Sequence[EpisodeRow]:
+    """Fetch episodes that have never been compiled."""
+    stmt = (
+        select(EpisodeRow)
+        .where(EpisodeRow.subject_id == subject_id)
+        .where(EpisodeRow.last_compiled_at.is_(None))
+        .order_by(EpisodeRow.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def mark_episodes_compiled(
+    session: AsyncSession,
+    episode_ids: list[uuid.UUID],
+) -> None:
+    """Mark episodes as compiled so they won't be reprocessed."""
+    if not episode_ids:
+        return
+    stmt = (
+        update(EpisodeRow)
+        .where(EpisodeRow.id.in_(episode_ids))
+        .values(last_compiled_at=text("now()"))
+    )
+    await session.execute(stmt)
 
 
 async def get_episodes_by_ids(

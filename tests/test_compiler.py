@@ -44,3 +44,26 @@ def test_provenance_preserved():
     memories = compile_memories_from_episodes([ep])
     for m in memories:
         assert ep.id in m.source_episode_ids
+
+
+def test_empty_payload_produces_no_memories():
+    ep = _make_episode({})
+    memories = compile_memories_from_episodes([ep])
+    assert len(memories) == 0
+
+
+def test_unknown_payload_shape_produces_no_memories():
+    ep = _make_episode({"foo": "bar", "baz": 42})
+    memories = compile_memories_from_episodes([ep])
+    assert len(memories) == 0
+
+
+def test_compile_is_deterministic():
+    """Same input produces same number and kind of memories."""
+    ep = _make_episode(
+        {"messages": [{"role": "user", "content": "My name is Bob"}]}
+    )
+    first = compile_memories_from_episodes([ep])
+    second = compile_memories_from_episodes([ep])
+    assert len(first) == len(second)
+    assert [m.kind for m in first] == [m.kind for m in second]

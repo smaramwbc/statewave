@@ -28,6 +28,9 @@ class EpisodeRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    last_compiled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
 
     __table_args__ = (
         Index("ix_episodes_subject_created", "subject_id", "created_at"),

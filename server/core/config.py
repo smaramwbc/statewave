@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Context assembly defaults
     default_max_context_tokens: int = 4000
 
+    # Compiler
+    compiler_type: str = "heuristic"
+
     model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
 
 

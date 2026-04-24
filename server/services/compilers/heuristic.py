@@ -90,10 +90,12 @@ def extract_payload_text(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 
 _FACT_PATTERNS: list[re.Pattern[str]] = [
-    re.compile(r"(?:my name is|i'm|i am)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)", re.IGNORECASE),
-    re.compile(r"(?:i work at|i'm at|i am at)\s+(.+?)(?:\.|$)", re.IGNORECASE),
-    re.compile(r"(?:i live in|i'm from|i am from)\s+(.+?)(?:\.|$)", re.IGNORECASE),
-    re.compile(r"(?:i use|i prefer|my favorite)\s+(.+?)(?:\.|$)", re.IGNORECASE),
+    # Name pattern: case-sensitive capture so we only grab proper nouns
+    re.compile(r"(?i:my name is|i'm|i am)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)"),
+    re.compile(r"(?:i work at|i'm at|i am at)\s+(.+?)(?:\.|,|\n|$)", re.IGNORECASE),
+    re.compile(r"(?:i am on|i'm on)\s+(.+?)(?:\.|,|\n|$)", re.IGNORECASE),
+    re.compile(r"(?:i live in|i'm from|i am from)\s+(.+?)(?:\.|,|\n|$)", re.IGNORECASE),
+    re.compile(r"(?:i use|i prefer|my favorite)\s+(.+?)(?:\.|,|\n|$)", re.IGNORECASE),
 ]
 
 
@@ -101,5 +103,5 @@ def _extract_profile_facts(text: str) -> list[str]:
     facts: list[str] = []
     for pattern in _FACT_PATTERNS:
         for m in pattern.finditer(text):
-            facts.append(m.group(0).strip().rstrip("."))
+            facts.append(m.group(0).strip().rstrip(".").rstrip(","))
     return facts

@@ -72,13 +72,21 @@ async def assemble_context(
                 score=score,
                 kind="memory",
                 memory_row=row,
-                text=f"- {row.content}",
+                text=_render_memory_line(row),
                 section=_section_for_kind(row.kind),
             ))
 
     if episode_rows:
+        # Collect episode IDs already covered by included summaries
+        covered_episode_ids: set[str] = set()
+        for row in summary_rows:
+            if row.source_episode_ids:
+                covered_episode_ids.update(str(eid) for eid in row.source_episode_ids)
+
         ep_ts_range = _timestamp_range([r.created_at for r in episode_rows])
         for row in episode_rows:
+            if str(row.id) in covered_episode_ids:
+                continue  # already represented by a summary
             ep_text = _short_episode_text(row.payload, row.source, row.type)
             content_text = extract_payload_text(row.payload)
             score = (
@@ -102,12 +110,13 @@ async def assemble_context(
     budget_used = len(enc.encode(task_header))
 
     included_facts: list[MemoryResponse] = []
+    included_summaries: list[MemoryResponse] = []
     included_procedures: list[MemoryResponse] = []
     included_episodes: list[EpisodeResponse] = []
     section_lines: dict[str, list[str]] = {
         "facts": [],
         "procedures": [],
-        "summaries": [],
+        "history": [],
         "episodes": [],
     }
 
@@ -126,25 +135,30 @@ async def assemble_context(
                 included_facts.append(resp)
             elif item.memory_row.kind == "procedure":
                 included_procedures.append(resp)
-            # episode_summary memories go into facts list for response compat
             elif item.memory_row.kind == "episode_summary":
-                included_facts.append(resp)
+                included_summaries.append(resp)
         elif item.kind == "episode":
             included_episodes.append(_episode_response(item.episode_row))
 
     # -- Render final text --------------------------------------------------
+    # Order: task → facts → procedures → history → episodes
+    # This mirrors how a human would brief someone: who is this person,
+    # what do they need, what happened recently, raw detail if room.
     parts: list[str] = [task_header]
-    if section_lines["facts"] or section_lines["summaries"]:
-        parts.append("## Known facts")
+    if section_lines["facts"]:
+        parts.append("## About this user")
         parts.extend(section_lines["facts"])
-        parts.extend(section_lines["summaries"])
         parts.append("")
     if section_lines["procedures"]:
         parts.append("## Procedures")
         parts.extend(section_lines["procedures"])
         parts.append("")
+    if section_lines["history"]:
+        parts.append("## Recent history")
+        parts.extend(section_lines["history"])
+        parts.append("")
     if section_lines["episodes"]:
-        parts.append("## Recent episodes")
+        parts.append("## Recent interactions")
         parts.extend(section_lines["episodes"])
         parts.append("")
 
@@ -153,14 +167,18 @@ async def assemble_context(
 
     provenance = {
         "fact_ids": [str(f.id) for f in included_facts],
+        "summary_ids": [str(s.id) for s in included_summaries],
         "procedure_ids": [str(p.id) for p in included_procedures],
         "episode_ids": [str(e.id) for e in included_episodes],
     }
 
+    # Include summaries in the facts response list for backward compatibility
+    all_facts = included_facts + included_summaries
+
     return ContextBundleResponse(
         subject_id=subject_id,
         task=task,
-        facts=included_facts,
+        facts=all_facts,
         episodes=included_episodes,
         procedures=included_procedures,
         provenance=provenance,
@@ -219,7 +237,9 @@ def _section_for_kind(kind: str) -> str:
         return "facts"
     if kind == "procedure":
         return "procedures"
-    return "summaries"
+    if kind == "episode_summary":
+        return "history"
+    return "history"
 
 
 def _short_episode_text(payload: dict, source: str, type_: str) -> str:
@@ -228,6 +248,29 @@ def _short_episode_text(payload: dict, source: str, type_: str) -> str:
     if text:
         return f"[{source}/{type_}] {text[:150]}"
     return f"[{source}/{type_}] (no text content)"
+
+
+def _render_memory_line(row: Any) -> str:
+    """Render a memory as a clean context line, appropriate for its kind."""
+    if row.kind == "episode_summary":
+        # Summaries contain raw "role: content" lines — condense into a readable note
+        return f"- {_clean_summary(row.content)}"
+    return f"- {row.content}"
+
+
+def _clean_summary(text: str) -> str:
+    """Turn raw 'user: X\\nassistant: Y' into a readable history note."""
+    import re
+    lines = text.strip().split("\n")
+    parts: list[str] = []
+    for line in lines:
+        # Strip role prefix
+        cleaned = re.sub(r"^(user|assistant|system):\s*", "", line.strip())
+        if cleaned:
+            parts.append(cleaned)
+    if len(parts) <= 2:
+        return " → ".join(parts)
+    return parts[0] + " → " + parts[-1]  # first user msg → last assistant response
 
 
 # ---------------------------------------------------------------------------

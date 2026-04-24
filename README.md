@@ -92,7 +92,7 @@ All settings can be set via environment variables with `STATEWAVE_` prefix:
 | `STATEWAVE_DEFAULT_MAX_CONTEXT_TOKENS` | `4000` | Default token budget |
 | `STATEWAVE_CORS_ORIGINS` | `["*"]` | Allowed CORS origins |
 
-See the full [configuration reference](../statewave-docs/api/v1-contract.md) for all options.
+See the full [configuration reference](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md) for all options.
 
 ## License
 

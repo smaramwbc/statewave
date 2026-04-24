@@ -141,6 +141,39 @@ async def delete_memories_by_subject(session: AsyncSession, subject_id: str) -> 
     return result.rowcount  # type: ignore[return-value]
 
 
+async def list_active_memories_by_subject(
+    session: AsyncSession,
+    subject_id: str,
+    *,
+    limit: int = 500,
+) -> Sequence[MemoryRow]:
+    """Fetch active memories for a subject (for conflict resolution)."""
+    stmt = (
+        select(MemoryRow)
+        .where(MemoryRow.subject_id == subject_id)
+        .where(MemoryRow.status == "active")
+        .order_by(MemoryRow.created_at.asc())
+        .limit(limit)
+    )
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+async def mark_memories_superseded(
+    session: AsyncSession,
+    memory_ids: list[uuid.UUID],
+) -> None:
+    """Mark memories as superseded (conflict resolution)."""
+    if not memory_ids:
+        return
+    stmt = (
+        update(MemoryRow)
+        .where(MemoryRow.id.in_(memory_ids))
+        .values(status="superseded", updated_at=text("now()"))
+    )
+    await session.execute(stmt)
+
+
 # ---------------------------------------------------------------------------
 # Semantic search
 # ---------------------------------------------------------------------------

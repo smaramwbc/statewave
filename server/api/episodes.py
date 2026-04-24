@@ -9,6 +9,7 @@ from server.db.engine import get_session
 from server.db.tables import EpisodeRow
 from server.schemas.requests import CreateEpisodeRequest
 from server.schemas.responses import EpisodeResponse
+from server.services import webhooks
 
 router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 
@@ -30,6 +31,7 @@ async def create_episode(
     session.add(row)
     await session.commit()
     await session.refresh(row)
+    await webhooks.fire("episode.created", {"id": str(row.id), "subject_id": row.subject_id})
     return EpisodeResponse(
         id=row.id,
         subject_id=row.subject_id,

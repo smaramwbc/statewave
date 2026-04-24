@@ -12,6 +12,8 @@ from server.schemas.requests import CompileMemoriesRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
 from server.services.compilers import get_compiler
 from server.services.embeddings import get_provider as get_embedding_provider
+from server.services.conflicts import resolve_conflicts
+from server.services import webhooks
 
 logger = structlog.stdlib.get_logger()
 
@@ -56,6 +58,18 @@ async def compile_memories(
     await session.commit()
     for row in new_rows:
         await session.refresh(row)
+
+    # Auto-resolve memory conflicts after compilation
+    superseded_ids = await resolve_conflicts(session, body.subject_id)
+    if superseded_ids:
+        await session.commit()
+        logger.info("conflicts_resolved", superseded=len(superseded_ids))
+
+    await webhooks.fire("memories.compiled", {
+        "subject_id": body.subject_id,
+        "memories_created": len(new_rows),
+    })
+
     return CompileMemoriesResponse(
         subject_id=body.subject_id,
         memories_created=len(new_rows),

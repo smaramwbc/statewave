@@ -3,6 +3,7 @@
 from server.services.context import (
     _relevance_score,
     _recency_score,
+    _temporal_score,
     _tokenize_for_relevance,
     _timestamp_range,
 )
@@ -82,3 +83,22 @@ def test_tokenize_for_relevance_lowercases():
 
 def test_timestamp_range_empty():
     assert _timestamp_range([]) == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# Temporal scoring
+# ---------------------------------------------------------------------------
+
+def test_temporal_no_expiry_gets_bonus():
+    score = _temporal_score(datetime.now(timezone.utc), None)
+    assert score > 0
+
+
+def test_temporal_future_expiry_gets_bonus():
+    score = _temporal_score(datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(days=30))
+    assert score > 0
+
+
+def test_temporal_past_expiry_gets_penalty():
+    score = _temporal_score(datetime.now(timezone.utc), datetime.now(timezone.utc) - timedelta(days=1))
+    assert score < 0

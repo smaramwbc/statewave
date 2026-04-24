@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     # Rate limiting (0 = disabled)
     rate_limit_rpm: int = 0
 
+    # Webhooks (empty = disabled)
+    webhook_url: str | None = None
+    webhook_timeout: float = 5.0
+
+    # Multi-tenant (empty = single-tenant mode)
+    tenant_header: str = "X-Tenant-ID"
+    require_tenant: bool = False
+
     model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
 
 

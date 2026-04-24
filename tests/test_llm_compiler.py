@@ -7,8 +7,6 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from server.db.tables import EpisodeRow
 from server.services.compilers.llm import LLMCompiler
 

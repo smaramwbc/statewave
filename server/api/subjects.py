@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.db import repositories as repo
 from server.db.engine import get_session
 from server.schemas.responses import DeleteSubjectResponse
+from server.services import webhooks
 
 router = APIRouter(prefix="/v1/subjects", tags=["subjects"])
 
@@ -21,6 +22,11 @@ async def delete_subject(
     ep_count = await repo.delete_episodes_by_subject(session, subject_id)
     mem_count = await repo.delete_memories_by_subject(session, subject_id)
     await session.commit()
+    await webhooks.fire("subject.deleted", {
+        "subject_id": subject_id,
+        "episodes_deleted": ep_count,
+        "memories_deleted": mem_count,
+    })
     return DeleteSubjectResponse(
         subject_id=subject_id,
         episodes_deleted=ep_count,

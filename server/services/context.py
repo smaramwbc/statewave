@@ -13,7 +13,7 @@ Strategy:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
@@ -41,6 +41,8 @@ _EPISODE_PRIORITY = 3.0
 _RECENCY_MAX = 5.0
 _RELEVANCE_MAX = 5.0
 _SEMANTIC_MAX = 8.0  # Semantic relevance has higher signal than word-overlap
+_TEMPORAL_VALID_BONUS = 3.0  # Bonus for memories currently valid (valid_to is None or in the future)
+_TEMPORAL_EXPIRED_PENALTY = -4.0  # Penalty for memories whose valid_to is in the past
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +104,7 @@ async def assemble_context(
                 _KIND_PRIORITY.get(row.kind, 1.0)
                 + _recency_score(row.created_at, ts_range)
                 + relevance
+                + _temporal_score(row.valid_from, row.valid_to)
             )
             scored.append(_ScoredItem(
                 score=score,
@@ -240,6 +243,26 @@ def _relevance_score(content: str, task_tokens: set[str]) -> float:
     # Normalize by task token count
     ratio = overlap / len(task_tokens)
     return min(ratio * _RELEVANCE_MAX, _RELEVANCE_MAX)
+
+
+def _temporal_score(
+    valid_from: datetime | None,
+    valid_to: datetime | None,
+) -> float:
+    """Score boost/penalty based on temporal validity window.
+
+    - Memory with no valid_to (still current): gets a bonus.
+    - Memory whose valid_to is in the future: gets a bonus.
+    - Memory whose valid_to is in the past (expired/superseded): gets a penalty.
+    """
+    now = datetime.now(timezone.utc)
+    if valid_to is None:
+        return _TEMPORAL_VALID_BONUS  # still active / no expiry
+    if valid_to.tzinfo is None:
+        valid_to = valid_to.replace(tzinfo=timezone.utc)
+    if valid_to > now:
+        return _TEMPORAL_VALID_BONUS  # still within validity window
+    return _TEMPORAL_EXPIRED_PENALTY  # expired
 
 
 def _timestamp_range(

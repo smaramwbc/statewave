@@ -16,13 +16,17 @@ from server.core.logging import setup_logging
 from server.core.middleware import RequestIDMiddleware
 from server.core.auth import APIKeyMiddleware
 from server.core.ratelimit import RateLimitMiddleware
+from server.core.tenant import TenantMiddleware
 
 logger = structlog.stdlib.get_logger()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("app_startup", version="0.2.0", debug=settings.debug)
+    # Configure webhooks
+    from server.services import webhooks
+    webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
+    logger.info("app_startup", version="0.3.0", debug=settings.debug)
     yield
     from server.db.engine import engine
     await engine.dispose()
@@ -40,7 +44,7 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.2.0",
+        version="0.3.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -48,6 +52,7 @@ def create_app() -> FastAPI:
 
     # -- Middleware (outermost first) ----------------------------------------
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant)
     app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
     app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
     app.add_middleware(

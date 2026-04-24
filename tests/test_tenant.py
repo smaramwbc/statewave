@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
 from starlette.responses import JSONResponse

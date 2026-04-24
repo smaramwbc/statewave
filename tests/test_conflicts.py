@@ -6,7 +6,6 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from server.services.conflicts import _are_conflicting, resolve_conflicts
 from server.db.tables import MemoryRow

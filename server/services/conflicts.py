@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
-from typing import Sequence
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession

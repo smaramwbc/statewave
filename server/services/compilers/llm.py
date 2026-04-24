@@ -138,7 +138,6 @@ class LLMCompiler:
 
         if loop and loop.is_running():
             # We're inside an async context — offload to thread pool
-            import concurrent.futures
             future = self._executor.submit(self._call_llm_sync, text)
             # This is called from sync compile(), so we can't await.
             # Instead, the sync OpenAI call runs in the thread pool.

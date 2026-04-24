@@ -29,6 +29,21 @@ class Settings(BaseSettings):
     # Compiler
     compiler_type: str = "heuristic"
 
+    # Embeddings
+    embedding_provider: str = "stub"  # "stub" | "openai" | "none"
+    embedding_dimensions: int = 1536
+    openai_api_key: str | None = None
+    openai_embedding_model: str = "text-embedding-3-small"
+
+    # LLM compiler
+    llm_compiler_model: str = "gpt-4o-mini"
+
+    # Authentication (empty = disabled / open access)
+    api_key: str | None = None
+
+    # Rate limiting (0 = disabled)
+    rate_limit_rpm: int = 0
+
     model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
 
 

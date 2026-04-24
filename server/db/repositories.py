@@ -139,3 +139,34 @@ async def delete_memories_by_subject(session: AsyncSession, subject_id: str) -> 
     stmt = delete(MemoryRow).where(MemoryRow.subject_id == subject_id)
     result = await session.execute(stmt)
     return result.rowcount  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Semantic search
+# ---------------------------------------------------------------------------
+
+async def search_memories_by_embedding(
+    session: AsyncSession,
+    subject_id: str,
+    query_embedding: list[float],
+    *,
+    kind: str | None = None,
+    limit: int = 20,
+) -> list[tuple[MemoryRow, float]]:
+    """Find memories by cosine similarity. Returns (row, distance) tuples.
+
+    Lower distance = more similar (cosine distance: 0 = identical, 2 = opposite).
+    Only returns memories that have embeddings.
+    """
+    distance_expr = MemoryRow.embedding.cosine_distance(query_embedding)
+    stmt = (
+        select(MemoryRow, distance_expr.label("distance"))
+        .where(MemoryRow.subject_id == subject_id)
+        .where(MemoryRow.status == "active")
+        .where(MemoryRow.embedding.isnot(None))
+    )
+    if kind:
+        stmt = stmt.where(MemoryRow.kind == kind)
+    stmt = stmt.order_by(distance_expr).limit(limit)
+    result = await session.execute(stmt)
+    return [(row, dist) for row, dist in result.all()]

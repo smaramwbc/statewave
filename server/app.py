@@ -14,6 +14,8 @@ from server.core.config import settings
 from server.core.errors import register_exception_handlers
 from server.core.logging import setup_logging
 from server.core.middleware import RequestIDMiddleware
+from server.core.auth import APIKeyMiddleware
+from server.core.ratelimit import RateLimitMiddleware
 
 logger = structlog.stdlib.get_logger()
 
@@ -46,6 +48,8 @@ def create_app() -> FastAPI:
 
     # -- Middleware (outermost first) ----------------------------------------
     app.add_middleware(RequestIDMiddleware)
+    app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
+    app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

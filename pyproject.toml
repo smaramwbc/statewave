@@ -25,6 +25,9 @@ dev = [
     "httpx>=0.27,<1",
     "ruff>=0.4,<1",
 ]
+openai = [
+    "openai>=1.12,<2",
+]
 
 [build-system]
 requires = ["hatchling"]

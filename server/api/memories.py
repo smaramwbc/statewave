@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +11,9 @@ from server.db.engine import get_session
 from server.schemas.requests import CompileMemoriesRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
 from server.services.compilers import get_compiler
+from server.services.embeddings import get_provider as get_embedding_provider
+
+logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
@@ -29,6 +33,20 @@ async def compile_memories(
             memories=[],
         )
     new_rows = get_compiler().compile(list(episodes))
+
+    # Generate embeddings if provider is available
+    provider = get_embedding_provider()
+    if provider and new_rows:
+        texts = [row.content for row in new_rows]
+        try:
+            embeddings = await provider.embed_texts(texts)
+            for row, emb in zip(new_rows, embeddings):
+                row.embedding = emb
+            logger.info("embeddings_generated", count=len(embeddings), provider=type(provider).__name__)
+        except Exception:
+            logger.warning("embedding_generation_failed", exc_info=True)
+            # Continue without embeddings — graceful degradation
+
     for row in new_rows:
         session.add(row)
     # Mark episodes as compiled so they won't be reprocessed
@@ -50,9 +68,27 @@ async def search_memories(
     subject_id: str = Query(...),
     kind: str | None = Query(None),
     query: str | None = Query(None, alias="q"),
+    semantic: bool = Query(False, description="Use semantic similarity search when available"),
     limit: int = Query(20, le=100),
     session: AsyncSession = Depends(get_session),
 ):
+    # Try semantic search if requested and query text is provided
+    if semantic and query:
+        provider = get_embedding_provider()
+        if provider:
+            try:
+                query_embedding = await provider.embed_query(query)
+                results = await repo.search_memories_by_embedding(
+                    session, subject_id, query_embedding, kind=kind, limit=limit,
+                )
+                return SearchMemoriesResponse(
+                    memories=[_to_response(row) for row, _dist in results]
+                )
+            except Exception:
+                logger.warning("semantic_search_failed_falling_back", exc_info=True)
+                # Fall through to text search
+
+    # Default: exact/text search
     rows = await repo.search_memories(session, subject_id, kind=kind, query=query, limit=limit)
     return SearchMemoriesResponse(memories=[_to_response(r) for r in rows])
 

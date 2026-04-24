@@ -1,7 +1,9 @@
 """Context assembly service — builds ranked, token-bounded context bundles.
 
 Strategy:
-- Score every memory and episode by kind priority + recency + task relevance.
+- Score every memory and episode by kind priority + recency + relevance.
+- When embeddings are available, use semantic similarity for relevance.
+- Otherwise, fall back to word-overlap relevance.
 - Assemble text incrementally, highest-scored items first.
 - Stop adding items when the token budget is exhausted.
 - The task header is always included (reserved budget).
@@ -10,9 +12,11 @@ Strategy:
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any
 
+import structlog
 import tiktoken
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +24,9 @@ from server.core.config import settings
 from server.db import repositories as repo
 from server.schemas.responses import ContextBundleResponse, EpisodeResponse, MemoryResponse
 from server.services.compilers.heuristic import extract_payload_text
+from server.services.embeddings import get_provider as get_embedding_provider
+
+logger = structlog.stdlib.get_logger()
 
 # ---------------------------------------------------------------------------
 # Scoring constants
@@ -33,6 +40,7 @@ _KIND_PRIORITY: dict[str, float] = {
 _EPISODE_PRIORITY = 3.0
 _RECENCY_MAX = 5.0
 _RELEVANCE_MAX = 5.0
+_SEMANTIC_MAX = 8.0  # Semantic relevance has higher signal than word-overlap
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +63,27 @@ async def assemble_context(
     summary_rows = await repo.search_memories(session, subject_id, kind="episode_summary", limit=30)
     episode_rows = await repo.list_episodes_by_subject(session, subject_id, limit=30)
 
+    # -- Prepare semantic scoring -------------------------------------------
+    semantic_scores: dict[uuid.UUID, float] = {}
+    provider = get_embedding_provider()
+    if provider:
+        try:
+            task_embedding = await provider.embed_query(task)
+            # Get semantic scores for all memories in one query
+            semantic_results = await repo.search_memories_by_embedding(
+                session, subject_id, task_embedding, limit=100,
+            )
+            for row, distance in semantic_results:
+                # Convert cosine distance [0, 2] to similarity score [0, SEMANTIC_MAX]
+                # distance 0 = identical → max score, distance 2 = opposite → 0
+                similarity = max(0.0, 1.0 - distance)
+                semantic_scores[row.id] = similarity * _SEMANTIC_MAX
+            logger.debug("semantic_scores_computed", count=len(semantic_scores))
+        except Exception:
+            logger.warning("semantic_scoring_failed_using_word_overlap", exc_info=True)
+
+    use_semantic = len(semantic_scores) > 0
+
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)
 
@@ -63,10 +92,16 @@ async def assemble_context(
     if all_memory_rows:
         ts_range = _timestamp_range([r.created_at for r in all_memory_rows])
         for row in all_memory_rows:
+            # Use semantic score when available, else word-overlap
+            if use_semantic and row.id in semantic_scores:
+                relevance = semantic_scores[row.id]
+            else:
+                relevance = _relevance_score(row.content, task_tokens)
+
             score = (
                 _KIND_PRIORITY.get(row.kind, 1.0)
                 + _recency_score(row.created_at, ts_range)
-                + _relevance_score(row.content, task_tokens)
+                + relevance
             )
             scored.append(_ScoredItem(
                 score=score,

@@ -29,7 +29,7 @@ async def lifespan(app: FastAPI):
     # Configure webhooks
     from server.services import webhooks
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
-    logger.info("app_startup", version="0.4.0", debug=settings.debug)
+    logger.info("app_startup", version="0.4.3", debug=settings.debug)
     yield
     from server.db.engine import engine
     await engine.dispose()
@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.4.0",
+        version="0.4.3",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,

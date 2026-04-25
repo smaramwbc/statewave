@@ -6,11 +6,30 @@
 
 **Memory runtime for AI agents and AI-powered applications.**
 
-Statewave gives your AI system durable, structured memory — so it can remember what happened, learn from past interactions, and retrieve relevant context at task time.
+### The problem
 
-It is a self-hosted API server backed by PostgreSQL + pgvector. You ingest raw events (episodes), compile typed memories with provenance, and retrieve ranked, token-bounded context bundles ready for your prompts. Everything is organised around **subjects** — a user, account, agent, repo, or any entity you track.
+Most AI applications have no memory. Every conversation starts from scratch. Context is lost between sessions, decisions aren't remembered, and user history disappears the moment a session ends. Bolting on a vector database or dumping chat logs into a prompt doesn't solve this — it creates fragile, unstructured context that degrades as it scales.
 
-Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application, with any AI stack, in any language.
+### What Statewave does
+
+Statewave gives your AI system **durable, structured memory** with a clear data lifecycle:
+
+1. **Ingest** — record raw events (episodes) as they happen, append-only
+2. **Compile** — extract typed, summarised memories with confidence scores and provenance
+3. **Retrieve** — assemble ranked, token-bounded context bundles ready for your prompts
+4. **Govern** — inspect subject timelines, trace every memory to its source, delete by subject
+
+Everything is organised around **subjects** — a user, account, agent, repo, or any entity you track.
+
+### Why Statewave
+
+- **Your AI remembers** — preferences, decisions, history persist across sessions
+- **Context is structured, not dumped** — ranked retrieval with token budgets, not raw chat log stuffing
+- **Provenance is built in** — every memory traces back to its source episodes
+- **You own it** — self-hosted, open source, no vendor lock-in
+- **Framework-neutral** — works with any AI stack, any language, via REST API or typed SDKs
+
+Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
 
 > **Status:** v0.4.x — actively developed. Suitable for local development and early integration. See [current limitations](#current-limitations) below.
 

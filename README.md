@@ -136,7 +136,6 @@ Statewave is in active early development. Current caveats:
 - **No built-in auth provider** — Statewave validates API keys you configure, but does not issue them
 - **No streaming** — context responses are returned as complete JSON
 - **No UI** — API-only; inspect via endpoints, OpenAPI docs, or direct DB access
-- **SDKs not yet published to PyPI/npm** — install from source or Git
 
 ## License
 

@@ -33,6 +33,12 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 
 > **Status:** v0.4.x — actively developed. Suitable for local development and early integration. See [current limitations](#current-limitations) below.
 
+## 🎯 Live Demo
+
+> **[▶ Try the interactive demo →](https://statewave-demo.vercel.app)**
+>
+> Two identical AI agents answer the same question — one has zero memory, one uses Statewave. See the difference in 10 seconds, no setup required.
+
 ## Documentation
 
 | | |

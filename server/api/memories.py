@@ -45,7 +45,7 @@ async def compile_memories(
             try:
                 embeddings = await provider.embed_texts(texts)
                 for row, emb in zip(new_rows, embeddings):
-                    row.embedding = emb
+                    row.embedding = str(emb)
                 logger.info("embeddings_generated", count=len(embeddings), provider=type(provider).__name__)
             except Exception:
                 logger.warning("embedding_generation_failed", exc_info=True)

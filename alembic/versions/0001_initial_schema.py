@@ -17,8 +17,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    # Enable pgvector extension
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # Check if pgvector is available before trying to create it
+    conn = op.get_bind()
+    result = conn.execute(sa.text(
+        "SELECT count(*) FROM pg_available_extensions WHERE name = 'vector'"
+    ))
+    has_vector = result.scalar() > 0
+
+    if has_vector:
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
 
     op.create_table(
         "episodes",
@@ -75,9 +82,10 @@ def upgrade() -> None:
     op.create_index("ix_memories_subject_id", "memories", ["subject_id"])
     op.create_index("ix_memories_subject_kind", "memories", ["subject_id", "kind"])
 
-    # Add the vector column separately using raw SQL (alembic doesn't natively support pgvector types)
-    op.execute("ALTER TABLE memories DROP COLUMN IF EXISTS embedding")
-    op.execute("ALTER TABLE memories ADD COLUMN embedding vector(1536)")
+    # Add the vector column separately if pgvector is available
+    if has_vector:
+        op.execute("ALTER TABLE memories DROP COLUMN IF EXISTS embedding")
+        op.execute("ALTER TABLE memories ADD COLUMN embedding vector(1536)")
 
 
 def downgrade() -> None:

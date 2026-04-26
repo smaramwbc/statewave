@@ -7,8 +7,8 @@ RUN pip install --no-cache-dir .
 
 COPY . .
 
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . && chmod +x start.sh
 
 EXPOSE 8100
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["./start.sh"]

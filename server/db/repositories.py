@@ -188,21 +188,10 @@ async def search_memories_by_embedding(
 ) -> list[tuple[MemoryRow, float]]:
     """Find memories by cosine similarity. Returns (row, distance) tuples.
 
-    Lower distance = more similar (cosine distance: 0 = identical, 2 = opposite).
-    Only returns memories that have embeddings.
+    Requires pgvector extension. Returns empty list if not available.
     """
-    distance_expr = MemoryRow.embedding.cosine_distance(query_embedding)
-    stmt = (
-        select(MemoryRow, distance_expr.label("distance"))
-        .where(MemoryRow.subject_id == subject_id)
-        .where(MemoryRow.status == "active")
-        .where(MemoryRow.embedding.isnot(None))
-    )
-    if kind:
-        stmt = stmt.where(MemoryRow.kind == kind)
-    stmt = stmt.order_by(distance_expr).limit(limit)
-    result = await session.execute(stmt)
-    return [(row, dist) for row, dist in result.all()]
+    # Without pgvector, semantic search is not available
+    return []
 
 
 # ---------------------------------------------------------------------------

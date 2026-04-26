@@ -5,7 +5,6 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -53,7 +52,7 @@ class MemoryRow(Base):
     source_episode_ids: Mapped[list] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
-    embedding = mapped_column(Vector(1536), nullable=True)
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

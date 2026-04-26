@@ -188,10 +188,40 @@ async def search_memories_by_embedding(
 ) -> list[tuple[MemoryRow, float]]:
     """Find memories by cosine similarity. Returns (row, distance) tuples.
 
-    Requires pgvector extension. Returns empty list if not available.
+    Computes cosine similarity in Python over embeddings stored as text.
     """
-    # Without pgvector, semantic search is not available
-    return []
+    import ast
+    import math
+
+    stmt = (
+        select(MemoryRow)
+        .where(MemoryRow.subject_id == subject_id)
+        .where(MemoryRow.status == "active")
+        .where(MemoryRow.embedding.isnot(None))
+    )
+    if kind:
+        stmt = stmt.where(MemoryRow.kind == kind)
+    result = await session.execute(stmt)
+    rows = result.scalars().all()
+
+    if not rows:
+        return []
+
+    # Compute cosine distance for each memory
+    scored: list[tuple[MemoryRow, float]] = []
+    q_norm = math.sqrt(sum(x * x for x in query_embedding)) or 1.0
+    for row in rows:
+        try:
+            emb = ast.literal_eval(row.embedding)
+        except (ValueError, SyntaxError):
+            continue
+        dot = sum(a * b for a, b in zip(query_embedding, emb))
+        e_norm = math.sqrt(sum(x * x for x in emb)) or 1.0
+        distance = 1.0 - (dot / (q_norm * e_norm))
+        scored.append((row, distance))
+
+    scored.sort(key=lambda t: t[1])
+    return scored[:limit]
 
 
 # ---------------------------------------------------------------------------

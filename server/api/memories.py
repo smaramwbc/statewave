@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+from typing import Any
 
 import structlog
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
@@ -17,6 +19,7 @@ from server.services.compilers import get_compiler
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.conflicts import resolve_conflicts
 from server.services import webhooks
+from server.services import compile_jobs
 from server.core.tracing import span
 
 logger = structlog.stdlib.get_logger()
@@ -24,21 +27,114 @@ logger = structlog.stdlib.get_logger()
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
 
-@router.post("/compile", response_model=CompileMemoriesResponse, summary="Compile memories from episodes")
+async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMemoriesResponse:
+    """Core compilation logic — used by both sync and async paths."""
+    from server.db.engine import async_session_factory
+
+    if job_id:
+        compile_jobs.mark_running(job_id)
+
+    try:
+        async with async_session_factory() as session:
+            episodes = await repo.list_uncompiled_episodes(session, subject_id)
+            if not episodes:
+                result = CompileMemoriesResponse(
+                    subject_id=subject_id, memories_created=0, memories=[]
+                )
+                if job_id:
+                    compile_jobs.mark_completed(job_id, 0, [])
+                return result
+
+            compiler = get_compiler()
+            if hasattr(compiler, 'compile_async'):
+                new_rows = await compiler.compile_async(list(episodes))
+            else:
+                loop = asyncio.get_running_loop()
+                new_rows = await loop.run_in_executor(
+                    None, functools.partial(compiler.compile, list(episodes))
+                )
+
+            # Generate embeddings if provider is available
+            provider = get_embedding_provider()
+            if provider and new_rows:
+                texts = [row.content for row in new_rows]
+                try:
+                    embeddings = await provider.embed_texts(texts)
+                    for row, emb in zip(new_rows, embeddings):
+                        row.embedding = str(emb)
+                    logger.info("embeddings_generated", count=len(embeddings))
+                except Exception:
+                    logger.warning("embedding_generation_failed", exc_info=True)
+
+            for row in new_rows:
+                session.add(row)
+            await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
+
+            superseded_ids = await resolve_conflicts(session, subject_id)
+            if superseded_ids:
+                logger.info("conflicts_resolved", superseded=len(superseded_ids))
+
+            await session.commit()
+            for row in new_rows:
+                await session.refresh(row)
+
+            await webhooks.fire("memories.compiled", {
+                "subject_id": subject_id,
+                "memories_created": len(new_rows),
+            })
+
+            memory_responses = [_to_response(r) for r in new_rows]
+            result = CompileMemoriesResponse(
+                subject_id=subject_id,
+                memories_created=len(new_rows),
+                memories=memory_responses,
+            )
+
+            if job_id:
+                compile_jobs.mark_completed(
+                    job_id, len(new_rows),
+                    [m.model_dump(mode="json") for m in memory_responses]
+                )
+
+            return result
+
+    except Exception as exc:
+        logger.error("compile_failed", subject_id=subject_id, exc_info=True)
+        if job_id:
+            compile_jobs.mark_failed(job_id, str(exc))
+        raise
+
+
+@router.post("/compile", summary="Compile memories from episodes")
 async def compile_memories(
     body: CompileMemoriesRequest,
     session: AsyncSession = Depends(get_session),
 ):
-    """Compile new memories from unprocessed episodes. Idempotent — recompiling the same subject produces no duplicates."""
-    with span("compile_memories", {"subject_id": body.subject_id}):
-        # Only compile episodes that haven't been compiled yet (idempotent)
+    """Compile new memories from unprocessed episodes.
+
+    Pass `"async": true` to return immediately with a job_id for polling.
+    """
+    with span("compile_memories", {"subject_id": body.subject_id, "async": body.async_mode}):
+        if body.async_mode:
+            # Async mode — return job_id immediately, compile in background
+            job = compile_jobs.submit_job(body.subject_id)
+            asyncio.create_task(_run_compile(body.subject_id, job.id))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "job_id": job.id,
+                    "status": "pending",
+                    "subject_id": body.subject_id,
+                },
+            )
+
+        # Sync mode — block until compilation is done (backward compatible)
         episodes = await repo.list_uncompiled_episodes(session, body.subject_id)
         if not episodes:
             return CompileMemoriesResponse(
-                subject_id=body.subject_id,
-                memories_created=0,
-                memories=[],
+                subject_id=body.subject_id, memories_created=0, memories=[]
             )
+
         compiler = get_compiler()
         if hasattr(compiler, 'compile_async'):
             new_rows = await compiler.compile_async(list(episodes))
@@ -48,7 +144,6 @@ async def compile_memories(
                 None, functools.partial(compiler.compile, list(episodes))
             )
 
-        # Generate embeddings if provider is available
         provider = get_embedding_provider()
         if provider and new_rows:
             texts = [row.content for row in new_rows]
@@ -56,19 +151,14 @@ async def compile_memories(
                 embeddings = await provider.embed_texts(texts)
                 for row, emb in zip(new_rows, embeddings):
                     row.embedding = str(emb)
-                logger.info("embeddings_generated", count=len(embeddings), provider=type(provider).__name__)
+                logger.info("embeddings_generated", count=len(embeddings))
             except Exception:
                 logger.warning("embedding_generation_failed", exc_info=True)
-                # Continue without embeddings — graceful degradation
 
         for row in new_rows:
             session.add(row)
-        # Mark episodes as compiled so they won't be reprocessed
-        await repo.mark_episodes_compiled(
-            session, [ep.id for ep in episodes]
-        )
+        await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
-        # Auto-resolve memory conflicts before committing (single transaction)
         superseded_ids = await resolve_conflicts(session, body.subject_id)
         if superseded_ids:
             logger.info("conflicts_resolved", superseded=len(superseded_ids))
@@ -87,6 +177,27 @@ async def compile_memories(
             memories_created=len(new_rows),
             memories=[_to_response(r) for r in new_rows],
         )
+
+
+@router.get("/compile/{job_id}", summary="Check compile job status")
+async def get_compile_status(job_id: str):
+    """Poll for the status of an async compile job."""
+    job = compile_jobs.get_job(job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Job not found or expired"})
+
+    response: dict[str, Any] = {
+        "job_id": job.id,
+        "status": job.status.value,
+        "subject_id": job.subject_id,
+    }
+    if job.status == compile_jobs.JobStatus.completed:
+        response["memories_created"] = job.memories_created
+        response["memories"] = job.memories
+    elif job.status == compile_jobs.JobStatus.failed:
+        response["error"] = job.error
+
+    return JSONResponse(content=response)
 
 
 @router.get("/search", response_model=SearchMemoriesResponse, summary="Search memories")

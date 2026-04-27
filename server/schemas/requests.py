@@ -22,6 +22,7 @@ class BatchCreateEpisodesRequest(BaseModel):
 
 class CompileMemoriesRequest(BaseModel):
     subject_id: str = Field(..., min_length=1, max_length=256)
+    async_mode: bool = Field(default=False, alias="async")
 
 
 class SearchMemoriesRequest(BaseModel):

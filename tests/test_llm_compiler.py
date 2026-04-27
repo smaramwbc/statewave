@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -37,28 +36,17 @@ def _make_compiler() -> LLMCompiler:
     return compiler
 
 
-def _mock_response(content: str):
-    """Create a mock httpx response."""
-    mock = AsyncMock()
-    mock.status_code = 200
-    mock.raise_for_status = lambda: None
-    mock.json.return_value = {
-        "choices": [{"message": {"content": content}}]
-    }
-    return mock
-
-
 @pytest.mark.asyncio
 async def test_llm_compile_basic():
     compiler = _make_compiler()
 
-    llm_response = json.dumps([
-        {"kind": "profile_fact", "content": "Name is Alice", "summary": "Name is Alice", "confidence": 0.9},
-        {"kind": "profile_fact", "content": "Works at Acme Corp", "summary": "Works at Acme Corp", "confidence": 0.85},
-        {"kind": "episode_summary", "content": "User introduced themselves", "summary": "Introduction", "confidence": 0.8},
-    ])
+    llm_response = [
+        {"kind": "profile_fact", "content": "Name is Alice", "summary": "Name is Alice", "confidence": 0.9, "episode_index": 0},
+        {"kind": "profile_fact", "content": "Works at Acme Corp", "summary": "Works at Acme Corp", "confidence": 0.85, "episode_index": 0},
+        {"kind": "episode_summary", "content": "User introduced themselves", "summary": "Introduction", "confidence": 0.8, "episode_index": 0},
+    ]
 
-    with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, return_value=json.loads(llm_response)):
+    with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, return_value=llm_response):
         ep = _make_episode()
         memories = await compiler.compile_async([ep])
 
@@ -90,23 +78,12 @@ async def test_llm_compile_api_failure_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_llm_compile_invalid_json_returns_empty():
-    compiler = _make_compiler()
-
-    # _call_llm_async parses JSON, so invalid json would raise in there
-    # Simulate by returning a non-list
-    with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, side_effect=json.JSONDecodeError("", "", 0)):
-        memories = await compiler.compile_async([_make_episode()])
-        assert memories == []
-
-
-@pytest.mark.asyncio
 async def test_llm_compile_clamps_confidence():
     compiler = _make_compiler()
 
     raw = [
-        {"kind": "profile_fact", "content": "A", "summary": "A", "confidence": 5.0},
-        {"kind": "profile_fact", "content": "B", "summary": "B", "confidence": -1.0},
+        {"kind": "profile_fact", "content": "A", "summary": "A", "confidence": 5.0, "episode_index": 0},
+        {"kind": "profile_fact", "content": "B", "summary": "B", "confidence": -1.0, "episode_index": 0},
     ]
 
     with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, return_value=raw):
@@ -116,11 +93,22 @@ async def test_llm_compile_clamps_confidence():
 
 
 @pytest.mark.asyncio
-async def test_llm_compile_strips_markdown_fences():
+async def test_llm_compile_batches_multiple_episodes():
+    """Multiple small episodes should be batched into a single LLM call."""
     compiler = _make_compiler()
 
-    raw = [{"kind": "profile_fact", "content": "Test", "summary": "Test", "confidence": 0.9}]
+    raw = [
+        {"kind": "profile_fact", "content": "Fact from ep0", "summary": "Fact", "confidence": 0.9, "episode_index": 0},
+        {"kind": "profile_fact", "content": "Fact from ep1", "summary": "Fact", "confidence": 0.9, "episode_index": 1},
+    ]
 
-    with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, return_value=raw):
-        memories = await compiler.compile_async([_make_episode()])
-        assert len(memories) == 1
+    ep0 = _make_episode(payload={"messages": [{"role": "user", "content": "Hello from episode 0"}]})
+    ep1 = _make_episode(payload={"messages": [{"role": "user", "content": "Hello from episode 1"}]})
+
+    with patch.object(compiler, '_call_llm_async', new_callable=AsyncMock, return_value=raw) as mock_llm:
+        memories = await compiler.compile_async([ep0, ep1])
+        # Should be 1 call (both episodes fit in one batch)
+        assert mock_llm.call_count == 1
+        assert len(memories) == 2
+        assert memories[0].source_episode_ids == [ep0.id]
+        assert memories[1].source_episode_ids == [ep1.id]

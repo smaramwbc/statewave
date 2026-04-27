@@ -45,6 +45,7 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 |---|---|
 | **[Getting started](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md)** | Clone, run, ingest your first episode |
 | [What is Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/product.md) | Product overview, use cases, limitations |
+| [Why Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/why-statewave.md) | Technical comparison for support-agent workflows |
 | [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md) | Full endpoint reference |
 | [Architecture overview](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/overview.md) | System design and data flow |
 | [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |

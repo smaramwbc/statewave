@@ -14,7 +14,7 @@ primary_region = 'ord'
 [http_service]
   internal_port = 8100
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 1
   processes = ["app"]

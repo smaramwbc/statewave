@@ -29,8 +29,10 @@ async def lifespan(app: FastAPI):
     # Configure webhooks
     from server.services import webhooks
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
+    await webhooks.start_worker()
     logger.info("app_startup", version="0.4.3", debug=settings.debug)
     yield
+    await webhooks.stop_worker()
     from server.db.engine import engine
     await engine.dispose()
     logger.info("app_shutdown")
@@ -78,6 +80,9 @@ def create_app() -> FastAPI:
     app.include_router(context.router)
     app.include_router(timeline.router)
     app.include_router(subjects.router)
+
+    from server.api.admin import router as admin_router
+    app.include_router(admin_router)
 
     # -- Ops endpoints -------------------------------------------------------
     @app.get("/healthz", tags=["ops"], summary="Liveness check")

@@ -158,16 +158,19 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active early development. Current caveats:
+Statewave is in active early development (v0.4.x). Honest status:
 
-- **Single-node only** — no clustering or horizontal scaling
+- **Webhooks are fire-and-forget** — no retries, no dead-letter queue. Events can be silently lost. (v0.5 priority #1)
+- **Rate limiting is in-memory** — resets on restart, single-worker only. (v0.5 #5)
+- **Multi-tenant is experimental** — header-based isolation only, no row-level security. (v0.5 #4)
+- **Compilation is synchronous** — large subjects may timeout. No job queue yet. (v0.5 #3)
+- **SDKs have no retry logic** — transient 429/5xx errors will crash your app. (v0.5 #2)
+- **Single-node only** — no clustering, no horizontal scaling yet
 - **PostgreSQL required** — no alternative storage backends
-- **Multi-tenant support is experimental** — header-based isolation works, but is not battle-tested
-- **Rate limiting is in-memory** — resets on restart, single-worker only
-- **Webhooks are fire-and-forget** — no retries, failures are logged but do not block
-- **No built-in auth provider** — Statewave validates API keys you configure, but does not issue them
-- **No streaming** — context responses are returned as complete JSON
-- **No UI** — API-only; inspect via endpoints, OpenAPI docs, or direct DB access
+- **No built-in auth provider** — validates API keys you configure, doesn't issue them
+- **No admin UI** — API-only; inspect via endpoints or direct DB access
+
+See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) for what's being fixed and when.
 
 ## License
 

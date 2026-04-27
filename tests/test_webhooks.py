@@ -1,9 +1,10 @@
-"""Tests for webhooks service."""
+"""Tests for reliable webhook delivery service."""
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, patch
+import uuid
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -19,20 +20,53 @@ def _reset_webhook():
 
 
 async def test_fire_noop_when_no_url():
-    """No error when webhook URL is not configured."""
+    """No event persisted when webhook URL is not configured."""
     webhooks.configure(None)
-    await webhooks.fire("episode.created", {"id": "123"})
-    # Should silently do nothing
+    result = await webhooks.fire("episode.created", {"id": "123"})
+    assert result is None
 
 
-async def test_fire_creates_task_when_url_set():
+async def test_fire_persists_event_when_url_set():
+    """Event is persisted to DB when URL is configured."""
     webhooks.configure("http://example.com/hook")
-    with patch("server.services.webhooks._deliver", new_callable=AsyncMock) as mock_deliver:
-        await webhooks.fire("episode.created", {"id": "123"})
-        # Give the task a chance to run
-        await asyncio.sleep(0.05)
-        mock_deliver.assert_called_once()
-        body = mock_deliver.call_args[0][0]
-        assert body["event"] == "episode.created"
-        assert body["data"]["id"] == "123"
-        assert "timestamp" in body
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("server.services.webhooks.async_session_factory", return_value=mock_session):
+        event_id = await webhooks.fire("episode.created", {"id": "123"})
+
+    assert event_id is not None
+    assert isinstance(event_id, uuid.UUID)
+    mock_session.add.assert_called_once()
+    row = mock_session.add.call_args[0][0]
+    assert row.event == "episode.created"
+    assert row.status == "pending"
+    assert row.payload["data"]["id"] == "123"
+    mock_session.commit.assert_called_once()
+
+
+async def test_fire_uses_provided_session():
+    """When a session is passed, event is added without commit (caller controls tx)."""
+    webhooks.configure("http://example.com/hook")
+
+    mock_session = MagicMock()
+    event_id = await webhooks.fire("episode.created", {"id": "123"}, db=mock_session)
+
+    assert event_id is not None
+    mock_session.add.assert_called_once()
+    # Should NOT commit — caller's responsibility
+    mock_session.commit.assert_not_called()
+
+
+def test_backoff_increases_exponentially():
+    """Backoff schedule grows with attempt number."""
+    b1 = webhooks._backoff_seconds(1)
+    b2 = webhooks._backoff_seconds(2)
+    b3 = webhooks._backoff_seconds(3)
+    # With jitter (0.5-1.5), base is 30, 120, 480
+    assert 15 <= b1 <= 45
+    assert 60 <= b2 <= 180
+    assert 240 <= b3 <= 720
+

@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
-revision = "0005_webhook_events"
-down_revision = "0004_embedding_as_text"
+revision = "0005"
+down_revision = "0004"
 branch_labels = None
 depends_on = None
 

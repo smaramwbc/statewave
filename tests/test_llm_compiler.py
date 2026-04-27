@@ -17,8 +17,8 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not HAS_LITELLM, reason="litellm not installed")
 
-from server.db.tables import EpisodeRow
-from server.services.compilers.llm import LLMCompiler
+from server.db.tables import EpisodeRow  # noqa: E402
+from server.services.compilers.llm import LLMCompiler  # noqa: E402
 
 
 def _make_episode(**kw) -> EpisodeRow:

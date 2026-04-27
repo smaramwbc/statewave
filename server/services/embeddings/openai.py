@@ -1,13 +1,16 @@
-"""OpenAI embedding provider — real semantic vectors via OpenAI API.
+"""LiteLLM embedding provider — supports OpenAI, Azure, Cohere, Bedrock, Ollama, etc.
+
+Uses litellm.embedding() for unified multi-provider embedding generation.
+Backward compatible: STATEWAVE_EMBEDDING_PROVIDER=openai still works.
 
 Requires:
-- STATEWAVE_OPENAI_API_KEY set in environment
-- STATEWAVE_EMBEDDING_PROVIDER=openai
-
-Uses text-embedding-3-small by default (1536 dimensions).
+- pip install 'statewave[llm]'
+- Appropriate API key for the chosen model (e.g. OPENAI_API_KEY)
 """
 
 from __future__ import annotations
+
+import os
 
 import structlog
 
@@ -15,7 +18,7 @@ logger = structlog.stdlib.get_logger()
 
 
 class OpenAIEmbeddingProvider:
-    """OpenAI API-based embedding provider."""
+    """LiteLLM-based embedding provider. Name kept for backward compat."""
 
     def __init__(
         self,
@@ -23,19 +26,16 @@ class OpenAIEmbeddingProvider:
         model: str = "text-embedding-3-small",
         dimensions: int = 1536,
     ) -> None:
-        if not api_key:
-            raise ValueError(
-                "OpenAI API key is required. Set STATEWAVE_OPENAI_API_KEY or "
-                "switch to STATEWAVE_EMBEDDING_PROVIDER=stub for local dev."
-            )
         try:
-            from openai import AsyncOpenAI
+            import litellm  # noqa: F401
         except ImportError:
             raise ImportError(
-                "openai package is required for the OpenAI embedding provider. "
-                "Install it with: pip install 'statewave[openai]'"
+                "litellm package is required for embeddings. "
+                "Install with: pip install 'statewave[llm]'"
             )
-        self._client = AsyncOpenAI(api_key=api_key)
+        # Set API key for backward compat (STATEWAVE_OPENAI_API_KEY → OPENAI_API_KEY)
+        if api_key and not os.environ.get("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = api_key
         self._model = model
         self._dimensions = dimensions
 
@@ -46,19 +46,20 @@ class OpenAIEmbeddingProvider:
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        # OpenAI supports batching natively
-        response = await self._client.embeddings.create(
-            input=texts,
+        import litellm
+
+        response = await litellm.aembedding(
             model=self._model,
+            input=texts,
             dimensions=self._dimensions,
         )
         logger.debug(
-            "openai_embeddings_generated",
+            "litellm_embeddings_generated",
             count=len(texts),
             model=self._model,
             usage=response.usage.total_tokens if response.usage else None,
         )
-        return [item.embedding for item in response.data]
+        return [item["embedding"] for item in response.data]
 
     async def embed_query(self, text: str) -> list[float]:
         results = await self.embed_texts([text])

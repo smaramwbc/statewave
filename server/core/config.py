@@ -32,11 +32,11 @@ class Settings(BaseSettings):
     # Embeddings
     embedding_provider: str = "stub"  # "stub" | "openai" | "none"
     embedding_dimensions: int = 1536
-    openai_api_key: str | None = None
+    openai_api_key: str | None = None  # backward compat; also set via OPENAI_API_KEY env
     openai_embedding_model: str = "text-embedding-3-small"
 
     # LLM compiler
-    llm_compiler_model: str = "gpt-4o-mini"
+    llm_compiler_model: str = "gpt-4o-mini"  # any litellm model string
 
     # Authentication (empty = disabled / open access)
     api_key: str | None = None

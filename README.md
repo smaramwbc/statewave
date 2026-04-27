@@ -82,7 +82,7 @@ docker compose up db -d
 
 # Create virtualenv and install
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,llm]"
 
 # Run migrations
 alembic upgrade head
@@ -121,7 +121,7 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to get started.
 
-> **For best results:** Set `STATEWAVE_COMPILER_TYPE=llm` and `STATEWAVE_EMBEDDING_PROVIDER=openai` with a valid `STATEWAVE_OPENAI_API_KEY`. The LLM compiler extracts richer, more structured memories (tech stack, concerns, preferences) compared to the heuristic regex-based compiler. The heuristic compiler still works well for basic facts and requires no external API calls.
+> **For best results:** Set `STATEWAVE_COMPILER_TYPE=llm` and `STATEWAVE_EMBEDDING_PROVIDER=openai` with an appropriate API key. Statewave uses [LiteLLM](https://github.com/BerriAI/litellm) under the hood, so you can use any supported provider — OpenAI, Anthropic, Azure, Ollama, Cohere, Gemini, Bedrock, Mistral, Groq, and 100+ others. Set `STATEWAVE_LLM_COMPILER_MODEL` to any LiteLLM model string (e.g. `gpt-4o-mini`, `claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`). The heuristic compiler still works without any LLM API key.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -129,8 +129,8 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_DEBUG` | `false` | Enable debug logging |
 | `STATEWAVE_COMPILER_TYPE` | `heuristic` | `heuristic` or `llm` |
 | `STATEWAVE_EMBEDDING_PROVIDER` | `stub` | `stub`, `openai`, or `none` |
-| `STATEWAVE_OPENAI_API_KEY` | — | Required for `llm` compiler and `openai` embeddings |
-| `STATEWAVE_LLM_COMPILER_MODEL` | `gpt-4o-mini` | Model for LLM compiler |
+| `STATEWAVE_OPENAI_API_KEY` | — | API key (also reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. per LiteLLM conventions) |
+| `STATEWAVE_LLM_COMPILER_MODEL` | `gpt-4o-mini` | Any [LiteLLM model string](https://docs.litellm.ai/docs/providers) (`claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`, etc.) |
 | `STATEWAVE_OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Model for OpenAI embeddings |
 | `STATEWAVE_EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `STATEWAVE_API_KEY` | — | API key for auth (empty = open access) |

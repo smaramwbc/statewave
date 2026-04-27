@@ -1,23 +1,30 @@
-"""LLM-backed memory compiler — uses OpenAI chat completions to extract memories.
+"""LLM-backed memory compiler — uses LiteLLM for multi-provider support.
 
 Extracts structured memories (profile facts, preferences, episode summaries,
-procedures) from episode payloads using an LLM. Falls back gracefully on
-parse errors or API failures.
+procedures) from episode payloads using any LLM provider supported by LiteLLM
+(OpenAI, Anthropic, Azure, Ollama, Cohere, Gemini, Bedrock, Mistral, Groq, etc.).
+
+Falls back gracefully on parse errors or API failures.
 
 Requires:
-- STATEWAVE_OPENAI_API_KEY set in environment
 - STATEWAVE_COMPILER_TYPE=llm
+- Model-appropriate API key (e.g. OPENAI_API_KEY, ANTHROPIC_API_KEY)
+  or STATEWAVE_OPENAI_API_KEY for backward compatibility
+- pip install 'statewave[llm]'
 """
 
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
 import structlog
+
+import litellm
 
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services.compilers.heuristic import extract_payload_text
@@ -49,26 +56,16 @@ Rules:
 
 
 class LLMCompiler:
-    """OpenAI chat-based memory compiler. Implements BaseCompiler protocol."""
+    """LiteLLM-based memory compiler. Supports any provider. Implements BaseCompiler protocol."""
 
     def __init__(
         self,
         api_key: str | None = None,
         model: str = "gpt-4o-mini",
     ) -> None:
-        if not api_key:
-            raise ValueError(
-                "OpenAI API key is required for the LLM compiler. "
-                "Set STATEWAVE_OPENAI_API_KEY or use STATEWAVE_COMPILER_TYPE=heuristic."
-            )
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "openai package is required for the LLM compiler. "
-                "Install with: pip install 'statewave[openai]'"
-            )
-        self._client = OpenAI(api_key=api_key)
+        # Set API key for backward compat (STATEWAVE_OPENAI_API_KEY → OPENAI_API_KEY)
+        if api_key and not os.environ.get("OPENAI_API_KEY"):
+            os.environ["OPENAI_API_KEY"] = api_key
         self._model = model
         self._executor = ThreadPoolExecutor(max_workers=2)
 
@@ -145,8 +142,8 @@ class LLMCompiler:
         return self._call_llm_sync(text)
 
     def _call_llm_sync(self, text: str) -> list[dict[str, Any]]:
-        """Synchronous LLM call — runs in thread pool when called from async context."""
-        response = self._client.chat.completions.create(
+        """Synchronous LLM call via LiteLLM — supports any provider."""
+        response = litellm.completion(
             model=self._model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},

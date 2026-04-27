@@ -7,6 +7,16 @@ import uuid
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+try:
+    import litellm  # noqa: F401
+    HAS_LITELLM = True
+except ImportError:
+    HAS_LITELLM = False
+
+pytestmark = pytest.mark.skipif(not HAS_LITELLM, reason="litellm not installed")
+
 from server.db.tables import EpisodeRow
 from server.services.compilers.llm import LLMCompiler
 

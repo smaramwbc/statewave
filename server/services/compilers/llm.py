@@ -24,12 +24,16 @@ from typing import Any, Sequence
 
 import structlog
 
-import litellm
-
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services.compilers.heuristic import extract_payload_text
 
 logger = structlog.stdlib.get_logger()
+
+# Lazy import — litellm is optional (only needed when compiler_type=llm)
+try:
+    import litellm
+except ImportError:
+    litellm = None  # type: ignore[assignment]
 
 _SYSTEM_PROMPT = """\
 You are a memory extraction engine for an AI context system called Statewave.
@@ -63,6 +67,11 @@ class LLMCompiler:
         api_key: str | None = None,
         model: str = "gpt-4o-mini",
     ) -> None:
+        if litellm is None:
+            raise ImportError(
+                "litellm package is required for the LLM compiler. "
+                "Install with: pip install 'statewave[llm]'"
+            )
         # Set API key for backward compat (STATEWAVE_OPENAI_API_KEY → OPENAI_API_KEY)
         if api_key and not os.environ.get("OPENAI_API_KEY"):
             os.environ["OPENAI_API_KEY"] = api_key

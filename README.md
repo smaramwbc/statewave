@@ -121,6 +121,8 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to get started.
 
+> **For best results:** Set `STATEWAVE_COMPILER_TYPE=llm` and `STATEWAVE_EMBEDDING_PROVIDER=openai` with a valid `STATEWAVE_OPENAI_API_KEY`. The LLM compiler extracts richer, more structured memories (tech stack, concerns, preferences) compared to the heuristic regex-based compiler. The heuristic compiler still works well for basic facts and requires no external API calls.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STATEWAVE_DATABASE_URL` | `postgresql+asyncpg://statewave:statewave@localhost:5432/statewave` | Postgres connection string |

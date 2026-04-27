@@ -54,18 +54,6 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
                     None, functools.partial(compiler.compile, list(episodes))
                 )
 
-            # Generate embeddings if provider is available
-            provider = get_embedding_provider()
-            if provider and new_rows:
-                texts = [row.content for row in new_rows]
-                try:
-                    embeddings = await provider.embed_texts(texts)
-                    for row, emb in zip(new_rows, embeddings):
-                        row.embedding = str(emb)
-                    logger.info("embeddings_generated", count=len(embeddings))
-                except Exception:
-                    logger.warning("embedding_generation_failed", exc_info=True)
-
             for row in new_rows:
                 session.add(row)
             await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
@@ -144,17 +132,6 @@ async def compile_memories(
                 None, functools.partial(compiler.compile, list(episodes))
             )
 
-        provider = get_embedding_provider()
-        if provider and new_rows:
-            texts = [row.content for row in new_rows]
-            try:
-                embeddings = await provider.embed_texts(texts)
-                for row, emb in zip(new_rows, embeddings):
-                    row.embedding = str(emb)
-                logger.info("embeddings_generated", count=len(embeddings))
-            except Exception:
-                logger.warning("embedding_generation_failed", exc_info=True)
-
         for row in new_rows:
             session.add(row)
         await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
@@ -166,6 +143,11 @@ async def compile_memories(
         await session.commit()
         for row in new_rows:
             await session.refresh(row)
+
+        # Generate embeddings in background (don't block response)
+        memory_ids = [row.id for row in new_rows]
+        memory_texts = [row.content for row in new_rows]
+        asyncio.create_task(_generate_embeddings_background(memory_ids, memory_texts))
 
         await webhooks.fire("memories.compiled", {
             "subject_id": body.subject_id,
@@ -198,6 +180,30 @@ async def get_compile_status(job_id: str):
         response["error"] = job.error
 
     return JSONResponse(content=response)
+
+
+async def _generate_embeddings_background(memory_ids: list, texts: list[str]) -> None:
+    """Generate embeddings for memories in the background (non-blocking)."""
+    from server.db.engine import async_session_factory
+
+    provider = get_embedding_provider()
+    if not provider or not texts:
+        return
+
+    try:
+        embeddings = await provider.embed_texts(texts)
+        async with async_session_factory() as session:
+            for mid, emb in zip(memory_ids, embeddings):
+                await session.execute(
+                    __import__('sqlalchemy').text(
+                        "UPDATE memories SET embedding = :emb WHERE id = :id"
+                    ),
+                    {"emb": str(emb), "id": str(mid)},
+                )
+            await session.commit()
+        logger.info("embeddings_generated_background", count=len(embeddings))
+    except Exception:
+        logger.warning("background_embedding_failed", exc_info=True)
 
 
 @router.get("/search", response_model=SearchMemoriesResponse, summary="Search memories")

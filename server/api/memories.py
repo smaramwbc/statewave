@@ -40,10 +40,13 @@ async def compile_memories(
                 memories=[],
             )
         compiler = get_compiler()
-        loop = asyncio.get_running_loop()
-        new_rows = await loop.run_in_executor(
-            None, functools.partial(compiler.compile, list(episodes))
-        )
+        if hasattr(compiler, 'compile_async'):
+            new_rows = await compiler.compile_async(list(episodes))
+        else:
+            loop = asyncio.get_running_loop()
+            new_rows = await loop.run_in_executor(
+                None, functools.partial(compiler.compile, list(episodes))
+            )
 
         # Generate embeddings if provider is available
         provider = get_embedding_provider()

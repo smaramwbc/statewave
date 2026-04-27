@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import functools
+
 import structlog
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +39,11 @@ async def compile_memories(
                 memories_created=0,
                 memories=[],
             )
-        new_rows = get_compiler().compile(list(episodes))
+        compiler = get_compiler()
+        loop = asyncio.get_running_loop()
+        new_rows = await loop.run_in_executor(
+            None, functools.partial(compiler.compile, list(episodes))
+        )
 
         # Generate embeddings if provider is available
         provider = get_embedding_provider()

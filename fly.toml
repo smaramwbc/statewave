@@ -5,6 +5,11 @@ primary_region = 'ord'
 
 [env]
   PORT = "8100"
+  STATEWAVE_COMPILER_TYPE = "llm"
+  STATEWAVE_LLM_COMPILER_MODEL = "gpt-4o-mini"
+  STATEWAVE_EMBEDDING_PROVIDER = "openai"
+  STATEWAVE_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+  STATEWAVE_EMBEDDING_DIMENSIONS = "1536"
 
 [http_service]
   internal_port = 8100

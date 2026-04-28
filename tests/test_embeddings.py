@@ -11,6 +11,7 @@ from server.services.embeddings.stub import StubEmbeddingProvider
 # StubEmbeddingProvider
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.anyio
 async def test_stub_embed_texts_returns_correct_count():
     provider = StubEmbeddingProvider(dimensions=64)
@@ -76,14 +77,17 @@ async def test_stub_dimensions_property():
 # Provider factory
 # ---------------------------------------------------------------------------
 
+
 def test_get_provider_returns_none_when_disabled(monkeypatch):
     from server.services.embeddings import get_provider, reset_provider
     import server.core.config
+
     original_settings = server.core.config.settings
     try:
         monkeypatch.setenv("STATEWAVE_EMBEDDING_PROVIDER", "none")
         reset_provider()
         from server.core.config import Settings
+
         server.core.config.settings = Settings()
         assert get_provider() is None
     finally:
@@ -94,11 +98,14 @@ def test_get_provider_returns_none_when_disabled(monkeypatch):
 def test_get_provider_returns_stub_by_default():
     from server.services.embeddings import get_provider, reset_provider
     import server.core.config
+
     original_settings = server.core.config.settings
     try:
         from server.core.config import Settings
+
         # Force stub provider
         import os
+
         os.environ.pop("STATEWAVE_EMBEDDING_PROVIDER", None)
         reset_provider()
         server.core.config.settings = Settings()

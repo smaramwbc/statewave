@@ -70,7 +70,9 @@ async def stop_worker() -> None:
         logger.info("webhook_worker_stopped")
 
 
-async def fire(event: str, payload: dict[str, Any], db: AsyncSession | None = None) -> uuid.UUID | None:
+async def fire(
+    event: str, payload: dict[str, Any], db: AsyncSession | None = None
+) -> uuid.UUID | None:
     """Enqueue a webhook event for delivery.
 
     If no webhook URL is configured, returns None (no-op).
@@ -239,13 +241,10 @@ async def get_delivery_stats() -> dict[str, Any]:
     from sqlalchemy import func as sqlfunc
 
     async with async_session_factory() as session:
-        stmt = (
-            select(
-                WebhookEventRow.status,
-                sqlfunc.count(WebhookEventRow.id).label("count"),
-            )
-            .group_by(WebhookEventRow.status)
-        )
+        stmt = select(
+            WebhookEventRow.status,
+            sqlfunc.count(WebhookEventRow.id).label("count"),
+        ).group_by(WebhookEventRow.status)
         result = await session.execute(stmt)
         counts = {row.status: row.count for row in result}
 

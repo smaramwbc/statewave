@@ -5,8 +5,9 @@ Provides async compilation with job tracking:
 - get_job(): check job status and results
 - cleanup_old_jobs(): prune stale entries
 
-Jobs are stored in-memory (suitable for single-instance deployments).
-For multi-instance, replace with Redis or DB-backed store.
+v0.5: Durable mode (Postgres-backed) via compile_jobs_durable.
+Falls back to in-memory when DB is not available.
+Jobs survive restarts in durable mode.
 """
 
 from __future__ import annotations
@@ -41,9 +42,82 @@ class CompileJob:
     completed_at: float | None = None
 
 
-# In-memory store — simple and sufficient for single-instance
+# In-memory fallback store
 _jobs: dict[str, CompileJob] = {}
-_JOB_TTL_SECONDS = 300  # Jobs expire after 5 minutes
+_JOB_TTL_SECONDS = 300
+
+
+# ---------------------------------------------------------------------------
+# Durable (Postgres-backed) interface — async
+# These are the primary interface used by the async compile path.
+# ---------------------------------------------------------------------------
+
+
+async def submit_job_durable(subject_id: str, tenant_id: str | None = None) -> CompileJob:
+    """Submit job with Postgres durability."""
+    try:
+        from server.services.compile_jobs_durable import submit_job as _durable_submit
+
+        job = await _durable_submit(subject_id, tenant_id)
+        # Also track in memory for fast access during this process lifetime
+        _jobs[job.id] = job
+        return job
+    except Exception:
+        logger.warning("durable_submit_fallback_to_memory", exc_info=True)
+        return submit_job(subject_id)
+
+
+async def get_job_durable(job_id: str) -> CompileJob | None:
+    """Get job from Postgres (falls back to in-memory)."""
+    # Check in-memory first (fast path for same-process)
+    if job_id in _jobs:
+        return _jobs[job_id]
+    try:
+        from server.services.compile_jobs_durable import get_job as _durable_get
+
+        return await _durable_get(job_id)
+    except Exception:
+        return None
+
+
+async def mark_running_durable(job_id: str) -> None:
+    """Mark running in both stores."""
+    mark_running(job_id)
+    try:
+        from server.services.compile_jobs_durable import mark_running as _durable_mark
+
+        await _durable_mark(job_id)
+    except Exception:
+        pass
+
+
+async def mark_completed_durable(
+    job_id: str, memories_created: int, memories: list[dict[str, Any]]
+) -> None:
+    """Mark completed in both stores."""
+    mark_completed(job_id, memories_created, memories)
+    try:
+        from server.services.compile_jobs_durable import mark_completed as _durable_mark
+
+        await _durable_mark(job_id, memories_created, memories)
+    except Exception:
+        pass
+
+
+async def mark_failed_durable(job_id: str, error: str) -> None:
+    """Mark failed in both stores."""
+    mark_failed(job_id, error)
+    try:
+        from server.services.compile_jobs_durable import mark_failed as _durable_mark
+
+        await _durable_mark(job_id, error)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# In-memory interface (legacy, still used as fast cache)
+# ---------------------------------------------------------------------------
 
 
 def submit_job(subject_id: str) -> CompileJob:

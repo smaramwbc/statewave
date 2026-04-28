@@ -24,8 +24,9 @@ logger = structlog.stdlib.get_logger()
 
 
 async def _cleanup_loop():
-    """Periodically clean up stale ephemeral demo subjects."""
+    """Periodically clean up stale ephemeral demo subjects and old compile jobs."""
     from server.services.snapshots import cleanup_ephemeral_subjects
+    from server.services.compile_jobs_durable import cleanup_old_jobs
 
     while True:
         await asyncio.sleep(3600)  # every hour
@@ -36,11 +37,21 @@ async def _cleanup_loop():
         except Exception as exc:
             logger.warning("scheduled_cleanup_error", error=str(exc))
 
+        # Compile job retention
+        if settings.compile_job_retention_hours > 0:
+            try:
+                deleted = await cleanup_old_jobs(settings.compile_job_retention_hours)
+                if deleted:
+                    logger.info("compile_jobs_retention_done", deleted=deleted)
+            except Exception as exc:
+                logger.warning("compile_jobs_retention_error", error=str(exc))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Propagate STATEWAVE_OPENAI_API_KEY to OPENAI_API_KEY for LiteLLM
     import os
+
     if settings.openai_api_key and not os.environ.get("OPENAI_API_KEY"):
         os.environ["OPENAI_API_KEY"] = settings.openai_api_key
 
@@ -48,12 +59,13 @@ async def lifespan(app: FastAPI):
     setup_tracing()
     # Configure webhooks
     from server.services import webhooks
+
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
     await webhooks.start_worker()
 
-    # Start background cleanup (only if snapshots enabled)
+    # Start background cleanup (snapshots + compile job retention)
     cleanup_task = None
-    if settings.enable_snapshots:
+    if settings.enable_snapshots or settings.compile_job_retention_hours > 0:
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
     logger.info("app_startup", version="0.4.3", debug=settings.debug)
@@ -62,6 +74,7 @@ async def lifespan(app: FastAPI):
         cleanup_task.cancel()
     await webhooks.stop_worker()
     from server.db.engine import engine
+
     await engine.dispose()
     logger.info("app_shutdown")
 
@@ -87,7 +100,9 @@ def create_app() -> FastAPI:
     # Starlette executes add_middleware in REVERSE order (last-added = outermost).
     # Desired execution: CORS → RequestID → Auth → RateLimit → Tenant → App
     # So we register innermost first:
-    app.add_middleware(TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant)
+    app.add_middleware(
+        TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant
+    )
     app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
     app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
     app.add_middleware(RequestIDMiddleware)
@@ -110,6 +125,7 @@ def create_app() -> FastAPI:
     app.include_router(subjects.router)
 
     from server.api.admin import router as admin_router
+
     app.include_router(admin_router)
 
     # -- Ops endpoints -------------------------------------------------------

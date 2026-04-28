@@ -69,6 +69,7 @@ class HeuristicCompiler:
 # Shared payload text extraction (usable by any compiler)
 # ---------------------------------------------------------------------------
 
+
 def extract_payload_text(payload: dict) -> str:
     """Best-effort text extraction from various payload shapes."""
     if "messages" in payload:

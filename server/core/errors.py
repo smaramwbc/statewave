@@ -17,6 +17,7 @@ logger = structlog.stdlib.get_logger()
 # Error response schema
 # ---------------------------------------------------------------------------
 
+
 class ErrorDetail(BaseModel):
     code: str
     message: str
@@ -31,6 +32,7 @@ class ErrorResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _request_id(request: Request) -> str | None:
     return getattr(request.state, "request_id", None)
@@ -53,6 +55,7 @@ def _error_json(code: str, message: str, request: Request, details: Any = None, 
 # ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
+
 
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)

@@ -19,10 +19,12 @@ async def _healthz(request):
 
 
 def _make_app(require: bool = False):
-    app = Starlette(routes=[
-        Route("/test", _ok),
-        Route("/healthz", _healthz),
-    ])
+    app = Starlette(
+        routes=[
+            Route("/test", _ok),
+            Route("/healthz", _healthz),
+        ]
+    )
     app.add_middleware(TenantMiddleware, header="X-Tenant-ID", require=require)
     return app
 

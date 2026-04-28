@@ -60,9 +60,7 @@ def test_unknown_payload_shape_produces_no_memories():
 
 def test_compile_is_deterministic():
     """Same input produces same number and kind of memories."""
-    ep = _make_episode(
-        {"messages": [{"role": "user", "content": "My name is Bob"}]}
-    )
+    ep = _make_episode({"messages": [{"role": "user", "content": "My name is Bob"}]})
     first = compile_memories_from_episodes([ep])
     second = compile_memories_from_episodes([ep])
     assert len(first) == len(second)

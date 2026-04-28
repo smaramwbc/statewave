@@ -1,6 +1,6 @@
 [project]
 name = "statewave"
-version = "0.4.3"
+version = "0.5.0"
 description = "Memory OS — trusted context runtime for AI agents and applications"
 readme = "README.md"
 license = {text = "AGPL-3.0"}

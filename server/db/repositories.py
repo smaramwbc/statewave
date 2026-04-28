@@ -15,6 +15,7 @@ from server.db.tables import EpisodeRow, MemoryRow
 # Episodes
 # ---------------------------------------------------------------------------
 
+
 async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
     session.add(row)
     await session.flush()
@@ -90,6 +91,7 @@ async def delete_episodes_by_subject(session: AsyncSession, subject_id: str) -> 
 # ---------------------------------------------------------------------------
 # Memories
 # ---------------------------------------------------------------------------
+
 
 async def insert_memory(session: AsyncSession, row: MemoryRow) -> MemoryRow:
     session.add(row)
@@ -178,6 +180,7 @@ async def mark_memories_superseded(
 # Semantic search
 # ---------------------------------------------------------------------------
 
+
 async def search_memories_by_embedding(
     session: AsyncSession,
     subject_id: str,
@@ -228,6 +231,7 @@ async def search_memories_by_embedding(
 # Subject listing
 # ---------------------------------------------------------------------------
 
+
 async def list_subjects(
     session: AsyncSession,
     *,
@@ -269,6 +273,10 @@ async def list_subjects(
     )
     result = await session.execute(stmt)
     return [
-        {"subject_id": row.subject_id, "episode_count": row.episode_count, "memory_count": row.memory_count}
+        {
+            "subject_id": row.subject_id,
+            "episode_count": row.episode_count,
+            "memory_count": row.memory_count,
+        }
         for row in result.all()
     ]

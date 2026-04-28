@@ -90,6 +90,7 @@ class LLMCompiler:
     def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
         """Sync fallback — uses heuristic compiler."""
         from server.services.compilers.heuristic import HeuristicCompiler
+
         logger.warning("llm_compiler_sync_fallback")
         return HeuristicCompiler().compile(episodes)
 
@@ -221,7 +222,10 @@ class LLMCompiler:
                 "model": self._model,
                 "messages": [
                     {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Extract memories from these {episode_count} episode(s):\n\n{text}"},
+                    {
+                        "role": "user",
+                        "content": f"Extract memories from these {episode_count} episode(s):\n\n{text}",
+                    },
                 ],
                 "temperature": 0.1,
                 "max_tokens": max_tokens,

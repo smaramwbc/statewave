@@ -12,11 +12,7 @@ def setup_logging(*, debug: bool = False) -> None:
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
-            (
-                structlog.dev.ConsoleRenderer()
-                if debug
-                else structlog.processors.JSONRenderer()
-            ),
+            (structlog.dev.ConsoleRenderer() if debug else structlog.processors.JSONRenderer()),
         ],
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),

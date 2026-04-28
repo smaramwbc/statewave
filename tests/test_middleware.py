@@ -17,10 +17,12 @@ async def _ok(request):
 
 
 def _make_app(api_key: str | None = None, rpm: int = 0):
-    app = Starlette(routes=[
-        Route("/test", _ok),
-        Route("/healthz", _ok),
-    ])
+    app = Starlette(
+        routes=[
+            Route("/test", _ok),
+            Route("/healthz", _ok),
+        ]
+    )
     if api_key:
         app.add_middleware(APIKeyMiddleware, api_key=api_key)
     if rpm > 0:
@@ -31,6 +33,7 @@ def _make_app(api_key: str | None = None, rpm: int = 0):
 # ---------------------------------------------------------------------------
 # Auth tests
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def auth_app():
@@ -78,6 +81,7 @@ async def test_auth_disabled_when_no_key():
 # ---------------------------------------------------------------------------
 # Rate limit tests
 # ---------------------------------------------------------------------------
+
 
 async def test_rate_limit_enforced():
     app = _make_app(rpm=3)

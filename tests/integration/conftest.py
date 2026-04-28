@@ -34,6 +34,7 @@ _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_co
 # Session-scoped: create tables once, drop after all tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
@@ -54,6 +55,7 @@ async def _setup_database():
 # ---------------------------------------------------------------------------
 # Per-test: override the app's DB session dependency
 # ---------------------------------------------------------------------------
+
 
 async def _override_get_session():
     async with _session_factory() as session:
@@ -88,6 +90,7 @@ async def client():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def subject_id() -> str:

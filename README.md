@@ -6,6 +6,8 @@
 
 **Memory runtime for AI agents and AI-powered applications.**
 
+**Primary focus: support-agent workflows** — where structured memory clearly outperforms naive history stuffing and simple RAG. Statewave gives your support agent durable customer context across sessions, with provenance, ranked retrieval, and token budgets.
+
 ### The problem
 
 Most AI applications have no memory. Every conversation starts from scratch. Context is lost between sessions, decisions aren't remembered, and user history disappears the moment a session ends. Bolting on a vector database or dumping chat logs into a prompt doesn't solve this — it creates fragile, unstructured context that degrades as it scales.
@@ -31,7 +33,7 @@ Everything is organised around **subjects** — a user, account, agent, repo, or
 
 Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
 
-> **Status:** v0.4.x — actively developed. Suitable for local development and early integration. See [current limitations](#current-limitations) below.
+> **Status:** v0.5.x — actively developed. Reliable webhook delivery, SDK retry, durable async compilation, and admin introspection are complete. See [current limitations](#current-limitations) below.
 
 ## 🎯 Live Demo
 
@@ -54,6 +56,8 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 | [Python SDK](https://github.com/smaramwbc/statewave-py) | Sync + async client, Pydantic models |
 | [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | Fetch-based client, full type definitions |
 | [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstart, support agent, coding agent |
+| [Context quality eval](https://github.com/smaramwbc/statewave-examples/tree/main/eval-support-agent) | Automated assertions on context correctness |
+| [Benchmark](https://github.com/smaramwbc/statewave-examples/tree/main/benchmark-support-agent) | Statewave vs history stuffing vs RAG |
 
 ## Capabilities
 
@@ -69,7 +73,7 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 - **Authentication** — optional API key via `X-API-Key` header
 - **Rate limiting** — per-IP sliding window (in-memory, single-worker)
 - **Multi-tenant** — optional `X-Tenant-ID` header (experimental)
-- **Webhooks** — fire-and-forget HTTP callbacks on episode, compile, and delete events
+- **Webhooks** — persistent HTTP callbacks with retries and dead-letter on episode, compile, and delete events
 - **OpenTelemetry tracing** — optional spans on key operations (requires `[otel]` extra)
 - **Structured logging** — structlog with JSON output in production, console in development
 - **Structured errors** — consistent JSON error format with request-ID correlation
@@ -158,13 +162,10 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active early development (v0.4.x). Honest status:
+Statewave is in active development (v0.5.x). Honest status:
 
-- **Webhooks are fire-and-forget** — no retries, no dead-letter queue. Events can be silently lost. (v0.5 priority #1)
-- **Rate limiting is in-memory** — resets on restart, single-worker only. (v0.5 #5)
-- **Multi-tenant is experimental** — header-based isolation only, no row-level security. (v0.5 #4)
-- **Compilation is synchronous** — large subjects may timeout. No job queue yet. (v0.5 #3)
-- **SDKs have no retry logic** — transient 429/5xx errors will crash your app. (v0.5 #2)
+- **Rate limiting is in-memory** — resets on restart, single-worker only
+- **Multi-tenant is experimental** — header-based isolation only, no row-level security
 - **Single-node only** — no clustering, no horizontal scaling yet
 - **PostgreSQL required** — no alternative storage backends
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them

@@ -27,7 +27,9 @@ async def list_subjects(
     )
 
 
-@router.delete("/{subject_id}", response_model=DeleteSubjectResponse, summary="Delete all subject data")
+@router.delete(
+    "/{subject_id}", response_model=DeleteSubjectResponse, summary="Delete all subject data"
+)
 async def delete_subject(
     subject_id: str,
     session: AsyncSession = Depends(get_session),
@@ -36,11 +38,14 @@ async def delete_subject(
     ep_count = await repo.delete_episodes_by_subject(session, subject_id)
     mem_count = await repo.delete_memories_by_subject(session, subject_id)
     await session.commit()
-    await webhooks.fire("subject.deleted", {
-        "subject_id": subject_id,
-        "episodes_deleted": ep_count,
-        "memories_deleted": mem_count,
-    })
+    await webhooks.fire(
+        "subject.deleted",
+        {
+            "subject_id": subject_id,
+            "episodes_deleted": ep_count,
+            "memories_deleted": mem_count,
+        },
+    )
     return DeleteSubjectResponse(
         subject_id=subject_id,
         episodes_deleted=ep_count,

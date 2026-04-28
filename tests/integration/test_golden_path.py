@@ -20,7 +20,10 @@ _EPISODES = [
         "type": "conversation",
         "payload": {
             "messages": [
-                {"role": "user", "content": "My name is Alice Chen and I work at Globex Corporation. I am on the Enterprise plan."},
+                {
+                    "role": "user",
+                    "content": "My name is Alice Chen and I work at Globex Corporation. I am on the Enterprise plan.",
+                },
                 {"role": "assistant", "content": "Welcome Alice! How can I help you today?"},
             ]
         },
@@ -30,7 +33,10 @@ _EPISODES = [
         "type": "conversation",
         "payload": {
             "messages": [
-                {"role": "user", "content": "I prefer email notifications over Slack. My email is alice@globex.com."},
+                {
+                    "role": "user",
+                    "content": "I prefer email notifications over Slack. My email is alice@globex.com.",
+                },
                 {"role": "assistant", "content": "Got it, I have updated your preference."},
             ]
         },
@@ -40,8 +46,14 @@ _EPISODES = [
         "type": "conversation",
         "payload": {
             "messages": [
-                {"role": "user", "content": "We had a billing issue last week — we were double-charged for the March invoice."},
-                {"role": "assistant", "content": "I see the double charge. I have initiated a refund for the duplicate payment."},
+                {
+                    "role": "user",
+                    "content": "We had a billing issue last week — we were double-charged for the March invoice.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "I see the double charge. I have initiated a refund for the duplicate payment.",
+                },
             ]
         },
     },
@@ -51,7 +63,10 @@ _EPISODES = [
         "payload": {
             "messages": [
                 {"role": "user", "content": "Can you help me upgrade our team from 5 to 20 seats?"},
-                {"role": "assistant", "content": "Sure, I have upgraded your team to 20 seats. Your next invoice will reflect the change."},
+                {
+                    "role": "assistant",
+                    "content": "Sure, I have upgraded your team to 20 seats. Your next invoice will reflect the change.",
+                },
             ]
         },
     },
@@ -61,6 +76,7 @@ _EPISODES = [
 # ---------------------------------------------------------------------------
 # Golden path
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.anyio
 async def test_full_lifecycle(client: AsyncClient, subject_id: str):
@@ -104,11 +120,14 @@ async def test_full_lifecycle(client: AsyncClient, subject_id: str):
     assert "email" in all_facts or "prefer" in all_facts, "Should extract notification preference"
 
     # ── 3. Context retrieval — full budget ────────────────────────────────
-    resp = await client.post("/v1/context", json={
-        "subject_id": subject_id,
-        "task": "Customer is asking about their billing issue",
-        "max_tokens": 500,
-    })
+    resp = await client.post(
+        "/v1/context",
+        json={
+            "subject_id": subject_id,
+            "task": "Customer is asking about their billing issue",
+            "max_tokens": 500,
+        },
+    )
     assert resp.status_code == 200
     ctx = resp.json()
 
@@ -138,19 +157,23 @@ async def test_full_lifecycle(client: AsyncClient, subject_id: str):
     assert len(ctx["episodes"]) == 0, "Episodes covered by summaries should not appear"
 
     # ── 4. Context retrieval — tight budget ───────────────────────────────
-    resp = await client.post("/v1/context", json={
-        "subject_id": subject_id,
-        "task": "Customer is asking about their billing issue",
-        "max_tokens": 100,
-    })
+    resp = await client.post(
+        "/v1/context",
+        json={
+            "subject_id": subject_id,
+            "task": "Customer is asking about their billing issue",
+            "max_tokens": 100,
+        },
+    )
     assert resp.status_code == 200
     tight = resp.json()
     assert tight["token_estimate"] <= 100
 
     # Even with tight budget, the billing-relevant info should survive
     tight_text = tight["assembled_context"]
-    assert "billing" in tight_text.lower() or "double" in tight_text.lower(), \
+    assert "billing" in tight_text.lower() or "double" in tight_text.lower(), (
         "Task-relevant history should survive tight budget"
+    )
 
     # Fewer items should be included than the full-budget version
     tight_total = (
@@ -180,10 +203,13 @@ async def test_full_lifecycle(client: AsyncClient, subject_id: str):
     assert len(timeline["episodes"]) == 0, "Episodes should be deleted"
     assert len(timeline["memories"]) == 0, "Memories should be deleted"
 
-    resp = await client.post("/v1/context", json={
-        "subject_id": subject_id,
-        "task": "anything",
-    })
+    resp = await client.post(
+        "/v1/context",
+        json={
+            "subject_id": subject_id,
+            "task": "anything",
+        },
+    )
     assert resp.status_code == 200
     empty_ctx = resp.json()
     assert empty_ctx["token_estimate"] > 0  # task header has tokens

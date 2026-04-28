@@ -46,7 +46,12 @@ async def create_episode(
     )
 
 
-@router.post("/batch", response_model=BatchCreateEpisodesResponse, status_code=201, summary="Ingest episodes in batch")
+@router.post(
+    "/batch",
+    response_model=BatchCreateEpisodesResponse,
+    status_code=201,
+    summary="Ingest episodes in batch",
+)
 async def create_episodes_batch(
     body: BatchCreateEpisodesRequest,
     session: AsyncSession = Depends(get_session),
@@ -68,10 +73,13 @@ async def create_episodes_batch(
         await session.commit()
         for row in rows:
             await session.refresh(row)
-        await webhooks.fire("episodes.batch_created", {
-            "count": len(rows),
-            "subject_ids": list({r.subject_id for r in rows}),
-        })
+        await webhooks.fire(
+            "episodes.batch_created",
+            {
+                "count": len(rows),
+                "subject_ids": list({r.subject_id for r in rows}),
+            },
+        )
         return BatchCreateEpisodesResponse(
             episodes_created=len(rows),
             episodes=[

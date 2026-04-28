@@ -32,9 +32,11 @@ def get_compiler() -> BaseCompiler:
 
     if settings.compiler_type == "heuristic":
         from server.services.compilers.heuristic import HeuristicCompiler
+
         return HeuristicCompiler()
     elif settings.compiler_type == "llm":
         from server.services.compilers.llm import LLMCompiler
+
         return LLMCompiler(
             api_key=settings.openai_api_key,
             model=settings.llm_compiler_model,

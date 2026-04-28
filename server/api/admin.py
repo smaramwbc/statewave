@@ -20,6 +20,28 @@ def _require_snapshots():
         raise HTTPException(status_code=404, detail="Not found")
 
 
+# ─── Compile Jobs (operator introspection) ───
+
+
+@router.get("/jobs")
+async def list_compile_jobs(
+    status: str | None = Query(
+        None, description="Filter by status: pending, running, completed, failed"
+    ),
+    subject_id: str | None = Query(None, description="Filter by subject"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List compile jobs for operator debugging.
+
+    Returns recent jobs ordered by creation time (newest first).
+    """
+    from server.services.compile_jobs_durable import list_jobs
+
+    jobs = await list_jobs(status=status, subject_id=subject_id, limit=limit, offset=offset)
+    return {"jobs": jobs, "limit": limit, "offset": offset}
+
+
 # ─── Webhooks ───
 
 
@@ -108,4 +130,3 @@ async def trigger_cleanup(
 
     count = await cleanup_ephemeral_subjects(prefix=prefix, max_age_hours=max_age_hours)
     return {"subjects_cleaned": count}
-

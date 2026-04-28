@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Subject Snapshots (advanced bootstrap — disabled by default)
     enable_snapshots: bool = False
 
+    # Compile job retention (hours, 0 = no cleanup)
+    compile_job_retention_hours: int = 168  # 7 days
+
     # Webhooks (empty = disabled)
     webhook_url: str | None = None
     webhook_timeout: float = 5.0

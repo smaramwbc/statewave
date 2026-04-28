@@ -40,7 +40,9 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if not provided:
             return JSONResponse(
                 status_code=401,
-                content={"error": {"code": "missing_api_key", "message": "X-API-Key header is required."}},
+                content={
+                    "error": {"code": "missing_api_key", "message": "X-API-Key header is required."}
+                },
             )
 
         if provided != self._api_key:

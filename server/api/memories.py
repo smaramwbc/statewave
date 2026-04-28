@@ -32,7 +32,7 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
     from server.db.engine import async_session_factory
 
     if job_id:
-        compile_jobs.mark_running(job_id)
+        await compile_jobs.mark_running_durable(job_id)
 
     try:
         async with async_session_factory() as session:
@@ -42,11 +42,11 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
                     subject_id=subject_id, memories_created=0, memories=[]
                 )
                 if job_id:
-                    compile_jobs.mark_completed(job_id, 0, [])
+                    await compile_jobs.mark_completed_durable(job_id, 0, [])
                 return result
 
             compiler = get_compiler()
-            if hasattr(compiler, 'compile_async'):
+            if hasattr(compiler, "compile_async"):
                 new_rows = await compiler.compile_async(list(episodes))
             else:
                 loop = asyncio.get_running_loop()
@@ -66,10 +66,13 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
             for row in new_rows:
                 await session.refresh(row)
 
-            await webhooks.fire("memories.compiled", {
-                "subject_id": subject_id,
-                "memories_created": len(new_rows),
-            })
+            await webhooks.fire(
+                "memories.compiled",
+                {
+                    "subject_id": subject_id,
+                    "memories_created": len(new_rows),
+                },
+            )
 
             memory_responses = [_to_response(r) for r in new_rows]
             result = CompileMemoriesResponse(
@@ -79,9 +82,8 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
             )
 
             if job_id:
-                compile_jobs.mark_completed(
-                    job_id, len(new_rows),
-                    [m.model_dump(mode="json") for m in memory_responses]
+                await compile_jobs.mark_completed_durable(
+                    job_id, len(new_rows), [m.model_dump(mode="json") for m in memory_responses]
                 )
 
             return result
@@ -89,7 +91,7 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
     except Exception as exc:
         logger.error("compile_failed", subject_id=subject_id, exc_info=True)
         if job_id:
-            compile_jobs.mark_failed(job_id, str(exc))
+            await compile_jobs.mark_failed_durable(job_id, str(exc))
         raise
 
 
@@ -104,8 +106,8 @@ async def compile_memories(
     """
     with span("compile_memories", {"subject_id": body.subject_id, "async": body.async_mode}):
         if body.async_mode:
-            # Async mode — return job_id immediately, compile in background
-            job = compile_jobs.submit_job(body.subject_id)
+            # Async mode — return job_id immediately, compile in background (durable)
+            job = await compile_jobs.submit_job_durable(body.subject_id)
             asyncio.create_task(_run_compile(body.subject_id, job.id))
             return JSONResponse(
                 status_code=202,
@@ -124,7 +126,7 @@ async def compile_memories(
             )
 
         compiler = get_compiler()
-        if hasattr(compiler, 'compile_async'):
+        if hasattr(compiler, "compile_async"):
             new_rows = await compiler.compile_async(list(episodes))
         else:
             loop = asyncio.get_running_loop()
@@ -149,10 +151,13 @@ async def compile_memories(
         memory_texts = [row.content for row in new_rows]
         asyncio.create_task(_generate_embeddings_background(memory_ids, memory_texts))
 
-        await webhooks.fire("memories.compiled", {
-            "subject_id": body.subject_id,
-            "memories_created": len(new_rows),
-        })
+        await webhooks.fire(
+            "memories.compiled",
+            {
+                "subject_id": body.subject_id,
+                "memories_created": len(new_rows),
+            },
+        )
 
         return CompileMemoriesResponse(
             subject_id=body.subject_id,
@@ -163,8 +168,8 @@ async def compile_memories(
 
 @router.get("/compile/{job_id}", summary="Check compile job status")
 async def get_compile_status(job_id: str):
-    """Poll for the status of an async compile job."""
-    job = compile_jobs.get_job(job_id)
+    """Poll for the status of an async compile job (durable — survives restarts)."""
+    job = await compile_jobs.get_job_durable(job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found or expired"})
 
@@ -195,7 +200,7 @@ async def _generate_embeddings_background(memory_ids: list, texts: list[str]) ->
         async with async_session_factory() as session:
             for mid, emb in zip(memory_ids, embeddings):
                 await session.execute(
-                    __import__('sqlalchemy').text(
+                    __import__("sqlalchemy").text(
                         "UPDATE memories SET embedding = :emb WHERE id = :id"
                     ),
                     {"emb": str(emb), "id": str(mid)},
@@ -223,7 +228,11 @@ async def search_memories(
                 try:
                     query_embedding = await provider.embed_query(query)
                     results = await repo.search_memories_by_embedding(
-                        session, subject_id, query_embedding, kind=kind, limit=limit,
+                        session,
+                        subject_id,
+                        query_embedding,
+                        kind=kind,
+                        limit=limit,
                     )
                     return SearchMemoriesResponse(
                         memories=[_to_response(row) for row, _dist in results]

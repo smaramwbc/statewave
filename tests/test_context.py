@@ -14,6 +14,7 @@ from datetime import datetime, timezone, timedelta
 # Relevance scoring
 # ---------------------------------------------------------------------------
 
+
 def test_relevance_exact_match():
     task_tokens = _tokenize_for_relevance("set up python project")
     score = _relevance_score("How to set up a python project quickly", task_tokens)
@@ -41,6 +42,7 @@ def test_relevance_empty_content():
 # ---------------------------------------------------------------------------
 # Recency scoring
 # ---------------------------------------------------------------------------
+
 
 def test_recency_most_recent_gets_max():
     now = datetime.now(timezone.utc)
@@ -74,6 +76,7 @@ def test_recency_none_timestamp():
 # Token budget (unit-level)
 # ---------------------------------------------------------------------------
 
+
 def test_tokenize_for_relevance_lowercases():
     tokens = _tokenize_for_relevance("Help The User")
     assert "help" in tokens
@@ -89,16 +92,21 @@ def test_timestamp_range_empty():
 # Temporal scoring
 # ---------------------------------------------------------------------------
 
+
 def test_temporal_no_expiry_gets_bonus():
     score = _temporal_score(datetime.now(timezone.utc), None)
     assert score > 0
 
 
 def test_temporal_future_expiry_gets_bonus():
-    score = _temporal_score(datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(days=30))
+    score = _temporal_score(
+        datetime.now(timezone.utc), datetime.now(timezone.utc) + timedelta(days=30)
+    )
     assert score > 0
 
 
 def test_temporal_past_expiry_gets_penalty():
-    score = _temporal_score(datetime.now(timezone.utc), datetime.now(timezone.utc) - timedelta(days=1))
+    score = _temporal_score(
+        datetime.now(timezone.utc), datetime.now(timezone.utc) - timedelta(days=1)
+    )
     assert score < 0

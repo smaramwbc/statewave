@@ -14,6 +14,7 @@ from httpx import AsyncClient
 # Test data
 # ---------------------------------------------------------------------------
 
+
 def _make_episodes(subject_id: str, count: int = 5) -> list[dict]:
     return [
         {
@@ -34,6 +35,7 @@ def _make_episodes(subject_id: str, count: int = 5) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Happy path
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.anyio
 async def test_batch_ingest_happy_path(client: AsyncClient, subject_id: str):
@@ -148,6 +150,7 @@ async def test_batch_mixed_subjects(client: AsyncClient):
 # Validation errors
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.anyio
 async def test_batch_empty_list_rejected(client: AsyncClient):
     """Empty episodes list should return 422."""
@@ -159,8 +162,7 @@ async def test_batch_empty_list_rejected(client: AsyncClient):
 async def test_batch_over_100_rejected(client: AsyncClient):
     """More than 100 episodes should return 422."""
     episodes = [
-        {"subject_id": "flood", "source": "t", "type": "t", "payload": {"x": 1}}
-        for _ in range(101)
+        {"subject_id": "flood", "source": "t", "type": "t", "payload": {"x": 1}} for _ in range(101)
     ]
     resp = await client.post("/v1/episodes/batch", json={"episodes": episodes})
     assert resp.status_code == 422
@@ -169,16 +171,15 @@ async def test_batch_over_100_rejected(client: AsyncClient):
 @pytest.mark.anyio
 async def test_batch_missing_required_field(client: AsyncClient):
     """Missing required fields in an episode should return 422."""
-    resp = await client.post("/v1/episodes/batch", json={
-        "episodes": [{"subject_id": "x"}]
-    })
+    resp = await client.post("/v1/episodes/batch", json={"episodes": [{"subject_id": "x"}]})
     assert resp.status_code == 422
 
 
 @pytest.mark.anyio
 async def test_batch_invalid_subject_id(client: AsyncClient):
     """Empty subject_id should return 422."""
-    resp = await client.post("/v1/episodes/batch", json={
-        "episodes": [{"subject_id": "", "source": "s", "type": "t", "payload": {"k": "v"}}]
-    })
+    resp = await client.post(
+        "/v1/episodes/batch",
+        json={"episodes": [{"subject_id": "", "source": "s", "type": "t", "payload": {"k": "v"}}]},
+    )
     assert resp.status_code == 422

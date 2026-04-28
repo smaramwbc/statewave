@@ -41,13 +41,16 @@ _EPISODE_PRIORITY = 3.0
 _RECENCY_MAX = 5.0
 _RELEVANCE_MAX = 5.0
 _SEMANTIC_MAX = 8.0  # Semantic relevance has higher signal than word-overlap
-_TEMPORAL_VALID_BONUS = 3.0  # Bonus for memories currently valid (valid_to is None or in the future)
+_TEMPORAL_VALID_BONUS = (
+    3.0  # Bonus for memories currently valid (valid_to is None or in the future)
+)
 _TEMPORAL_EXPIRED_PENALTY = -4.0  # Penalty for memories whose valid_to is in the past
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 async def assemble_context(
     session: AsyncSession,
@@ -73,7 +76,10 @@ async def assemble_context(
             task_embedding = await provider.embed_query(task)
             # Get semantic scores for all memories in one query
             semantic_results = await repo.search_memories_by_embedding(
-                session, subject_id, task_embedding, limit=100,
+                session,
+                subject_id,
+                task_embedding,
+                limit=100,
             )
             for row, distance in semantic_results:
                 # Convert cosine distance [0, 2] to similarity score [0, SEMANTIC_MAX]
@@ -106,13 +112,15 @@ async def assemble_context(
                 + relevance
                 + _temporal_score(row.valid_from, row.valid_to)
             )
-            scored.append(_ScoredItem(
-                score=score,
-                kind="memory",
-                memory_row=row,
-                text=_render_memory_line(row),
-                section=_section_for_kind(row.kind),
-            ))
+            scored.append(
+                _ScoredItem(
+                    score=score,
+                    kind="memory",
+                    memory_row=row,
+                    text=_render_memory_line(row),
+                    section=_section_for_kind(row.kind),
+                )
+            )
 
     if episode_rows:
         # Collect episode IDs already covered by included summaries
@@ -132,13 +140,15 @@ async def assemble_context(
                 + _recency_score(row.created_at, ep_ts_range)
                 + _relevance_score(content_text, task_tokens)
             )
-            scored.append(_ScoredItem(
-                score=score,
-                kind="episode",
-                episode_row=row,
-                text=f"- {ep_text}",
-                section="episodes",
-            ))
+            scored.append(
+                _ScoredItem(
+                    score=score,
+                    kind="episode",
+                    episode_row=row,
+                    text=f"- {ep_text}",
+                    section="episodes",
+                )
+            )
 
     # Sort descending by score (stable sort preserves insertion order for ties)
     scored.sort(key=lambda s: s.score, reverse=True)
@@ -228,6 +238,7 @@ async def assemble_context(
 # ---------------------------------------------------------------------------
 # Scoring helpers
 # ---------------------------------------------------------------------------
+
 
 def _tokenize_for_relevance(text: str) -> set[str]:
     """Lowercase word tokens for relevance scoring."""
@@ -319,6 +330,7 @@ def _render_memory_line(row: Any) -> str:
 def _clean_summary(text: str) -> str:
     """Turn raw 'user: X\\nassistant: Y' into a readable history note."""
     import re
+
     lines = text.strip().split("\n")
     parts: list[str] = []
     for line in lines:
@@ -334,6 +346,7 @@ def _clean_summary(text: str) -> str:
 # ---------------------------------------------------------------------------
 # Row → response converters
 # ---------------------------------------------------------------------------
+
 
 def _memory_response(row: Any) -> MemoryResponse:
     return MemoryResponse(
@@ -369,6 +382,7 @@ def _episode_response(row: Any) -> EpisodeResponse:
 # ---------------------------------------------------------------------------
 # Internal types
 # ---------------------------------------------------------------------------
+
 
 class _ScoredItem:
     """An item (memory or episode) with its computed relevance score."""

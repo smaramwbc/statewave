@@ -18,7 +18,18 @@ from server.services.snapshots import (
 
 
 class FakeEpisode:
-    def __init__(self, id, subject_id, created_at, source="test", type="test", payload=None, metadata_=None, provenance=None, last_compiled_at=None):
+    def __init__(
+        self,
+        id,
+        subject_id,
+        created_at,
+        source="test",
+        type="test",
+        payload=None,
+        metadata_=None,
+        provenance=None,
+        last_compiled_at=None,
+    ):
         self.id = id
         self.subject_id = subject_id
         self.source = source
@@ -31,7 +42,23 @@ class FakeEpisode:
 
 
 class FakeMemory:
-    def __init__(self, id, subject_id, created_at, updated_at, valid_from, source_episode_ids, kind="fact", content="test", summary="", confidence=1.0, valid_to=None, metadata_=None, status="active", embedding=None):
+    def __init__(
+        self,
+        id,
+        subject_id,
+        created_at,
+        updated_at,
+        valid_from,
+        source_episode_ids,
+        kind="fact",
+        content="test",
+        summary="",
+        confidence=1.0,
+        valid_to=None,
+        metadata_=None,
+        status="active",
+        embedding=None,
+    ):
         self.id = id
         self.subject_id = subject_id
         self.kind = kind
@@ -127,7 +154,9 @@ async def test_restore_snapshot_remaps_provenance():
         async def __aexit__(self, *args):
             pass
 
-    with patch("server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()):
+    with patch(
+        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+    ):
         result = await restore_snapshot(snap_id, "live_test_123")
 
     assert result["episodes_restored"] == 2
@@ -143,7 +172,9 @@ async def test_restore_snapshot_remaps_provenance():
     assert ep2_id not in mem.source_episode_ids
 
     # They should contain new IDs that match the cloned episodes
-    episode_items = [i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")]
+    episode_items = [
+        i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")
+    ]
     new_ep_ids = {i.id for i in episode_items}
     assert set(mem.source_episode_ids) == new_ep_ids
 
@@ -199,12 +230,16 @@ async def test_restore_snapshot_shifts_timestamps():
             pass
 
     before = datetime.now(timezone.utc)
-    with patch("server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()):
+    with patch(
+        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+    ):
         await restore_snapshot(snap_id, "live_test_456")
     after = datetime.now(timezone.utc)
 
     # Cloned episode should be very close to now (within a few seconds)
-    episode_items = [i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")]
+    episode_items = [
+        i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")
+    ]
     assert len(episode_items) == 1
     assert before <= episode_items[0].created_at <= after
 
@@ -257,10 +292,14 @@ async def test_restore_preserves_relative_offsets():
         async def __aexit__(self, *args):
             pass
 
-    with patch("server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()):
+    with patch(
+        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+    ):
         await restore_snapshot(snap_id, "live_test_789")
 
-    episode_items = [i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")]
+    episode_items = [
+        i for i in added_items if hasattr(i, "source") and not hasattr(i, "source_episode_ids")
+    ]
     episode_items.sort(key=lambda x: x.created_at)
 
     # The gap between the two episodes should still be ~3 days
@@ -320,7 +359,9 @@ async def test_restore_adds_provenance_metadata():
         async def __aexit__(self, *args):
             pass
 
-    with patch("server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()):
+    with patch(
+        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+    ):
         await restore_snapshot(snap_id, "live_test_prov")
 
     episode_items = [i for i in added_items if hasattr(i, "provenance")]

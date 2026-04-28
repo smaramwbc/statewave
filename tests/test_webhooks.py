@@ -68,4 +68,3 @@ def test_backoff_increases_exponentially():
     assert 15 <= b1 <= 45
     assert 60 <= b2 <= 180
     assert 240 <= b3 <= 720
-

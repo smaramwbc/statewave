@@ -31,9 +31,7 @@ class EpisodeRow(Base):
         DateTime(timezone=True), nullable=True, default=None
     )
 
-    __table_args__ = (
-        Index("ix_episodes_subject_created", "subject_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_episodes_subject_created", "subject_id", "created_at"),)
 
 
 class MemoryRow(Base):
@@ -49,7 +47,9 @@ class MemoryRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    source_episode_ids: Mapped[list] = mapped_column(ARRAY(UUID(as_uuid=True)), nullable=False, default=list)
+    source_episode_ids: Mapped[list] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
     embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -60,9 +60,7 @@ class MemoryRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    __table_args__ = (
-        Index("ix_memories_subject_kind", "subject_id", "kind"),
-    )
+    __table_args__ = (Index("ix_memories_subject_kind", "subject_id", "kind"),)
 
 
 class WebhookEventRow(Base):
@@ -92,9 +90,7 @@ class WebhookEventRow(Base):
     )
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    __table_args__ = (
-        Index("ix_webhook_events_status_next", "status", "next_attempt_at"),
-    )
+    __table_args__ = (Index("ix_webhook_events_status_next", "status", "next_attempt_at"),)
 
 
 class SubjectSnapshotRow(Base):
@@ -113,6 +109,22 @@ class SubjectSnapshotRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    __table_args__ = (
-        Index("ix_snapshots_name_version", "name", "version", unique=True),
+    __table_args__ = (Index("ix_snapshots_name_version", "name", "version", unique=True),)
+
+
+class CompileJobRow(Base):
+    """Durable compile job tracking — survives restarts."""
+
+    __tablename__ = "compile_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    memories_created: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

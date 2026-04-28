@@ -58,21 +58,33 @@ async def create_snapshot(
             return {"status": "exists", "name": name, "version": version}
 
         # Fetch source episodes
-        eps = (await session.execute(
-            select(EpisodeRow)
-            .where(EpisodeRow.subject_id == source_subject_id)
-            .order_by(EpisodeRow.created_at)
-        )).scalars().all()
+        eps = (
+            (
+                await session.execute(
+                    select(EpisodeRow)
+                    .where(EpisodeRow.subject_id == source_subject_id)
+                    .order_by(EpisodeRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         if not eps:
             raise ValueError(f"Source subject '{source_subject_id}' has no episodes")
 
         # Fetch source memories
-        mems = (await session.execute(
-            select(MemoryRow)
-            .where(MemoryRow.subject_id == source_subject_id)
-            .order_by(MemoryRow.created_at)
-        )).scalars().all()
+        mems = (
+            (
+                await session.execute(
+                    select(MemoryRow)
+                    .where(MemoryRow.subject_id == source_subject_id)
+                    .order_by(MemoryRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         # Copy episodes into snapshot source subject with new IDs
         # We need an ID map so memories' source_episode_ids can be remapped
@@ -80,39 +92,43 @@ async def create_snapshot(
         for ep in eps:
             new_id = uuid.uuid4()
             snapshot_ep_id_map[ep.id] = new_id
-            session.add(EpisodeRow(
-                id=new_id,
-                subject_id=snapshot_subject,
-                source=ep.source,
-                type=ep.type,
-                payload=ep.payload,
-                metadata_=ep.metadata_,
-                provenance={**(ep.provenance or {}), "original_id": str(ep.id)},
-                created_at=ep.created_at,
-                last_compiled_at=ep.last_compiled_at,
-            ))
+            session.add(
+                EpisodeRow(
+                    id=new_id,
+                    subject_id=snapshot_subject,
+                    source=ep.source,
+                    type=ep.type,
+                    payload=ep.payload,
+                    metadata_=ep.metadata_,
+                    provenance={**(ep.provenance or {}), "original_id": str(ep.id)},
+                    created_at=ep.created_at,
+                    last_compiled_at=ep.last_compiled_at,
+                )
+            )
 
         # Copy memories into snapshot source subject
         for mem in mems:
             remapped_ids = [
                 snapshot_ep_id_map.get(eid, eid) for eid in (mem.source_episode_ids or [])
             ]
-            session.add(MemoryRow(
-                id=uuid.uuid4(),
-                subject_id=snapshot_subject,
-                kind=mem.kind,
-                content=mem.content,
-                summary=mem.summary,
-                confidence=mem.confidence,
-                valid_from=mem.valid_from,
-                valid_to=mem.valid_to,
-                source_episode_ids=remapped_ids,
-                metadata_=mem.metadata_,
-                status=mem.status,
-                embedding=mem.embedding,
-                created_at=mem.created_at,
-                updated_at=mem.updated_at,
-            ))
+            session.add(
+                MemoryRow(
+                    id=uuid.uuid4(),
+                    subject_id=snapshot_subject,
+                    kind=mem.kind,
+                    content=mem.content,
+                    summary=mem.summary,
+                    confidence=mem.confidence,
+                    valid_from=mem.valid_from,
+                    valid_to=mem.valid_to,
+                    source_episode_ids=remapped_ids,
+                    metadata_=mem.metadata_,
+                    status=mem.status,
+                    embedding=mem.embedding,
+                    created_at=mem.created_at,
+                    updated_at=mem.updated_at,
+                )
+            )
 
         # Record snapshot metadata
         snapshot = SubjectSnapshotRow(
@@ -126,7 +142,9 @@ async def create_snapshot(
         session.add(snapshot)
         await session.commit()
 
-        logger.info("snapshot_created", name=name, version=version, episodes=len(eps), memories=len(mems))
+        logger.info(
+            "snapshot_created", name=name, version=version, episodes=len(eps), memories=len(mems)
+        )
         return {
             "status": "created",
             "id": str(snapshot.id),
@@ -153,9 +171,11 @@ async def restore_snapshot(
     """
     async with async_session_factory() as session:
         # Get snapshot metadata
-        snap = (await session.execute(
-            select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
-        )).scalar()
+        snap = (
+            await session.execute(
+                select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
+            )
+        ).scalar()
 
         if not snap:
             raise ValueError(f"Snapshot '{snapshot_id}' not found")
@@ -163,18 +183,30 @@ async def restore_snapshot(
         source_subject = snap.source_subject_id
 
         # Fetch source episodes
-        eps = (await session.execute(
-            select(EpisodeRow)
-            .where(EpisodeRow.subject_id == source_subject)
-            .order_by(EpisodeRow.created_at)
-        )).scalars().all()
+        eps = (
+            (
+                await session.execute(
+                    select(EpisodeRow)
+                    .where(EpisodeRow.subject_id == source_subject)
+                    .order_by(EpisodeRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         # Fetch source memories
-        mems = (await session.execute(
-            select(MemoryRow)
-            .where(MemoryRow.subject_id == source_subject)
-            .order_by(MemoryRow.created_at)
-        )).scalars().all()
+        mems = (
+            (
+                await session.execute(
+                    select(MemoryRow)
+                    .where(MemoryRow.subject_id == source_subject)
+                    .order_by(MemoryRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
         if not eps:
             raise ValueError(f"Snapshot source '{source_subject}' has no episodes")
@@ -197,28 +229,28 @@ async def restore_snapshot(
             if ep_created.tzinfo is None:
                 ep_created = ep_created.replace(tzinfo=timezone.utc)
 
-            session.add(EpisodeRow(
-                id=new_id,
-                subject_id=target_subject_id,
-                source=ep.source,
-                type=ep.type,
-                payload=ep.payload,
-                metadata_=ep.metadata_,
-                provenance={
-                    **(ep.provenance or {}),
-                    "restored_from_snapshot": str(snapshot_id),
-                    "original_episode_id": str(ep.id),
-                },
-                created_at=ep_created + time_shift,
-                last_compiled_at=(ep_created + time_shift) if ep.last_compiled_at else None,
-            ))
+            session.add(
+                EpisodeRow(
+                    id=new_id,
+                    subject_id=target_subject_id,
+                    source=ep.source,
+                    type=ep.type,
+                    payload=ep.payload,
+                    metadata_=ep.metadata_,
+                    provenance={
+                        **(ep.provenance or {}),
+                        "restored_from_snapshot": str(snapshot_id),
+                        "original_episode_id": str(ep.id),
+                    },
+                    created_at=ep_created + time_shift,
+                    last_compiled_at=(ep_created + time_shift) if ep.last_compiled_at else None,
+                )
+            )
 
         # ── Memory cloning with provenance remapping ──
         for mem in mems:
             new_id = uuid.uuid4()
-            remapped_ids = [
-                episode_id_map.get(eid, eid) for eid in (mem.source_episode_ids or [])
-            ]
+            remapped_ids = [episode_id_map.get(eid, eid) for eid in (mem.source_episode_ids or [])]
 
             mem_created = mem.created_at
             if mem_created.tzinfo is None:
@@ -233,25 +265,27 @@ async def restore_snapshot(
             if mem_valid_to and mem_valid_to.tzinfo is None:
                 mem_valid_to = mem_valid_to.replace(tzinfo=timezone.utc)
 
-            session.add(MemoryRow(
-                id=new_id,
-                subject_id=target_subject_id,
-                kind=mem.kind,
-                content=mem.content,
-                summary=mem.summary,
-                confidence=mem.confidence,
-                valid_from=mem_valid_from + time_shift,
-                valid_to=(mem_valid_to + time_shift) if mem_valid_to else None,
-                source_episode_ids=remapped_ids,
-                metadata_={
-                    **(mem.metadata_ or {}),
-                    "restored_from_snapshot": str(snapshot_id),
-                },
-                status=mem.status,
-                embedding=mem.embedding,
-                created_at=mem_created + time_shift,
-                updated_at=mem_updated + time_shift,
-            ))
+            session.add(
+                MemoryRow(
+                    id=new_id,
+                    subject_id=target_subject_id,
+                    kind=mem.kind,
+                    content=mem.content,
+                    summary=mem.summary,
+                    confidence=mem.confidence,
+                    valid_from=mem_valid_from + time_shift,
+                    valid_to=(mem_valid_to + time_shift) if mem_valid_to else None,
+                    source_episode_ids=remapped_ids,
+                    metadata_={
+                        **(mem.metadata_ or {}),
+                        "restored_from_snapshot": str(snapshot_id),
+                    },
+                    status=mem.status,
+                    embedding=mem.embedding,
+                    created_at=mem_created + time_shift,
+                    updated_at=mem_updated + time_shift,
+                )
+            )
 
         await session.commit()
 
@@ -296,9 +330,11 @@ async def list_snapshots() -> list[dict]:
 async def get_snapshot(snapshot_id: uuid.UUID) -> dict | None:
     """Get snapshot metadata by ID."""
     async with async_session_factory() as session:
-        s = (await session.execute(
-            select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
-        )).scalar()
+        s = (
+            await session.execute(
+                select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
+            )
+        ).scalar()
         if not s:
             return None
         return {
@@ -339,9 +375,11 @@ async def get_snapshot_by_name(name: str, version: int | None = None) -> dict | 
 async def delete_snapshot(snapshot_id: uuid.UUID) -> bool:
     """Delete a snapshot and its source data."""
     async with async_session_factory() as session:
-        s = (await session.execute(
-            select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
-        )).scalar()
+        s = (
+            await session.execute(
+                select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
+            )
+        ).scalar()
         if not s:
             return False
 
@@ -349,7 +387,9 @@ async def delete_snapshot(snapshot_id: uuid.UUID) -> bool:
         # Delete source data
         await session.execute(delete(MemoryRow).where(MemoryRow.subject_id == source_subject))
         await session.execute(delete(EpisodeRow).where(EpisodeRow.subject_id == source_subject))
-        await session.execute(delete(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id))
+        await session.execute(
+            delete(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
+        )
         await session.commit()
         return True
 
@@ -378,9 +418,7 @@ async def cleanup_ephemeral_subjects(
         stale_subjects = [row[0] for row in result.fetchall()]
 
         # Safety: never delete snapshot sources
-        stale_subjects = [
-            s for s in stale_subjects if not s.startswith(SNAPSHOT_SOURCE_PREFIX)
-        ]
+        stale_subjects = [s for s in stale_subjects if not s.startswith(SNAPSHOT_SOURCE_PREFIX)]
 
         if not stale_subjects:
             return 0

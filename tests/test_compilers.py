@@ -25,6 +25,7 @@ def _ep(payload: dict, subject_id: str = "user-1") -> EpisodeRow:
 # Protocol conformance
 # ---------------------------------------------------------------------------
 
+
 def test_heuristic_compiler_satisfies_protocol():
     compiler = HeuristicCompiler()
     # Structural check — it has the right method signature
@@ -41,9 +42,12 @@ def test_get_compiler_returns_heuristic_by_default():
 # HeuristicCompiler behavior
 # ---------------------------------------------------------------------------
 
+
 def test_compile_chat_produces_summary_and_facts():
     compiler = HeuristicCompiler()
-    ep = _ep({"messages": [{"role": "user", "content": "My name is Alice and I work at Acme Corp."}]})
+    ep = _ep(
+        {"messages": [{"role": "user", "content": "My name is Alice and I work at Acme Corp."}]}
+    )
     memories = compiler.compile([ep])
     kinds = {m.kind for m in memories}
     assert "episode_summary" in kinds
@@ -81,6 +85,7 @@ def test_compile_content_payload():
 # ---------------------------------------------------------------------------
 # Payload text extraction
 # ---------------------------------------------------------------------------
+
 
 def test_extract_payload_text_messages():
     text = extract_payload_text({"messages": [{"role": "user", "content": "hi"}]})

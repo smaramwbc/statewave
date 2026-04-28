@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 # Enums
 # ---------------------------------------------------------------------------
 
+
 class MemoryKind(str, Enum):
     profile_fact = "profile_fact"
     episode_summary = "episode_summary"
@@ -31,6 +32,7 @@ class MemoryStatus(str, Enum):
 # Episode
 # ---------------------------------------------------------------------------
 
+
 class Episode(BaseModel):
     """Immutable raw event record."""
 
@@ -47,6 +49,7 @@ class Episode(BaseModel):
 # ---------------------------------------------------------------------------
 # Memory
 # ---------------------------------------------------------------------------
+
 
 class Memory(BaseModel):
     """Derived memory object with provenance."""
@@ -70,6 +73,7 @@ class Memory(BaseModel):
 # ---------------------------------------------------------------------------
 # ContextBundle
 # ---------------------------------------------------------------------------
+
 
 class ContextBundle(BaseModel):
     """Runtime output for AI applications."""

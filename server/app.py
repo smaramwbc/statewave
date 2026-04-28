@@ -51,12 +51,15 @@ async def lifespan(app: FastAPI):
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
     await webhooks.start_worker()
 
-    # Start background cleanup
-    cleanup_task = asyncio.create_task(_cleanup_loop())
+    # Start background cleanup (only if snapshots enabled)
+    cleanup_task = None
+    if settings.enable_snapshots:
+        cleanup_task = asyncio.create_task(_cleanup_loop())
 
     logger.info("app_startup", version="0.4.3", debug=settings.debug)
     yield
-    cleanup_task.cancel()
+    if cleanup_task:
+        cleanup_task.cancel()
     await webhooks.stop_worker()
     from server.db.engine import engine
     await engine.dispose()

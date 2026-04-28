@@ -261,6 +261,8 @@ async def list_subjects(
         )
         .outerjoin(ep_count, all_subjects.c.subject_id == ep_count.c.subject_id)
         .outerjoin(mem_count, all_subjects.c.subject_id == mem_count.c.subject_id)
+        .where(all_subjects.c.subject_id.not_like("_snapshot/%"))
+        .where(all_subjects.c.subject_id.not_like("_bootstrap_tmp/%"))
         .order_by(all_subjects.c.subject_id)
         .limit(limit)
         .offset(offset)

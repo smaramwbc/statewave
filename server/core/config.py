@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # Rate limiting (0 = disabled)
     rate_limit_rpm: int = 0
 
+    # Subject Snapshots (advanced bootstrap — disabled by default)
+    enable_snapshots: bool = False
+
     # Webhooks (empty = disabled)
     webhook_url: str | None = None
     webhook_timeout: float = 5.0

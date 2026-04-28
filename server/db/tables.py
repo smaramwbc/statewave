@@ -95,3 +95,24 @@ class WebhookEventRow(Base):
     __table_args__ = (
         Index("ix_webhook_events_status_next", "status", "next_attempt_at"),
     )
+
+
+class SubjectSnapshotRow(Base):
+    """Subject snapshot metadata for bootstrap/restore operations."""
+
+    __tablename__ = "subject_snapshots"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    episode_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    memory_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_snapshots_name_version", "name", "version", unique=True),
+    )

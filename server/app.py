@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 import structlog
@@ -22,6 +23,20 @@ from server.core.tracing import setup_tracing
 logger = structlog.stdlib.get_logger()
 
 
+async def _cleanup_loop():
+    """Periodically clean up stale ephemeral demo subjects."""
+    from server.services.snapshots import cleanup_ephemeral_subjects
+
+    while True:
+        await asyncio.sleep(3600)  # every hour
+        try:
+            count = await cleanup_ephemeral_subjects()
+            if count:
+                logger.info("scheduled_cleanup_done", subjects_cleaned=count)
+        except Exception as exc:
+            logger.warning("scheduled_cleanup_error", error=str(exc))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Propagate STATEWAVE_OPENAI_API_KEY to OPENAI_API_KEY for LiteLLM
@@ -35,8 +50,13 @@ async def lifespan(app: FastAPI):
     from server.services import webhooks
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
     await webhooks.start_worker()
+
+    # Start background cleanup
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+
     logger.info("app_startup", version="0.4.3", debug=settings.debug)
     yield
+    cleanup_task.cancel()
     await webhooks.stop_worker()
     from server.db.engine import engine
     await engine.dispose()

@@ -21,13 +21,16 @@ from server.services.conflicts import resolve_conflicts
 from server.services import webhooks
 from server.services import compile_jobs
 from server.core.tracing import span
+from server.core.dependencies import get_tenant_id
 
 logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
 
-async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMemoriesResponse:
+async def _run_compile(
+    subject_id: str, job_id: str | None = None, tenant_id: str | None = None
+) -> CompileMemoriesResponse:
     """Core compilation logic — used by both sync and async paths."""
     from server.db.engine import async_session_factory
 
@@ -36,7 +39,7 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
 
     try:
         async with async_session_factory() as session:
-            episodes = await repo.list_uncompiled_episodes(session, subject_id)
+            episodes = await repo.list_uncompiled_episodes(session, subject_id, tenant_id=tenant_id)
             if not episodes:
                 result = CompileMemoriesResponse(
                     subject_id=subject_id, memories_created=0, memories=[]
@@ -55,6 +58,7 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
                 )
 
             for row in new_rows:
+                row.tenant_id = tenant_id
                 session.add(row)
             await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
@@ -99,6 +103,7 @@ async def _run_compile(subject_id: str, job_id: str | None = None) -> CompileMem
 async def compile_memories(
     body: CompileMemoriesRequest,
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     """Compile new memories from unprocessed episodes.
 
@@ -107,8 +112,8 @@ async def compile_memories(
     with span("compile_memories", {"subject_id": body.subject_id, "async": body.async_mode}):
         if body.async_mode:
             # Async mode — return job_id immediately, compile in background (durable)
-            job = await compile_jobs.submit_job_durable(body.subject_id)
-            asyncio.create_task(_run_compile(body.subject_id, job.id))
+            job = await compile_jobs.submit_job_durable(body.subject_id, tenant_id=tenant_id)
+            asyncio.create_task(_run_compile(body.subject_id, job.id, tenant_id=tenant_id))
             return JSONResponse(
                 status_code=202,
                 content={
@@ -119,7 +124,9 @@ async def compile_memories(
             )
 
         # Sync mode — block until compilation is done (backward compatible)
-        episodes = await repo.list_uncompiled_episodes(session, body.subject_id)
+        episodes = await repo.list_uncompiled_episodes(
+            session, body.subject_id, tenant_id=tenant_id
+        )
         if not episodes:
             return CompileMemoriesResponse(
                 subject_id=body.subject_id, memories_created=0, memories=[]
@@ -135,6 +142,7 @@ async def compile_memories(
             )
 
         for row in new_rows:
+            row.tenant_id = tenant_id
             session.add(row)
         await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
@@ -219,6 +227,7 @@ async def search_memories(
     semantic: bool = Query(False, description="Use semantic similarity search when available"),
     limit: int = Query(20, le=100),
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     with span("search_memories", {"subject_id": subject_id, "semantic": semantic}):
         # Try semantic search if requested and query text is provided
@@ -231,6 +240,7 @@ async def search_memories(
                         session,
                         subject_id,
                         query_embedding,
+                        tenant_id=tenant_id,
                         kind=kind,
                         limit=limit,
                     )
@@ -242,7 +252,9 @@ async def search_memories(
                     # Fall through to text search
 
         # Default: exact/text search
-        rows = await repo.search_memories(session, subject_id, kind=kind, query=query, limit=limit)
+        rows = await repo.search_memories(
+            session, subject_id, tenant_id=tenant_id, kind=kind, query=query, limit=limit
+        )
         return SearchMemoriesResponse(memories=[_to_response(r) for r in rows])
 
 

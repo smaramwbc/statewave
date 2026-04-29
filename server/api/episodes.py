@@ -12,6 +12,7 @@ from server.schemas.requests import BatchCreateEpisodesRequest, CreateEpisodeReq
 from server.schemas.responses import BatchCreateEpisodesResponse, EpisodeResponse
 from server.services import webhooks
 from server.core.tracing import span
+from server.core.dependencies import get_tenant_id
 
 router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 
@@ -20,10 +21,13 @@ router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 async def create_episode(
     body: CreateEpisodeRequest,
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     """Record a raw interaction episode. Episodes are append-only and immutable."""
     row = EpisodeRow(
         subject_id=body.subject_id,
+        tenant_id=tenant_id,
+        session_id=body.session_id,
         source=body.source,
         type=body.type,
         payload=body.payload,
@@ -42,6 +46,7 @@ async def create_episode(
         payload=row.payload,
         metadata=row.metadata_,
         provenance=row.provenance,
+        session_id=row.session_id,
         created_at=row.created_at,
     )
 
@@ -55,6 +60,7 @@ async def create_episode(
 async def create_episodes_batch(
     body: BatchCreateEpisodesRequest,
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     """Record multiple episodes in a single request. Max 100 per call."""
     with span("create_episodes_batch", {"count": len(body.episodes)}):
@@ -62,6 +68,8 @@ async def create_episodes_batch(
         for ep in body.episodes:
             row = EpisodeRow(
                 subject_id=ep.subject_id,
+                tenant_id=tenant_id,
+                session_id=ep.session_id,
                 source=ep.source,
                 type=ep.type,
                 payload=ep.payload,
@@ -91,6 +99,7 @@ async def create_episodes_batch(
                     payload=r.payload,
                     metadata=r.metadata_,
                     provenance=r.provenance,
+                    session_id=r.session_id,
                     created_at=r.created_at,
                 )
                 for r in rows

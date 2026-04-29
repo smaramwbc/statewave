@@ -33,7 +33,7 @@ Everything is organised around **subjects** — a user, account, agent, repo, or
 
 Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
 
-> **Status:** v0.5.x — actively developed. Reliable webhook delivery, SDK retry, durable async compilation, and admin introspection are complete. See [current limitations](#current-limitations) below.
+> **Status:** v0.6.1 — actively developed. Full support-agent intelligence stack: session-aware context, resolution tracking, handoff packs, health scoring, SLA tracking, proactive alerts. See [current limitations](#current-limitations) below.
 
 ## 🎯 Live Demo
 
@@ -71,12 +71,19 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 - **Provenance** — every memory traces back to its source episodes
 - **Subject management** — list subjects with counts, inspect timelines, permanently delete all data by subject
 - **Authentication** — optional API key via `X-API-Key` header
-- **Rate limiting** — per-IP sliding window (in-memory, single-worker)
-- **Multi-tenant** — optional `X-Tenant-ID` header (experimental)
+- **Rate limiting** — per-IP fixed-window, distributed (Postgres-backed) or in-memory
+- **Multi-tenant** — optional `X-Tenant-ID` header with real query-scoped data isolation
 - **Webhooks** — persistent HTTP callbacks with retries and dead-letter on episode, compile, and delete events
 - **OpenTelemetry tracing** — optional spans on key operations (requires `[otel]` extra)
 - **Structured logging** — structlog with JSON output in production, console in development
 - **Structured errors** — consistent JSON error format with request-ID correlation
+- **Session-aware context** — active session boosted, resolved sessions deprioritized
+- **Resolution tracking** — mark issues open/resolved, surface resolution history
+- **Handoff context packs** — compact escalation briefs with health, SLA, and issue context
+- **Customer health scoring** — deterministic 0–100 score with explainable factors
+- **SLA tracking** — first-response time, resolution time, breach detection
+- **Proactive health alerts** — webhooks on health state transitions (degradation + recovery)
+- **Repeat-issue detection** — surfaces prior resolutions when patterns recur
 
 ## Quick start
 
@@ -118,6 +125,11 @@ See the full [getting started guide](https://github.com/smaramwbc/statewave-docs
 | `GET` | `/v1/timeline` | Chronological subject timeline |
 | `GET` | `/v1/subjects` | List known subjects with episode/memory counts |
 | `DELETE` | `/v1/subjects/{id}` | Permanently delete all data for a subject |
+| `POST` | `/v1/resolutions` | Track issue resolution state per session |
+| `GET` | `/v1/resolutions` | List resolutions for a subject |
+| `POST` | `/v1/handoff` | Generate compact handoff context pack |
+| `GET` | `/v1/subjects/{id}/health` | Customer health score with explainable factors |
+| `GET` | `/v1/subjects/{id}/sla` | SLA metrics — response time, resolution time, breaches |
 
 Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md).
 
@@ -139,6 +151,7 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `STATEWAVE_API_KEY` | — | API key for auth (empty = open access) |
 | `STATEWAVE_RATE_LIMIT_RPM` | `0` | Requests/min/IP (0 = disabled) |
+| `STATEWAVE_RATE_LIMIT_STRATEGY` | `distributed` | `distributed` (Postgres) or `memory` (in-process) |
 | `STATEWAVE_WEBHOOK_URL` | — | Webhook callback URL (empty = disabled) |
 | `STATEWAVE_WEBHOOK_TIMEOUT` | `5.0` | Webhook HTTP timeout in seconds |
 | `STATEWAVE_TENANT_HEADER` | `X-Tenant-ID` | Header for multi-tenant isolation |
@@ -162,10 +175,10 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active development (v0.5.x). Honest status:
+Statewave is in active development (v0.6.1). Honest status:
 
-- **Rate limiting is in-memory** — resets on restart, single-worker only
-- **Multi-tenant is experimental** — header-based isolation only, no row-level security
+- **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
+- **Multi-tenant is app-layer** — real query-scoped isolation (v0.5), no Postgres RLS yet
 - **Single-node only** — no clustering, no horizontal scaling yet
 - **PostgreSQL required** — no alternative storage backends
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them

@@ -19,6 +19,8 @@ class EpisodeRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     subject_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    session_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     source: Mapped[str] = mapped_column(String(256), nullable=False)
     type: Mapped[str] = mapped_column(String(128), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -39,6 +41,7 @@ class MemoryRow(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     subject_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -74,6 +77,7 @@ class WebhookEventRow(Base):
     __tablename__ = "webhook_events"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     event: Mapped[str] = mapped_column(String(128), nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -99,6 +103,7 @@ class SubjectSnapshotRow(Base):
     __tablename__ = "subject_snapshots"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     source_subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
@@ -128,3 +133,51 @@ class CompileJobRow(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class RateLimitHitRow(Base):
+    """Fixed-window rate limit counter — distributed across workers via Postgres."""
+
+    __tablename__ = "rate_limit_hits"
+
+    key: Mapped[str] = mapped_column(String(256), primary_key=True)
+    window_start: Mapped[int] = mapped_column(Integer, primary_key=True)
+    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ResolutionRow(Base):
+    """Tracks resolution state of support sessions."""
+
+    __tablename__ = "resolutions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    session_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="open")
+    resolution_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SubjectHealthCacheRow(Base):
+    """Caches last-known health state per subject for alert deduplication."""
+
+    __tablename__ = "subject_health_cache"
+
+    subject_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    last_state: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_score: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

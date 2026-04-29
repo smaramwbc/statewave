@@ -152,6 +152,7 @@ async def mark_failed(job_id: str, error: str) -> None:
 async def list_jobs(
     status: str | None = None,
     subject_id: str | None = None,
+    tenant_id: str | None = None,
     limit: int = 20,
     offset: int = 0,
 ) -> list[dict[str, Any]]:
@@ -163,6 +164,8 @@ async def list_jobs(
                 stmt = stmt.where(CompileJobRow.status == status)
             if subject_id:
                 stmt = stmt.where(CompileJobRow.subject_id == subject_id)
+            if tenant_id is not None:
+                stmt = stmt.where(CompileJobRow.tenant_id == tenant_id)
             stmt = stmt.offset(offset).limit(limit)
 
             result = await session.execute(stmt)

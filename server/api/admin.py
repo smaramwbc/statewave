@@ -29,6 +29,7 @@ async def list_compile_jobs(
         None, description="Filter by status: pending, running, completed, failed"
     ),
     subject_id: str | None = Query(None, description="Filter by subject"),
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -38,8 +39,96 @@ async def list_compile_jobs(
     """
     from server.services.compile_jobs_durable import list_jobs
 
-    jobs = await list_jobs(status=status, subject_id=subject_id, limit=limit, offset=offset)
+    jobs = await list_jobs(
+        status=status, subject_id=subject_id, tenant_id=tenant_id, limit=limit, offset=offset
+    )
     return {"jobs": jobs, "limit": limit, "offset": offset}
+
+
+# ─── Tenant Audit ───
+
+
+@router.get("/tenant-audit")
+async def tenant_audit():
+    """Report rows with NULL tenant_id — helps operators backfill after enabling tenants."""
+    from sqlalchemy import func, select
+
+    from server.db.engine import async_session_factory
+    from server.db.tables import CompileJobRow, EpisodeRow, MemoryRow
+
+    async with async_session_factory() as session:
+        ep_null = await session.scalar(
+            select(func.count()).select_from(EpisodeRow).where(EpisodeRow.tenant_id.is_(None))
+        )
+        mem_null = await session.scalar(
+            select(func.count()).select_from(MemoryRow).where(MemoryRow.tenant_id.is_(None))
+        )
+        jobs_null = await session.scalar(
+            select(func.count()).select_from(CompileJobRow).where(CompileJobRow.tenant_id.is_(None))
+        )
+
+    return {
+        "null_tenant_rows": {
+            "episodes": ep_null or 0,
+            "memories": mem_null or 0,
+            "compile_jobs": jobs_null or 0,
+        },
+        "guidance": "Backfill with UPDATE <table> SET tenant_id = 'your-tenant' WHERE tenant_id IS NULL",
+    }
+
+
+# ─── Backup / Restore ───
+
+
+class ImportSubjectRequest(BaseModel):
+    document: dict
+    target_subject_id: str | None = None
+    target_tenant_id: str | None = None
+    preserve_ids: bool = True
+
+
+@router.get("/export/{subject_id}")
+async def export_subject_endpoint(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Scope export to tenant"),
+):
+    """Export all episodes and memories for a subject as a portable JSON document.
+
+    The output includes a SHA-256 checksum for integrity verification.
+    Use this to back up a subject before risky operations or to migrate
+    between Statewave instances.
+    """
+    from server.services.backup import export_subject
+
+    doc = await export_subject(subject_id, tenant_id=tenant_id)
+    if doc["counts"]["episodes"] == 0 and doc["counts"]["memories"] == 0:
+        raise HTTPException(status_code=404, detail=f"No data found for subject '{subject_id}'")
+    return doc
+
+
+@router.post("/import")
+async def import_subject_endpoint(req: ImportSubjectRequest):
+    """Import a previously exported subject document.
+
+    Options:
+    - target_subject_id: override subject_id (default: use original from export)
+    - target_tenant_id: override tenant_id (default: use original from export)
+    - preserve_ids: keep original UUIDs (default true; set false to generate new ones)
+
+    Safety: validates format version and checksum before importing.
+    """
+    from server.services.backup import import_subject
+
+    try:
+        result = await import_subject(
+            req.document,
+            target_subject_id=req.target_subject_id,
+            target_tenant_id=req.target_tenant_id,
+            preserve_ids=req.preserve_ids,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ─── Webhooks ───

@@ -1,16 +1,12 @@
 """Multi-tenant middleware — extracts tenant ID from request header.
 
-EXPERIMENTAL: Tenant isolation is currently header-extraction only.
-The tenant_id is NOT yet enforced in data access queries. Do not rely
-on this for data isolation in production. Full tenant-scoped queries
-are planned for a future release.
-
 When STATEWAVE_REQUIRE_TENANT=true, all data-modifying requests must include
 the tenant header (default: X-Tenant-ID). The tenant ID is attached to
-request.state.tenant_id for downstream use.
+request.state.tenant_id for downstream use, and all data-access queries
+are scoped to this tenant.
 
 When require_tenant is false (default), the middleware is a pass-through
-that sets tenant_id to None — single-tenant mode.
+that sets tenant_id to None — single-tenant mode with no isolation.
 """
 
 from __future__ import annotations

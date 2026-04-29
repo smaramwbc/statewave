@@ -27,6 +27,7 @@ async def _cleanup_loop():
     """Periodically clean up stale ephemeral demo subjects and old compile jobs."""
     from server.services.snapshots import cleanup_ephemeral_subjects
     from server.services.compile_jobs_durable import cleanup_old_jobs
+    from server.services.ratelimit import cleanup_expired_windows
 
     while True:
         await asyncio.sleep(3600)  # every hour
@@ -46,6 +47,13 @@ async def _cleanup_loop():
             except Exception as exc:
                 logger.warning("compile_jobs_retention_error", error=str(exc))
 
+        # Rate limit window cleanup
+        if settings.rate_limit_rpm > 0 and settings.rate_limit_strategy == "distributed":
+            try:
+                await cleanup_expired_windows()
+            except Exception as exc:
+                logger.warning("rate_limit_cleanup_error", error=str(exc))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -63,12 +71,17 @@ async def lifespan(app: FastAPI):
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
     await webhooks.start_worker()
 
-    # Start background cleanup (snapshots + compile job retention)
+    # Start background cleanup (snapshots + compile job retention + rate limit)
     cleanup_task = None
-    if settings.enable_snapshots or settings.compile_job_retention_hours > 0:
+    needs_cleanup = (
+        settings.enable_snapshots
+        or settings.compile_job_retention_hours > 0
+        or (settings.rate_limit_rpm > 0 and settings.rate_limit_strategy == "distributed")
+    )
+    if needs_cleanup:
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
-    logger.info("app_startup", version="0.4.3", debug=settings.debug)
+    logger.info("app_startup", version="0.5.0", debug=settings.debug)
     yield
     if cleanup_task:
         cleanup_task.cancel()
@@ -90,7 +103,7 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.4.3",
+        version="0.5.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -103,7 +116,9 @@ def create_app() -> FastAPI:
     app.add_middleware(
         TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant
     )
-    app.add_middleware(RateLimitMiddleware, rpm=settings.rate_limit_rpm)
+    app.add_middleware(
+        RateLimitMiddleware, rpm=settings.rate_limit_rpm, strategy=settings.rate_limit_strategy
+    )
     app.add_middleware(APIKeyMiddleware, api_key=settings.api_key)
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(
@@ -124,9 +139,25 @@ def create_app() -> FastAPI:
     app.include_router(timeline.router)
     app.include_router(subjects.router)
 
+    from server.api.resolutions import router as resolutions_router
+
+    app.include_router(resolutions_router)
+
+    from server.api.handoff import router as handoff_router
+
+    app.include_router(handoff_router)
+
     from server.api.admin import router as admin_router
 
     app.include_router(admin_router)
+
+    from server.api.health import router as health_router
+
+    app.include_router(health_router)
+
+    from server.api.sla import router as sla_router
+
+    app.include_router(sla_router)
 
     # -- Ops endpoints -------------------------------------------------------
     @app.get("/healthz", tags=["ops"], summary="Liveness check")

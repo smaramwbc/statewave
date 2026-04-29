@@ -9,6 +9,7 @@ from server.db import repositories as repo
 from server.db.engine import get_session
 from server.schemas.responses import DeleteSubjectResponse, ListSubjectsResponse
 from server.services import webhooks
+from server.core.dependencies import get_tenant_id
 
 router = APIRouter(prefix="/v1/subjects", tags=["subjects"])
 
@@ -18,9 +19,10 @@ async def list_subjects(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     """List all known subject IDs with episode and memory counts."""
-    rows = await repo.list_subjects(session, limit=limit, offset=offset)
+    rows = await repo.list_subjects(session, tenant_id=tenant_id, limit=limit, offset=offset)
     return ListSubjectsResponse(
         subjects=rows,
         total=len(rows),
@@ -33,10 +35,11 @@ async def list_subjects(
 async def delete_subject(
     subject_id: str,
     session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
 ):
     """Permanently delete all episodes and memories for a subject. This is irreversible."""
-    ep_count = await repo.delete_episodes_by_subject(session, subject_id)
-    mem_count = await repo.delete_memories_by_subject(session, subject_id)
+    ep_count = await repo.delete_episodes_by_subject(session, subject_id, tenant_id=tenant_id)
+    mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
     await session.commit()
     await webhooks.fire(
         "subject.deleted",

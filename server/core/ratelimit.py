@@ -1,10 +1,11 @@
-"""Simple in-memory rate limiter middleware.
+"""Rate-limit middleware — supports in-memory and distributed (Postgres) strategies.
 
-Uses a sliding-window counter per client IP. Configurable via:
-- STATEWAVE_RATE_LIMIT_RPM: max requests per minute per IP (0 = disabled)
+Config:
+- STATEWAVE_RATE_LIMIT_RPM: max requests/min per key (0 = disabled)
+- STATEWAVE_RATE_LIMIT_STRATEGY: "distributed" | "memory" (default: "distributed")
 
-Not suitable for multi-process deployments — use an external rate limiter
-(e.g. Redis-backed) in production if running multiple workers.
+The distributed strategy uses Postgres for shared state across workers/restarts.
+The memory strategy uses a per-process sliding window (legacy, for development).
 """
 
 from __future__ import annotations
@@ -21,9 +22,11 @@ _EXEMPT_PATHS = {"/healthz", "/readyz", "/health", "/ready"}
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, rpm: int = 0) -> None:
+    def __init__(self, app, rpm: int = 0, strategy: str = "distributed") -> None:
         super().__init__(app)
         self._rpm = rpm  # 0 = disabled
+        self._strategy = strategy
+        # In-memory fallback store
         self._hits: dict[str, list[float]] = defaultdict(list)
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
@@ -34,15 +37,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         client_ip = request.client.host if request.client else "unknown"
-        now = time.monotonic()
-        window_start = now - 60.0
 
-        # Prune old entries
-        timestamps = self._hits[client_ip]
-        self._hits[client_ip] = [t for t in timestamps if t > window_start]
+        if self._strategy == "distributed":
+            allowed, retry_after = await self._check_distributed(client_ip)
+        else:
+            allowed, retry_after = self._check_memory(client_ip)
 
-        if len(self._hits[client_ip]) >= self._rpm:
-            retry_after = int(60 - (now - self._hits[client_ip][0])) + 1
+        if not allowed:
             return JSONResponse(
                 status_code=429,
                 content={
@@ -54,5 +55,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 headers={"Retry-After": str(retry_after)},
             )
 
-        self._hits[client_ip].append(now)
         return await call_next(request)
+
+    async def _check_distributed(self, key: str) -> tuple[bool, int]:
+        """Use Postgres-backed distributed rate limiter."""
+        from server.services.ratelimit import check_rate_limit
+
+        return await check_rate_limit(key, self._rpm)
+
+    def _check_memory(self, key: str) -> tuple[bool, int]:
+        """Legacy in-memory sliding window (single-process only)."""
+        now = time.monotonic()
+        window_start = now - 60.0
+
+        timestamps = self._hits[key]
+        self._hits[key] = [t for t in timestamps if t > window_start]
+
+        if len(self._hits[key]) >= self._rpm:
+            retry_after = int(60 - (now - self._hits[key][0])) + 1
+            return False, retry_after
+
+        self._hits[key].append(now)
+        return True, 0

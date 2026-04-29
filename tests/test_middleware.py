@@ -26,7 +26,7 @@ def _make_app(api_key: str | None = None, rpm: int = 0):
     if api_key:
         app.add_middleware(APIKeyMiddleware, api_key=api_key)
     if rpm > 0:
-        app.add_middleware(RateLimitMiddleware, rpm=rpm)
+        app.add_middleware(RateLimitMiddleware, rpm=rpm, strategy="memory")
     return app
 
 

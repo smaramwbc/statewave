@@ -25,6 +25,11 @@ def upgrade() -> None:
     ))
     if result.fetchone() is None:
         op.add_column("memories", sa.Column("embedding", sa.Text(), nullable=True))
+    else:
+        # Column exists (likely as vector type from 0001) — convert to TEXT
+        # Drop the ivfflat index first if it exists
+        op.execute("DROP INDEX IF EXISTS ix_memories_embedding_cosine")
+        op.execute("ALTER TABLE memories ALTER COLUMN embedding TYPE TEXT USING embedding::TEXT")
 
 
 def downgrade() -> None:

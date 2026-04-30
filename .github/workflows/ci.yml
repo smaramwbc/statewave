@@ -29,7 +29,7 @@ jobs:
       STATEWAVE_DATABASE_URL: postgresql+asyncpg://statewave:statewave@localhost:5432/statewave
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-python@v5
         with:

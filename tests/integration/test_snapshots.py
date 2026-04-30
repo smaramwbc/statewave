@@ -237,10 +237,13 @@ async def test_timestamp_shifting_lands_near_now(client: AsyncClient, subject_id
         snap = await create_snapshot(name=snap_name, source_subject_id=subject_id)
 
         target_id = f"time-target-{uuid.uuid4().hex[:8]}"
-        await client.post(
+        restore_resp = await client.post(
             f"/admin/snapshots/{snap['id']}/restore",
             json={"target_subject_id": target_id},
         )
+        assert restore_resp.status_code == 200, f"Restore failed: {restore_resp.text}"
+        restore_result = restore_resp.json()
+        assert restore_result["episodes_restored"] >= 2, f"Expected at least 2 episodes restored: {restore_result}"
 
         # Fetch timeline for restored subject
         r = await client.get("/v1/timeline", params={"subject_id": target_id})

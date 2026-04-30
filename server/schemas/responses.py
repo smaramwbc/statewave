@@ -152,7 +152,7 @@ class HealthResponse(BaseModel):
 class SessionSLAResponse(BaseModel):
     session_id: str
     status: str  # resolved | open
-    first_message_at: str
+    first_message_at: str | None = None
     first_response_at: str | None = None
     resolved_at: str | None = None
     first_response_seconds: float | None = None

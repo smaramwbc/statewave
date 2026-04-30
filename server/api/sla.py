@@ -48,7 +48,7 @@ async def get_sla(
             SessionSLAResponse(
                 session_id=s.session_id,
                 status=s.status,
-                first_message_at=s.first_message_at.isoformat(),
+                first_message_at=s.first_message_at.isoformat() if s.first_message_at else None,
                 first_response_at=s.first_response_at.isoformat() if s.first_response_at else None,
                 resolved_at=s.resolved_at.isoformat() if s.resolved_at else None,
                 first_response_seconds=s.first_response_seconds,

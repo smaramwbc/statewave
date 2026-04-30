@@ -21,37 +21,102 @@ import httpx
 
 STATEWAVE_URL = os.environ.get("STATEWAVE_URL", "http://localhost:8100")
 STATEWAVE_API_KEY = os.environ.get("STATEWAVE_API_KEY", "")
-TEMPLATE_VERSION = 2  # Bump when persona seed data changes — v2 adds session_id
+TEMPLATE_VERSION = 4  # v4: adds real support conversations with user/agent turns + resolutions
 
-PERSONAS: dict[str, list[dict]] = {
-    "sarah-startup": [
-        {"source": "support_chat", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Customer Sarah Chen, CTO at NovaTech. Enterprise plan since January. Team of 12 developers.", "name": "Sarah Chen", "company": "NovaTech", "role": "CTO", "plan": "enterprise", "team_size": 12}},
-        {"source": "support_chat", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Stack: Python 3.11, FastAPI, PostgreSQL, deployed on AWS us-east-1 using Terraform. Uses GitHub Actions for CI/CD.", "language": "python", "framework": "fastapi", "database": "postgresql", "cloud": "aws", "region": "us-east-1"}},
-        {"source": "support_chat", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Sarah prefers email for follow-ups, not Slack. Likes brief technical answers without too much hand-holding.", "contact_preference": "email", "communication_style": "brief_technical"}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-tls-feb", "payload": {"text": "February 15: Sarah had a TLS connection error with PostgreSQL. Resolved by adding sslmode=require to connection string.", "issue": "TLS connection error", "solution": "sslmode=require", "date": "2026-02-15"}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-billing-mar", "payload": {"text": "March 3: Billing discrepancy — charged for 15 seats but only has 12. Refund issued, confirmed correct seat count.", "issue": "billing_overcharge", "resolution": "refund_issued", "correct_seats": 12, "date": "2026-03-03"}},
-        {"source": "support_chat", "type": "feature_request", "session_id": "ticket-feature-mar", "payload": {"text": "Sarah requested read replica support for their PostgreSQL setup. Noted for Q2 roadmap.", "feature": "read_replicas", "status": "requested", "date": "2026-03-10"}},
-    ],
-    "marcus-agency": [
-        {"source": "support_chat", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Marcus Rivera, founder of PixelForge agency. Pro plan. Uses API to build white-label dashboards for his clients.", "name": "Marcus Rivera", "company": "PixelForge", "role": "Founder", "plan": "pro", "use_case": "white_label_dashboards"}},
-        {"source": "support_chat", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Stack: Next.js, TypeScript, Vercel, Supabase. Uses our REST API heavily — averaging 50k calls/day across client dashboards.", "framework": "nextjs", "language": "typescript", "hosting": "vercel", "database": "supabase", "api_usage": "50k_calls_per_day"}},
-        {"source": "support_chat", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Marcus strongly prefers Slack DMs for communication. Hates long emails. Wants bullet-point answers only.", "contact_preference": "slack_dm", "communication_style": "bullet_points_only", "dislikes": "long_emails"}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-ratelimit-mar", "payload": {"text": "March 20: Hit API rate limit (10k/hour) during client demo. Temporary limit increase granted to 25k/hour.", "issue": "api_rate_limit", "resolution": "temp_increase", "date": "2026-03-20"}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-webhook-apr", "payload": {"text": "April 2: Webhook deliveries failing to Vercel endpoint. Fixed by updating webhook URL from hobby to pro Vercel domain.", "issue": "webhook_delivery_failure", "solution": "update_vercel_domain", "date": "2026-04-02"}},
-    ],
-    "priya-enterprise": [
-        {"source": "support_chat", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Priya Sharma, Lead Architect at MedSecure Health. Enterprise plan, 85-person engineering org. Healthcare vertical — strict compliance requirements.", "name": "Priya Sharma", "company": "MedSecure Health", "role": "Lead Architect", "plan": "enterprise", "team_size": 85, "vertical": "healthcare"}},
-        {"source": "support_chat", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Multi-region deployment: primary in us-east-1, DR in eu-west-1. Uses Kubernetes, Java/Spring Boot, and Oracle DB. Needs HIPAA and SOC2 compliance.", "regions": ["us-east-1", "eu-west-1"], "orchestration": "kubernetes", "language": "java", "framework": "spring_boot", "database": "oracle", "compliance": ["hipaa", "soc2"]}},
-        {"source": "support_chat", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Priya requires all communications via their Jira Service Desk. No informal channels. Needs audit trails for every support interaction.", "contact_preference": "jira_service_desk", "requires_audit_trail": True, "communication_style": "formal_documented"}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-residency-jan", "payload": {"text": "January 28: Data residency concern — needed guarantee that EU user data stays in eu-west-1. Confirmed region pinning is active on their Enterprise plan.", "issue": "data_residency", "resolution": "region_pinning_confirmed", "date": "2026-01-28"}},
-        {"source": "support_chat", "type": "upcoming_event", "session_id": "ticket-audit-prep", "payload": {"text": "Security audit scheduled for May 2026. Priya needs our SOC2 Type II report and data processing agreement (DPA) updated before then.", "event": "security_audit", "date": "2026-05", "needs": ["soc2_type_ii_report", "updated_dpa"]}},
-        {"source": "support_chat", "type": "past_issue", "session_id": "ticket-failover-mar", "payload": {"text": "March 15: Failover test from us-east-1 to eu-west-1 took 45 seconds. Priya's SLA requires <30s. Engineering working on fix — ETA April 30.", "issue": "failover_too_slow", "current": "45s", "target": "30s", "fix_eta": "2026-04-30"}},
-    ],
+# Each persona has:
+# - episodes: the raw data (context + support conversation turns)
+# - resolutions: session resolution records for SLA tracking
+PERSONAS: dict[str, dict] = {
+    "sarah-startup": {
+        "episodes": [
+            # Onboarding context (no SLA tracking needed)
+            {"source": "crm", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Customer Sarah Chen, CTO at NovaTech. Enterprise plan since January. Team of 12 developers.", "name": "Sarah Chen", "company": "NovaTech", "role": "CTO", "plan": "enterprise", "team_size": 12}},
+            {"source": "crm", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Stack: Python 3.11, FastAPI, PostgreSQL, deployed on AWS us-east-1 using Terraform. Uses GitHub Actions for CI/CD.", "language": "python", "framework": "fastapi", "database": "postgresql", "cloud": "aws", "region": "us-east-1"}},
+            {"source": "crm", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Sarah prefers email for follow-ups, not Slack. Likes brief technical answers without too much hand-holding.", "contact_preference": "email", "communication_style": "brief_technical"}},
+
+            # TLS ticket - resolved quickly (good SLA)
+            {"source": "user", "type": "support_message", "session_id": "ticket-tls-feb", "payload": {"text": "Getting SSL/TLS connection errors when connecting to PostgreSQL. Error: 'SSL SYSCALL error: EOF detected'. Started happening after your maintenance window.", "channel": "email"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-tls-feb", "payload": {"text": "Hi Sarah, thanks for reaching out. This is a known issue after the maintenance — you'll need to add sslmode=require to your connection string. Can you try that?", "agent": "Alex"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-tls-feb", "payload": {"text": "That fixed it, thanks! Quick turnaround as always.", "channel": "email"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-tls-feb", "payload": {"text": "Great! I'll mark this as resolved. Let me know if anything else comes up.", "agent": "Alex"}},
+
+            # Billing ticket - resolved (good SLA)  
+            {"source": "user", "type": "support_message", "session_id": "ticket-billing-mar", "payload": {"text": "Our invoice shows 15 seats but we only have 12 developers. Can you check this?", "channel": "email"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-billing-mar", "payload": {"text": "Hi Sarah, I see the discrepancy. Looks like 3 seats weren't removed after your team changes in February. I've corrected this and issued a refund of $450. Should appear in 3-5 business days.", "agent": "Jordan"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-billing-mar", "payload": {"text": "Perfect, thank you Jordan!", "channel": "email"}},
+
+            # Feature request - open (still being tracked)
+            {"source": "user", "type": "support_message", "session_id": "ticket-feature-mar", "payload": {"text": "We're scaling up and need read replica support for our PostgreSQL setup. Is this on the roadmap?", "channel": "email"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-feature-mar", "payload": {"text": "Hi Sarah, great question! Read replica support is planned for Q2. I've added your request to our tracking. Would you like me to notify you when it ships?", "agent": "Alex"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-feature-mar", "payload": {"text": "Yes please, that would be great.", "channel": "email"}},
+        ],
+        "resolutions": [
+            {"session_id": "ticket-tls-feb", "status": "resolved", "resolution_summary": "Added sslmode=require to connection string to fix TLS errors after maintenance window"},
+            {"session_id": "ticket-billing-mar", "status": "resolved", "resolution_summary": "Corrected seat count from 15 to 12, issued $450 refund"},
+            {"session_id": "ticket-feature-mar", "status": "open", "resolution_summary": "Feature request for read replicas - tracking for Q2"},
+        ],
+    },
+    "marcus-agency": {
+        "episodes": [
+            # Onboarding context
+            {"source": "crm", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Marcus Rivera, founder of PixelForge agency. Pro plan. Uses API to build white-label dashboards for his clients.", "name": "Marcus Rivera", "company": "PixelForge", "role": "Founder", "plan": "pro", "use_case": "white_label_dashboards"}},
+            {"source": "crm", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Stack: Next.js, TypeScript, Vercel, Supabase. Uses our REST API heavily — averaging 50k calls/day across client dashboards.", "framework": "nextjs", "language": "typescript", "hosting": "vercel", "database": "supabase", "api_usage": "50k_calls_per_day"}},
+            {"source": "crm", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Marcus strongly prefers Slack DMs for communication. Hates long emails. Wants bullet-point answers only.", "contact_preference": "slack_dm", "communication_style": "bullet_points_only", "dislikes": "long_emails"}},
+
+            # Rate limit ticket - resolved (slightly slow first response)
+            {"source": "user", "type": "support_message", "session_id": "ticket-ratelimit-mar", "payload": {"text": "URGENT: Hit rate limit during live client demo!! Need immediate help", "channel": "slack"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-ratelimit-mar", "payload": {"text": "On it Marcus. Temporarily increasing your limit from 10k to 25k/hour. Should be active in ~2 mins.", "agent": "Sam"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-ratelimit-mar", "payload": {"text": "working now, lifesaver 🙏", "channel": "slack"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-ratelimit-mar", "payload": {"text": "Great! The increase is temp (7 days). Ping me if you need to discuss permanent upgrade.", "agent": "Sam"}},
+
+            # Webhook ticket - resolved 
+            {"source": "user", "type": "support_message", "session_id": "ticket-webhook-apr", "payload": {"text": "Webhooks stopped working to our Vercel endpoint. Getting timeouts.", "channel": "slack"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-webhook-apr", "payload": {"text": "Checking... I see the issue. Your webhook URL uses Vercel hobby tier which has cold start delays. Update to your pro domain and it should work.", "agent": "Sam"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-webhook-apr", "payload": {"text": "Updated. All good now, thanks!", "channel": "slack"}},
+        ],
+        "resolutions": [
+            {"session_id": "ticket-ratelimit-mar", "status": "resolved", "resolution_summary": "Temporary rate limit increase from 10k to 25k/hour for 7 days"},
+            {"session_id": "ticket-webhook-apr", "status": "resolved", "resolution_summary": "Webhook timeouts fixed by updating from Vercel hobby to pro domain"},
+        ],
+    },
+    "priya-enterprise": {
+        "episodes": [
+            # Onboarding context
+            {"source": "crm", "type": "customer_profile", "session_id": "onboarding-001", "payload": {"text": "Priya Sharma, Lead Architect at MedSecure Health. Enterprise plan, 85-person engineering org. Healthcare vertical — strict compliance requirements.", "name": "Priya Sharma", "company": "MedSecure Health", "role": "Lead Architect", "plan": "enterprise", "team_size": 85, "vertical": "healthcare"}},
+            {"source": "crm", "type": "technical_context", "session_id": "onboarding-001", "payload": {"text": "Multi-region deployment: primary in us-east-1, DR in eu-west-1. Uses Kubernetes, Java/Spring Boot, and Oracle DB. Needs HIPAA and SOC2 compliance.", "regions": ["us-east-1", "eu-west-1"], "orchestration": "kubernetes", "language": "java", "framework": "spring_boot", "database": "oracle", "compliance": ["hipaa", "soc2"]}},
+            {"source": "crm", "type": "preference", "session_id": "onboarding-001", "payload": {"text": "Priya requires all communications via their Jira Service Desk. No informal channels. Needs audit trails for every support interaction.", "contact_preference": "jira_service_desk", "requires_audit_trail": True, "communication_style": "formal_documented"}},
+
+            # Data residency ticket - resolved
+            {"source": "user", "type": "support_message", "session_id": "ticket-residency-jan", "payload": {"text": "For GDPR compliance, we need written confirmation that EU user data in our system stays in eu-west-1 and never touches US servers.", "channel": "jira"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-residency-jan", "payload": {"text": "Hi Priya, I can confirm that region pinning is active on your Enterprise plan. EU data is isolated to eu-west-1. I'm attaching our data residency documentation and can provide a signed letter if needed for your compliance records.", "agent": "Taylor"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-residency-jan", "payload": {"text": "The documentation is sufficient. Please add the signed letter to our account file for our May audit.", "channel": "jira"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-residency-jan", "payload": {"text": "Done. Letter uploaded to your account documents. Let me know if you need anything else for the audit.", "agent": "Taylor"}},
+
+            # Audit prep - open (upcoming)
+            {"source": "user", "type": "support_message", "session_id": "ticket-audit-may", "payload": {"text": "Security audit scheduled for May 15. We need: 1) SOC2 Type II report 2) Updated DPA 3) Penetration test results from last 12 months", "channel": "jira"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-audit-may", "payload": {"text": "Hi Priya, I've started gathering these documents. SOC2 Type II and pen test results are ready. The updated DPA is with legal — ETA April 28. I'll send everything as a package once complete.", "agent": "Taylor"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-audit-may", "payload": {"text": "Thank you. Please ensure the DPA reflects our EU data residency requirements specifically.", "channel": "jira"}},
+
+            # Failover ticket - open (engineering working on fix)
+            {"source": "user", "type": "support_message", "session_id": "ticket-failover-mar", "payload": {"text": "Our failover test from us-east-1 to eu-west-1 took 45 seconds. Our SLA with clients requires <30s. This is a blocker for our Q2 rollout.", "channel": "jira"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-failover-mar", "payload": {"text": "Hi Priya, I've escalated this to our infrastructure team. Initial analysis shows the delay is in DNS propagation. Engineering is working on a fix with ETA April 30.", "agent": "Taylor"}},
+            {"source": "user", "type": "support_message", "session_id": "ticket-failover-mar", "payload": {"text": "Please keep me updated weekly. This is critical for our healthcare clients.", "channel": "jira"}},
+            {"source": "agent", "type": "support_response", "session_id": "ticket-failover-mar", "payload": {"text": "Understood. I've set up weekly status updates every Monday. Next update: April 7.", "agent": "Taylor"}},
+        ],
+        "resolutions": [
+            {"session_id": "ticket-residency-jan", "status": "resolved", "resolution_summary": "Confirmed EU data residency, provided documentation and signed letter for compliance audit"},
+            {"session_id": "ticket-audit-may", "status": "open", "resolution_summary": "Gathering SOC2 Type II, DPA, and pen test docs for May 15 audit - DPA ETA April 28"},
+            {"session_id": "ticket-failover-mar", "status": "open", "resolution_summary": "Failover taking 45s vs required 30s - engineering fix ETA April 30"},
+        ],
+    },
 }
 
 
-async def bootstrap_persona(client: httpx.AsyncClient, persona_id: str, episodes: list[dict]):
+async def bootstrap_persona(client: httpx.AsyncClient, persona_id: str, data: dict):
     """Bootstrap a single persona snapshot."""
+    episodes = data["episodes"]
+    resolutions = data.get("resolutions", [])
+
     # Check if snapshot already exists
     resp = await client.get(f"{STATEWAVE_URL}/admin/snapshots")
     if resp.status_code == 200:
@@ -81,6 +146,17 @@ async def bootstrap_persona(client: httpx.AsyncClient, persona_id: str, episodes
             print(f"    ERROR ingesting: {resp.status_code} {resp.text}")
             return
 
+    # Create resolutions for SLA tracking
+    if resolutions:
+        print(f"  → Creating {len(resolutions)} resolution records...")
+        for res in resolutions:
+            resp = await client.post(
+                f"{STATEWAVE_URL}/v1/resolutions",
+                json={"subject_id": temp_subject, **res},
+            )
+            if resp.status_code not in (200, 201):
+                print(f"    ERROR creating resolution: {resp.status_code} {resp.text}")
+
     # Compile memories
     print("  → Compiling memories...")
     resp = await client.post(
@@ -106,8 +182,8 @@ async def bootstrap_persona(client: httpx.AsyncClient, persona_id: str, episodes
         print(f"    ERROR creating snapshot: {resp.status_code} {resp.text}")
         return
 
-    data = resp.json()
-    print(f"  ✓ Snapshot '{persona_id}' v{TEMPLATE_VERSION} created: {data.get('episode_count', '?')} episodes, {data.get('memory_count', '?')} memories")
+    result = resp.json()
+    print(f"  ✓ Snapshot '{persona_id}' v{TEMPLATE_VERSION} created: {result.get('episode_count', '?')} episodes, {result.get('memory_count', '?')} memories")
 
     # Clean up temp subject
     await client.delete(f"{STATEWAVE_URL}/v1/subjects/{temp_subject}")
@@ -131,9 +207,9 @@ async def main():
             print(f"ERROR: Cannot reach server at {STATEWAVE_URL}: {e}")
             sys.exit(1)
 
-        for persona_id, episodes in PERSONAS.items():
+        for persona_id, persona_data in PERSONAS.items():
             print(f"[{persona_id}]")
-            await bootstrap_persona(client, persona_id, episodes)
+            await bootstrap_persona(client, persona_id, persona_data)
             print()
 
     print("Done! All snapshots bootstrapped.")

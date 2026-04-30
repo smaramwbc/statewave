@@ -22,6 +22,7 @@ class SubjectListItem(BaseModel):
     tenant_id: str | None
     episode_count: int
     memory_count: int
+    session_count: int
     last_episode_at: str | None
     health_state: str | None
     health_score: int | None
@@ -148,8 +149,11 @@ async def dashboard_overview():
             return stats
 
     async def _get_health_distribution():
-        """Get subject health score distribution from cache table."""
-        from server.db.tables import Base
+        """Get subject health score distribution from cache table.
+
+        Also includes subjects without health data as 'unknown'.
+        """
+        from server.db.tables import Base, EpisodeRow
 
         # Check if health cache table exists in metadata
         if "subject_health_cache" not in Base.metadata.tables:
@@ -158,12 +162,28 @@ async def dashboard_overview():
             from sqlalchemy import text
 
             async with engine_module.async_session_factory() as session:
+                # Get health state distribution from cache
                 rows = await session.execute(
                     text(
                         "SELECT last_state, COUNT(*) FROM subject_health_cache GROUP BY last_state"
                     )
                 )
-                return {row[0]: row[1] for row in rows}
+                dist = {row[0]: row[1] for row in rows}
+
+                # Get total distinct subjects from episodes
+                total_subjects = (
+                    await session.scalar(select(func.count(func.distinct(EpisodeRow.subject_id))))
+                    or 0
+                )
+
+                # Calculate subjects without health data
+                subjects_with_health = sum(dist.values())
+                unknown_count = total_subjects - subjects_with_health
+
+                if unknown_count > 0:
+                    dist["unknown"] = unknown_count
+
+                return dist
         except Exception:
             return None
 
@@ -202,6 +222,24 @@ async def dashboard_overview():
         "webhooks": webhook_stats,
         "health_distribution": health_dist,
     }
+
+
+@router.get("/tenants")
+async def list_tenants():
+    """List all distinct tenant IDs in the system."""
+    from sqlalchemy import distinct, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow
+
+    async with engine_module.async_session_factory() as session:
+        result = await session.execute(
+            select(distinct(EpisodeRow.tenant_id))
+            .where(EpisodeRow.tenant_id.isnot(None))
+            .order_by(EpisodeRow.tenant_id)
+        )
+        tenants = [row[0] for row in result.all()]
+        return {"tenants": tenants}
 
 
 # ─── Subject Explorer ────────────────────────────────────────────────────────
@@ -256,6 +294,17 @@ async def list_subjects_admin(
             .subquery()
         )
 
+        # Session count per subject (distinct non-null session_ids from episodes)
+        session_stats = (
+            select(
+                EpisodeRow.subject_id,
+                func.count(func.distinct(EpisodeRow.session_id)).label("session_count"),
+            )
+            .where(EpisodeRow.session_id.isnot(None))
+            .group_by(EpisodeRow.subject_id)
+            .subquery()
+        )
+
         # Open sessions per subject
         open_sessions = (
             select(
@@ -276,12 +325,14 @@ async def list_subjects_admin(
             ep_stats.c.tenant_id,
             ep_stats.c.episode_count,
             func.coalesce(mem_stats.c.memory_count, 0).label("memory_count"),
+            func.coalesce(session_stats.c.session_count, 0).label("session_count"),
             ep_stats.c.last_episode_at,
             health_cache.c.last_state.label("health_state"),
             health_cache.c.last_score.label("health_score"),
             func.coalesce(open_sessions.c.open_count, 0).label("open_sessions"),
         ).select_from(
             ep_stats.outerjoin(mem_stats, ep_stats.c.subject_id == mem_stats.c.subject_id)
+            .outerjoin(session_stats, ep_stats.c.subject_id == session_stats.c.subject_id)
             .outerjoin(open_sessions, ep_stats.c.subject_id == open_sessions.c.subject_id)
             .outerjoin(health_cache, ep_stats.c.subject_id == health_cache.c.subject_id)
         )
@@ -328,19 +379,56 @@ async def list_subjects_admin(
         result = await session.execute(stmt)
         rows = result.all()
 
-        subjects = [
-            SubjectListItem(
-                subject_id=row.subject_id,
-                tenant_id=row.tenant_id,
-                episode_count=row.episode_count,
-                memory_count=row.memory_count,
-                last_episode_at=row.last_episode_at.isoformat() if row.last_episode_at else None,
-                health_state=row.health_state,
-                health_score=row.health_score,
-                open_sessions=row.open_sessions,
+        # Compute health for subjects that don't have cached values
+        from server.db import repositories as repo
+        from server.services.health import compute_health
+
+        subjects = []
+        for row in rows:
+            health_state = row.health_state
+            health_score = row.health_score
+
+            # If no cached health, compute it now
+            if health_state is None:
+                try:
+                    health_result = await compute_health(
+                        session, row.subject_id, tenant_id=row.tenant_id
+                    )
+                    health_state = health_result.state
+                    health_score = health_result.score
+                    # Cache for future requests (best-effort, separate session)
+                    try:
+                        from server.db.engine import async_session_factory
+
+                        async with async_session_factory() as cache_session:
+                            await repo.upsert_health_cache(
+                                cache_session,
+                                row.subject_id,
+                                health_state,
+                                health_score,
+                                tenant_id=row.tenant_id,
+                            )
+                            await cache_session.commit()
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            subjects.append(
+                SubjectListItem(
+                    subject_id=row.subject_id,
+                    tenant_id=row.tenant_id,
+                    episode_count=row.episode_count,
+                    memory_count=row.memory_count,
+                    session_count=row.session_count,
+                    last_episode_at=row.last_episode_at.isoformat()
+                    if row.last_episode_at
+                    else None,
+                    health_state=health_state,
+                    health_score=health_score,
+                    open_sessions=row.open_sessions,
+                )
             )
-            for row in rows
-        ]
 
         return SubjectListResponse(
             subjects=subjects,
@@ -446,6 +534,24 @@ async def get_subject_detail(
         except Exception:
             pass
 
+        # Update health cache in background (separate session to avoid conflicts)
+        if health_summary:
+            try:
+                from server.db.engine import async_session_factory
+                from server.db import repositories as repo
+
+                async with async_session_factory() as cache_session:
+                    await repo.upsert_health_cache(
+                        cache_session,
+                        subject_id,
+                        health_summary.state,
+                        health_summary.score,
+                        tenant_id=tenant_id,
+                    )
+                    await cache_session.commit()
+            except Exception:
+                pass  # Cache update is best-effort
+
         # SLA
         sla_summary = None
         try:
@@ -483,11 +589,12 @@ async def list_subject_memories(
     tenant_id: str | None = Query(None, description="Filter by tenant"),
     status: Literal["active", "superseded", "all"] = Query("all", description="Filter by status"),
     kind: str | None = Query(None, description="Filter by memory kind"),
+    search: str | None = Query(None, description="Search in content, summary, and kind"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    """List memories for a subject with filtering and pagination."""
-    from sqlalchemy import func, select
+    """List memories for a subject with filtering, search, and pagination."""
+    from sqlalchemy import func, or_, select
 
     from server.db import engine as engine_module
     from server.db.tables import MemoryRow
@@ -500,6 +607,15 @@ async def list_subject_memories(
             base = base.where(MemoryRow.status == status)
         if kind:
             base = base.where(MemoryRow.kind == kind)
+        if search:
+            search_pattern = f"%{search}%"
+            base = base.where(
+                or_(
+                    MemoryRow.content.ilike(search_pattern),
+                    MemoryRow.summary.ilike(search_pattern),
+                    MemoryRow.kind.ilike(search_pattern),
+                )
+            )
 
         # Count
         count_stmt = select(func.count()).select_from(base.subquery())
@@ -540,11 +656,13 @@ async def list_subject_episodes(
     tenant_id: str | None = Query(None, description="Filter by tenant"),
     session_id: str | None = Query(None, description="Filter by session"),
     type: str | None = Query(None, description="Filter by episode type"),
+    search: str | None = Query(None, description="Search in payload (JSON text), type, and source"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    """List episodes for a subject with filtering and pagination."""
-    from sqlalchemy import func, select
+    """List episodes for a subject with filtering, search, and pagination."""
+    from sqlalchemy import func, or_, select
+    from sqlalchemy.dialects.postgresql import JSONB
 
     from server.db import engine as engine_module
     from server.db.tables import EpisodeRow
@@ -557,6 +675,17 @@ async def list_subject_episodes(
             base = base.where(EpisodeRow.session_id == session_id)
         if type:
             base = base.where(EpisodeRow.type == type)
+        if search:
+            search_pattern = f"%{search}%"
+            # Cast payload to text for searching
+            base = base.where(
+                or_(
+                    EpisodeRow.payload.cast(JSONB).astext.ilike(search_pattern),
+                    EpisodeRow.type.ilike(search_pattern),
+                    EpisodeRow.source.ilike(search_pattern),
+                    EpisodeRow.session_id.ilike(search_pattern),
+                )
+            )
 
         # Count
         count_stmt = select(func.count()).select_from(base.subquery())
@@ -586,6 +715,448 @@ async def list_subject_episodes(
             total=total,
             limit=limit,
             offset=offset,
+        )
+
+
+@router.get(
+    "/subjects/{subject_id}/episodes/{episode_id}/citing-memories",
+    response_model=MemoryListResponse,
+)
+async def list_citing_memories(
+    subject_id: str,
+    episode_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List memories that cite (were derived from) a specific episode.
+
+    This enables reverse provenance lookup: from an episode, find all
+    memories that list it in their source_episode_ids.
+    """
+    import uuid as uuid_module
+
+    from sqlalchemy import any_, func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    # Validate episode_id is a valid UUID
+    try:
+        episode_uuid = uuid_module.UUID(episode_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid episode_id format")
+
+    async with engine_module.async_session_factory() as session:
+        # Find memories where episode_id is in source_episode_ids array
+        base = select(MemoryRow).where(
+            MemoryRow.subject_id == subject_id,
+            episode_uuid == any_(MemoryRow.source_episode_ids),
+        )
+        if tenant_id:
+            base = base.where(MemoryRow.tenant_id == tenant_id)
+
+        # Count
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = await session.scalar(count_stmt) or 0
+
+        # Get data ordered by created_at desc (newest first)
+        stmt = base.order_by(MemoryRow.created_at.desc()).limit(limit).offset(offset)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+        memories = [
+            MemoryListItem(
+                id=str(m.id),
+                kind=m.kind,
+                content=m.content,
+                summary=m.summary,
+                confidence=m.confidence,
+                status=m.status,
+                source_episode_ids=[str(eid) for eid in m.source_episode_ids],
+                valid_from=m.valid_from.isoformat(),
+                valid_to=m.valid_to.isoformat() if m.valid_to else None,
+                created_at=m.created_at.isoformat(),
+            )
+            for m in rows
+        ]
+
+        return MemoryListResponse(
+            memories=memories,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+
+# ─── Memory Evolution / Related Memories ─────────────────────────────────────
+
+
+class RelatedMemoryItem(BaseModel):
+    """A memory related to the target memory."""
+
+    id: str
+    kind: str
+    content: str
+    summary: str
+    confidence: float
+    status: str
+    created_at: str
+    relationship: str  # "supersedes" | "sibling" | "superseded_by"
+
+
+class MemoryEvolutionResponse(BaseModel):
+    """Response for memory evolution/related memories lookup."""
+
+    memory_id: str
+    status: str
+    created_at: str
+    superseding_memory: RelatedMemoryItem | None  # The memory that replaced this one
+    superseded_memories: list[RelatedMemoryItem]  # Memories this one replaced
+    sibling_memories: list[RelatedMemoryItem]  # Other memories from same sources
+    source_episode_count: int
+
+
+@router.get(
+    "/subjects/{subject_id}/memories/{memory_id}/related",
+    response_model=MemoryEvolutionResponse,
+)
+async def get_memory_related(
+    subject_id: str,
+    memory_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Get memory evolution and related memories.
+
+    Returns:
+    - superseding_memory: If this memory is superseded, the active memory that replaced it
+    - superseded_memories: If this memory is active, older memories it superseded
+    - sibling_memories: Other memories derived from the same source episodes
+    """
+    import uuid as uuid_module
+
+    from sqlalchemy import any_, or_, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    # Validate memory_id is a valid UUID
+    try:
+        memory_uuid = uuid_module.UUID(memory_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid memory_id format")
+
+    async with engine_module.async_session_factory() as session:
+        # Get the target memory
+        stmt = select(MemoryRow).where(
+            MemoryRow.id == memory_uuid,
+            MemoryRow.subject_id == subject_id,
+        )
+        if tenant_id:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+
+        result = await session.execute(stmt)
+        target = result.scalar_one_or_none()
+
+        if not target:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        superseding_memory = None
+        superseded_memories: list[RelatedMemoryItem] = []
+        sibling_memories: list[RelatedMemoryItem] = []
+
+        # If this memory is superseded, find the active memory that replaced it
+        if target.status == "superseded" and target.source_episode_ids:
+            # Look for an active memory of the same kind with overlapping source episodes
+            # that was created after this one
+            superseder_stmt = (
+                select(MemoryRow)
+                .where(
+                    MemoryRow.subject_id == subject_id,
+                    MemoryRow.kind == target.kind,
+                    MemoryRow.status == "active",
+                    MemoryRow.created_at > target.created_at,
+                    MemoryRow.id != target.id,
+                )
+                .order_by(MemoryRow.created_at.asc())
+                .limit(1)
+            )
+            if tenant_id:
+                superseder_stmt = superseder_stmt.where(MemoryRow.tenant_id == tenant_id)
+
+            superseder_result = await session.execute(superseder_stmt)
+            superseder = superseder_result.scalar_one_or_none()
+
+            if superseder:
+                superseding_memory = RelatedMemoryItem(
+                    id=str(superseder.id),
+                    kind=superseder.kind,
+                    content=superseder.content,
+                    summary=superseder.summary,
+                    confidence=superseder.confidence,
+                    status=superseder.status,
+                    created_at=superseder.created_at.isoformat(),
+                    relationship="supersedes",
+                )
+
+        # If this memory is active, find memories it superseded
+        if target.status == "active":
+            superseded_stmt = (
+                select(MemoryRow)
+                .where(
+                    MemoryRow.subject_id == subject_id,
+                    MemoryRow.kind == target.kind,
+                    MemoryRow.status == "superseded",
+                    MemoryRow.created_at < target.created_at,
+                    MemoryRow.id != target.id,
+                )
+                .order_by(MemoryRow.created_at.desc())
+                .limit(5)
+            )
+            if tenant_id:
+                superseded_stmt = superseded_stmt.where(MemoryRow.tenant_id == tenant_id)
+
+            superseded_result = await session.execute(superseded_stmt)
+            for m in superseded_result.scalars().all():
+                superseded_memories.append(
+                    RelatedMemoryItem(
+                        id=str(m.id),
+                        kind=m.kind,
+                        content=m.content,
+                        summary=m.summary,
+                        confidence=m.confidence,
+                        status=m.status,
+                        created_at=m.created_at.isoformat(),
+                        relationship="superseded_by",
+                    )
+                )
+
+        # Find sibling memories (same source episodes, different memory)
+        if target.source_episode_ids:
+            # Find memories that share at least one source episode
+            sibling_conditions = [
+                ep_id == any_(MemoryRow.source_episode_ids)
+                for ep_id in target.source_episode_ids[:5]  # Limit to first 5 to avoid huge OR
+            ]
+            sibling_stmt = (
+                select(MemoryRow)
+                .where(
+                    MemoryRow.subject_id == subject_id,
+                    MemoryRow.id != target.id,
+                    or_(*sibling_conditions),
+                )
+                .order_by(MemoryRow.created_at.desc())
+                .limit(10)
+            )
+            if tenant_id:
+                sibling_stmt = sibling_stmt.where(MemoryRow.tenant_id == tenant_id)
+
+            sibling_result = await session.execute(sibling_stmt)
+            for m in sibling_result.scalars().all():
+                # Skip if already in superseding or superseded
+                if superseding_memory and m.id == uuid_module.UUID(superseding_memory.id):
+                    continue
+                if any(s.id == str(m.id) for s in superseded_memories):
+                    continue
+
+                sibling_memories.append(
+                    RelatedMemoryItem(
+                        id=str(m.id),
+                        kind=m.kind,
+                        content=m.content,
+                        summary=m.summary,
+                        confidence=m.confidence,
+                        status=m.status,
+                        created_at=m.created_at.isoformat(),
+                        relationship="sibling",
+                    )
+                )
+
+        return MemoryEvolutionResponse(
+            memory_id=str(target.id),
+            status=target.status,
+            created_at=target.created_at.isoformat(),
+            superseding_memory=superseding_memory,
+            superseded_memories=superseded_memories,
+            sibling_memories=sibling_memories,
+            source_episode_count=len(target.source_episode_ids),
+        )
+
+
+# ─── Session Timeline ─────────────────────────────────────────────────────────
+
+
+class TimelineEpisodeEvent(BaseModel):
+    """Episode event in a session timeline."""
+
+    event_type: Literal["episode"] = "episode"
+    id: str
+    source: str
+    type: str
+    payload: dict
+    metadata: dict
+    provenance: dict
+    created_at: str
+    citing_memory_count: int
+
+
+class TimelineResolutionEvent(BaseModel):
+    """Resolution event in a session timeline."""
+
+    event_type: Literal["resolution"] = "resolution"
+    resolved_at: str
+    status: str
+
+
+class SessionTimelineResponse(BaseModel):
+    """Session timeline with chronologically merged events."""
+
+    session_id: str
+    status: str
+    first_message_at: str | None
+    first_response_at: str | None
+    resolved_at: str | None
+    first_response_seconds: float | None
+    resolution_seconds: float | None
+    first_response_breached: bool
+    resolution_breached: bool
+    episode_count: int
+    events: list[TimelineEpisodeEvent | TimelineResolutionEvent]
+
+
+@router.get(
+    "/subjects/{subject_id}/sessions/{session_id}/timeline",
+    response_model=SessionTimelineResponse,
+)
+async def get_session_timeline(
+    subject_id: str,
+    session_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    limit: int = Query(200, ge=1, le=500, description="Max episodes to include"),
+):
+    """Get a chronological timeline of events for a session.
+
+    Returns episodes in chronological order (oldest first), with resolution
+    events interleaved at the correct timestamp. Each episode includes a
+    citing_memory_count for quick provenance visibility.
+    """
+    from sqlalchemy import any_, func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow
+    from server.services.sla import compute_sla
+
+    async with engine_module.async_session_factory() as session:
+        # Get episodes for this session
+        base = select(EpisodeRow).where(
+            EpisodeRow.subject_id == subject_id,
+            EpisodeRow.session_id == session_id,
+        )
+        if tenant_id:
+            base = base.where(EpisodeRow.tenant_id == tenant_id)
+
+        # Order chronologically (oldest first for timeline)
+        stmt = base.order_by(EpisodeRow.created_at.asc()).limit(limit)
+        result = await session.execute(stmt)
+        episode_rows = result.scalars().all()
+
+        # Get total count for this session
+        count_stmt = select(func.count()).select_from(
+            select(EpisodeRow)
+            .where(
+                EpisodeRow.subject_id == subject_id,
+                EpisodeRow.session_id == session_id,
+            )
+            .subquery()
+        )
+        episode_count = await session.scalar(count_stmt) or 0
+
+        # Get citing memory counts for all episode IDs in one query
+        episode_ids = [e.id for e in episode_rows]
+        citing_counts: dict[str, int] = {}
+
+        if episode_ids:
+            # Count memories that cite each episode
+            for ep_id in episode_ids:
+                count_q = select(func.count()).where(
+                    MemoryRow.subject_id == subject_id,
+                    ep_id == any_(MemoryRow.source_episode_ids),
+                )
+                citing_counts[str(ep_id)] = await session.scalar(count_q) or 0
+
+        # Get resolution for this session
+        resolution_stmt = select(ResolutionRow).where(
+            ResolutionRow.subject_id == subject_id,
+            ResolutionRow.session_id == session_id,
+        )
+        if tenant_id:
+            resolution_stmt = resolution_stmt.where(ResolutionRow.tenant_id == tenant_id)
+        resolution_result = await session.execute(resolution_stmt)
+        resolution = resolution_result.scalar_one_or_none()
+
+        # Compute SLA metrics for this session
+        sla_result = await compute_sla(session, subject_id, tenant_id=tenant_id)
+        session_sla = next((s for s in sla_result.sessions if s.session_id == session_id), None)
+
+        # Build chronological event list
+        events: list[TimelineEpisodeEvent | TimelineResolutionEvent] = []
+
+        resolution_inserted = False
+        resolved_at = resolution.resolved_at if resolution else None
+
+        for ep in episode_rows:
+            # Insert resolution event at the right position
+            if not resolution_inserted and resolved_at and ep.created_at > resolved_at:
+                events.append(
+                    TimelineResolutionEvent(
+                        resolved_at=resolved_at.isoformat(),
+                        status=resolution.status if resolution else "resolved",
+                    )
+                )
+                resolution_inserted = True
+
+            events.append(
+                TimelineEpisodeEvent(
+                    id=str(ep.id),
+                    source=ep.source,
+                    type=ep.type,
+                    payload=ep.payload,
+                    metadata=ep.metadata_,
+                    provenance=ep.provenance,
+                    created_at=ep.created_at.isoformat(),
+                    citing_memory_count=citing_counts.get(str(ep.id), 0),
+                )
+            )
+
+        # If resolution is after all episodes, append at end
+        if not resolution_inserted and resolved_at:
+            events.append(
+                TimelineResolutionEvent(
+                    resolved_at=resolved_at.isoformat(),
+                    status=resolution.status if resolution else "resolved",
+                )
+            )
+
+        return SessionTimelineResponse(
+            session_id=session_id,
+            status=session_sla.status if session_sla else ("resolved" if resolution else "open"),
+            first_message_at=(
+                session_sla.first_message_at.isoformat()
+                if session_sla and session_sla.first_message_at
+                else None
+            ),
+            first_response_at=(
+                session_sla.first_response_at.isoformat()
+                if session_sla and session_sla.first_response_at
+                else None
+            ),
+            resolved_at=resolved_at.isoformat() if resolved_at else None,
+            first_response_seconds=session_sla.first_response_seconds if session_sla else None,
+            resolution_seconds=session_sla.resolution_seconds if session_sla else None,
+            first_response_breached=session_sla.first_response_breached if session_sla else False,
+            resolution_breached=session_sla.resolution_breached if session_sla else False,
+            episode_count=episode_count,
+            events=events,
         )
 
 
@@ -686,7 +1257,7 @@ async def list_compile_jobs(
     ),
     subject_id: str | None = Query(None, description="Filter by subject"),
     tenant_id: str | None = Query(None, description="Filter by tenant"),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
     """List compile jobs for operator debugging.
@@ -695,10 +1266,10 @@ async def list_compile_jobs(
     """
     from server.services.compile_jobs_durable import list_jobs
 
-    jobs = await list_jobs(
+    jobs, total = await list_jobs(
         status=status, subject_id=subject_id, tenant_id=tenant_id, limit=limit, offset=offset
     )
-    return {"jobs": jobs, "limit": limit, "offset": offset}
+    return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
 # ─── Tenant Audit ───
@@ -788,6 +1359,26 @@ async def import_subject_endpoint(req: ImportSubjectRequest):
 
 
 # ─── Webhooks ───
+
+
+@router.get("/webhooks")
+async def list_webhook_events(
+    status: str | None = Query(
+        None, description="Filter by status: pending, delivered, dead_letter"
+    ),
+    event_type: str | None = Query(None, description="Filter by event type"),
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """List webhook events for operator debugging.
+
+    Returns recent events ordered by creation time (newest first).
+    """
+    events, total = await webhooks.list_events(
+        status=status, event_type=event_type, tenant_id=tenant_id, limit=limit, offset=offset
+    )
+    return {"events": events, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/webhooks/stats")

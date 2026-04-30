@@ -254,3 +254,61 @@ async def get_delivery_stats() -> dict[str, Any]:
         "dead_letter": counts.get("dead_letter", 0),
         "total": sum(counts.values()),
     }
+
+
+async def list_events(
+    status: str | None = None,
+    event_type: str | None = None,
+    tenant_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """List webhook events with filtering and pagination.
+
+    Returns (events, total_count) for operator visibility.
+    """
+    from sqlalchemy import func as sqlfunc
+
+    async with async_session_factory() as session:
+        # Base query
+        query = select(WebhookEventRow).order_by(WebhookEventRow.created_at.desc())
+        count_query = select(sqlfunc.count(WebhookEventRow.id))
+
+        # Apply filters
+        if status:
+            query = query.where(WebhookEventRow.status == status)
+            count_query = count_query.where(WebhookEventRow.status == status)
+        if event_type:
+            query = query.where(WebhookEventRow.event == event_type)
+            count_query = count_query.where(WebhookEventRow.event == event_type)
+        if tenant_id:
+            query = query.where(WebhookEventRow.tenant_id == tenant_id)
+            count_query = count_query.where(WebhookEventRow.tenant_id == tenant_id)
+
+        # Get total count
+        total = await session.scalar(count_query) or 0
+
+        # Apply pagination
+        query = query.limit(limit).offset(offset)
+        result = await session.execute(query)
+        rows = result.scalars().all()
+
+        events = [
+            {
+                "id": str(row.id),
+                "event": row.event,
+                "status": row.status,
+                "attempts": row.attempts,
+                "max_attempts": row.max_attempts,
+                "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else None,
+                "next_attempt_at": row.next_attempt_at.isoformat() if row.next_attempt_at else None,
+                "last_error": row.last_error,
+                "http_status": row.http_status,
+                "created_at": row.created_at.isoformat(),
+                "delivered_at": row.delivered_at.isoformat() if row.delivered_at else None,
+                "tenant_id": row.tenant_id,
+            }
+            for row in rows
+        ]
+
+        return events, total

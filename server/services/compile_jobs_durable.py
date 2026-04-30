@@ -155,23 +155,40 @@ async def list_jobs(
     tenant_id: str | None = None,
     limit: int = 20,
     offset: int = 0,
-) -> list[dict[str, Any]]:
-    """List compile jobs for admin introspection."""
+) -> tuple[list[dict[str, Any]], int]:
+    """List compile jobs for admin introspection.
+
+    Returns (jobs_list, total_count) tuple.
+    """
     try:
         async with async_session_factory() as session:
-            stmt = select(CompileJobRow).order_by(CompileJobRow.created_at.desc())
+            from sqlalchemy import func
+
+            # Build base filter conditions
+            conditions = []
             if status:
-                stmt = stmt.where(CompileJobRow.status == status)
+                conditions.append(CompileJobRow.status == status)
             if subject_id:
-                stmt = stmt.where(CompileJobRow.subject_id == subject_id)
+                conditions.append(CompileJobRow.subject_id == subject_id)
             if tenant_id is not None:
-                stmt = stmt.where(CompileJobRow.tenant_id == tenant_id)
+                conditions.append(CompileJobRow.tenant_id == tenant_id)
+
+            # Get total count
+            count_stmt = select(func.count()).select_from(CompileJobRow)
+            for cond in conditions:
+                count_stmt = count_stmt.where(cond)
+            total = await session.scalar(count_stmt) or 0
+
+            # Get paginated results
+            stmt = select(CompileJobRow).order_by(CompileJobRow.created_at.desc())
+            for cond in conditions:
+                stmt = stmt.where(cond)
             stmt = stmt.offset(offset).limit(limit)
 
             result = await session.execute(stmt)
             rows = result.scalars().all()
 
-            return [
+            jobs = [
                 {
                     "job_id": row.id,
                     "subject_id": row.subject_id,
@@ -185,9 +202,10 @@ async def list_jobs(
                 }
                 for row in rows
             ]
+            return jobs, total
     except Exception:
         logger.warning("compile_jobs_list_failed", exc_info=True)
-        return []
+        return [], 0
 
 
 async def cleanup_old_jobs(retention_hours: int = 168) -> int:

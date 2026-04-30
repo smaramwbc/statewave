@@ -91,29 +91,35 @@ async def compute_sla(
 
     for sid, eps in session_episodes.items():
         eps_sorted = sorted(eps, key=lambda e: e.created_at)
+        first_ep = eps_sorted[0] if eps_sorted else None
         resolution = resolution_map.get(sid)
         status = resolution.status if resolution else "unknown"
 
         sla = SessionSLA(session_id=sid, status=status)
 
-        # First user message
+        # First user message (various source names for user input)
+        user_sources = ("user", "chat", "support-chat", "support_chat", "customer", "manual_input")
         first_user = next(
-            (e for e in eps_sorted if getattr(e, "source", "") in ("user", "chat", "support-chat")),
+            (e for e in eps_sorted if getattr(e, "source", "") in user_sources),
             None,
         )
         # First agent/assistant response
+        agent_sources = ("assistant", "agent", "system", "tool", "support", "staff")
         first_response = next(
             (
                 e
                 for e in eps_sorted
-                if getattr(e, "source", "") in ("assistant", "agent", "system", "tool")
+                if getattr(e, "source", "") in agent_sources
                 and (first_user is None or e.created_at >= first_user.created_at)
             ),
             None,
         )
 
+        # Use first_user timestamp, or fall back to first episode in session
         if first_user:
             sla.first_message_at = first_user.created_at
+        elif first_ep:
+            sla.first_message_at = first_ep.created_at
 
         if first_response:
             sla.first_response_at = first_response.created_at

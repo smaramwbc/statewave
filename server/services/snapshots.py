@@ -20,7 +20,7 @@ import structlog
 from sqlalchemy import delete, func, select
 
 from server.db.engine import async_session_factory
-from server.db.tables import EpisodeRow, MemoryRow, SubjectSnapshotRow
+from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectSnapshotRow
 
 logger = structlog.stdlib.get_logger()
 
@@ -86,6 +86,19 @@ async def create_snapshot(
             .all()
         )
 
+        # Fetch source resolutions (for SLA tracking)
+        resolutions = (
+            (
+                await session.execute(
+                    select(ResolutionRow)
+                    .where(ResolutionRow.subject_id == source_subject_id)
+                    .order_by(ResolutionRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
         # Copy episodes into snapshot source subject with new IDs
         # We need an ID map so memories' source_episode_ids can be remapped
         snapshot_ep_id_map: dict[uuid.UUID, uuid.UUID] = {}
@@ -100,6 +113,7 @@ async def create_snapshot(
                     type=ep.type,
                     payload=ep.payload,
                     metadata_=ep.metadata_,
+                    session_id=ep.session_id,
                     provenance={**(ep.provenance or {}), "original_id": str(ep.id)},
                     created_at=ep.created_at,
                     last_compiled_at=ep.last_compiled_at,
@@ -127,6 +141,23 @@ async def create_snapshot(
                     embedding=mem.embedding,
                     created_at=mem.created_at,
                     updated_at=mem.updated_at,
+                )
+            )
+
+        # Copy resolutions into snapshot source subject
+        for res in resolutions:
+            session.add(
+                ResolutionRow(
+                    id=uuid.uuid4(),
+                    subject_id=snapshot_subject,
+                    session_id=res.session_id,
+                    tenant_id=res.tenant_id,
+                    status=res.status,
+                    resolution_summary=res.resolution_summary,
+                    resolved_at=res.resolved_at,
+                    metadata_=res.metadata_,
+                    created_at=res.created_at,
+                    updated_at=res.updated_at,
                 )
             )
 
@@ -208,6 +239,19 @@ async def restore_snapshot(
             .all()
         )
 
+        # Fetch source resolutions
+        resolutions = (
+            (
+                await session.execute(
+                    select(ResolutionRow)
+                    .where(ResolutionRow.subject_id == source_subject)
+                    .order_by(ResolutionRow.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
         if not eps:
             raise ValueError(f"Snapshot source '{source_subject}' has no episodes")
 
@@ -237,6 +281,7 @@ async def restore_snapshot(
                     type=ep.type,
                     payload=ep.payload,
                     metadata_=ep.metadata_,
+                    session_id=ep.session_id,
                     provenance={
                         **(ep.provenance or {}),
                         "restored_from_snapshot": str(snapshot_id),
@@ -287,6 +332,36 @@ async def restore_snapshot(
                 )
             )
 
+        # ── Resolution cloning with timestamp shifting ──
+        for res in resolutions:
+            res_created = res.created_at
+            if res_created.tzinfo is None:
+                res_created = res_created.replace(tzinfo=timezone.utc)
+            res_updated = res.updated_at
+            if res_updated.tzinfo is None:
+                res_updated = res_updated.replace(tzinfo=timezone.utc)
+            res_resolved = res.resolved_at
+            if res_resolved and res_resolved.tzinfo is None:
+                res_resolved = res_resolved.replace(tzinfo=timezone.utc)
+
+            session.add(
+                ResolutionRow(
+                    id=uuid.uuid4(),
+                    subject_id=target_subject_id,
+                    session_id=res.session_id,
+                    tenant_id=res.tenant_id,
+                    status=res.status,
+                    resolution_summary=res.resolution_summary,
+                    resolved_at=(res_resolved + time_shift) if res_resolved else None,
+                    metadata_={
+                        **(res.metadata_ or {}),
+                        "restored_from_snapshot": str(snapshot_id),
+                    },
+                    created_at=res_created + time_shift,
+                    updated_at=res_updated + time_shift,
+                )
+            )
+
         await session.commit()
 
         logger.info(
@@ -295,10 +370,12 @@ async def restore_snapshot(
             target=target_subject_id,
             episodes=len(eps),
             memories=len(mems),
+            resolutions=len(resolutions),
         )
         return {
             "episodes_restored": len(eps),
             "memories_restored": len(mems),
+            "resolutions_restored": len(resolutions),
             "subject_id": target_subject_id,
         }
 

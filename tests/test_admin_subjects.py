@@ -162,3 +162,66 @@ async def test_list_subject_episodes(client: AsyncClient):
     data = resp.json()
     assert len(data["episodes"]) >= 3
     assert data["total"] >= 3
+
+
+async def test_memory_related_not_found(client: AsyncClient):
+    """Return 404 for nonexistent memory."""
+    # Create a subject first
+    await client.post(
+        "/v1/episodes",
+        json={
+            "subject_id": "evolution_test_user",
+            "source": "test",
+            "type": "message",
+            "payload": {"text": "hello"},
+        },
+    )
+
+    resp = await client.get(
+        "/admin/subjects/evolution_test_user/memories/00000000-0000-0000-0000-000000000000/related"
+    )
+    assert resp.status_code == 404
+
+
+async def test_memory_related_invalid_uuid(client: AsyncClient):
+    """Return 400 for invalid memory UUID."""
+    resp = await client.get("/admin/subjects/test_user/memories/not-a-uuid/related")
+    assert resp.status_code == 400
+
+
+async def test_memory_related_basic(client: AsyncClient):
+    """Get related memories for a memory."""
+    # Create episode and compile to get a memory
+    await client.post(
+        "/v1/episodes",
+        json={
+            "subject_id": "evolution_user_basic",
+            "source": "test",
+            "type": "message",
+            "payload": {"text": "User prefers dark mode for all applications"},
+        },
+    )
+    await client.post("/v1/memories/compile", json={"subject_id": "evolution_user_basic"})
+
+    # Get the memory
+    mem_resp = await client.get("/admin/subjects/evolution_user_basic/memories")
+    assert mem_resp.status_code == 200
+    memories = mem_resp.json()["memories"]
+
+    if len(memories) == 0:
+        pytest.skip("No memories compiled - compiler may be disabled")
+
+    memory_id = memories[0]["id"]
+
+    # Get related memories
+    resp = await client.get(f"/admin/subjects/evolution_user_basic/memories/{memory_id}/related")
+    assert resp.status_code == 200
+    data = resp.json()
+
+    assert data["memory_id"] == memory_id
+    assert "status" in data
+    assert "created_at" in data
+    assert "superseding_memory" in data
+    assert "superseded_memories" in data
+    assert "sibling_memories" in data
+    assert "source_episode_count" in data

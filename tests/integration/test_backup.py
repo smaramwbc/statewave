@@ -6,13 +6,24 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from server.app import create_app
+from server.db.engine import get_session, set_engine_for_testing
+
+import tests.integration.conftest as _conftest
 
 
 @pytest.fixture
 async def client():
     app = create_app()
+
+    async def _override_get_session():
+        async with _conftest._session_factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _override_get_session
+    prev = set_engine_for_testing(_conftest._engine, _conftest._session_factory)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    set_engine_for_testing(*prev)
 
 
 @pytest.mark.anyio

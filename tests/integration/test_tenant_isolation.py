@@ -15,6 +15,16 @@ from httpx import ASGITransport, AsyncClient
 
 from server.app import create_app
 from server.core.config import settings
+from server.db.engine import get_session, set_engine_for_testing
+
+import tests.integration.conftest as _conftest
+
+
+def _make_override():
+    async def _override_get_session():
+        async with _conftest._session_factory() as session:
+            yield session
+    return _override_get_session
 
 
 @pytest.fixture
@@ -29,8 +39,11 @@ async def client():
     original = settings.require_tenant
     settings.require_tenant = True
     app = create_app()
+    app.dependency_overrides[get_session] = _make_override()
+    prev = set_engine_for_testing(_conftest._engine, _conftest._session_factory)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    set_engine_for_testing(*prev)
     settings.require_tenant = original
 
 
@@ -40,8 +53,11 @@ async def client_optional():
     original = settings.require_tenant
     settings.require_tenant = False
     app = create_app()
+    app.dependency_overrides[get_session] = _make_override()
+    prev = set_engine_for_testing(_conftest._engine, _conftest._session_factory)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         yield c
+    set_engine_for_testing(*prev)
     settings.require_tenant = original
 
 

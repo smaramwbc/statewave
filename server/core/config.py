@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Rate limiting (0 = disabled)
     rate_limit_rpm: int = 0
-    rate_limit_strategy: str = "distributed"  # "distributed" | "memory"
+    rate_limit_strategy: str = "memory"  # "memory" (default) | "distributed"
 
     # Subject Snapshots (advanced bootstrap — disabled by default)
     enable_snapshots: bool = False

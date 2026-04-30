@@ -29,6 +29,8 @@ class FakeEpisode:
         metadata_=None,
         provenance=None,
         last_compiled_at=None,
+        session_id=None,
+        updated_at=None,
     ):
         self.id = id
         self.subject_id = subject_id
@@ -38,7 +40,9 @@ class FakeEpisode:
         self.metadata_ = metadata_ or {}
         self.provenance = provenance or {}
         self.created_at = created_at
+        self.session_id = session_id
         self.last_compiled_at = last_compiled_at
+        self.updated_at = updated_at or created_at
 
 
 class FakeMemory:
@@ -138,6 +142,8 @@ async def test_restore_snapshot_remaps_provenance():
                 return FakeResult([fake_snap])
             elif "memories" in query_str:
                 return FakeResult(fake_mems)
+            elif "resolutions" in query_str:
+                return FakeResult([])  # No resolutions in this test
             else:
                 return FakeResult(fake_eps)
 
@@ -213,6 +219,8 @@ async def test_restore_snapshot_shifts_timestamps():
                 return FakeResult([fake_snap])
             elif "memories" in query_str:
                 return FakeResult(fake_mems)
+            elif "resolutions" in query_str:
+                return FakeResult([])  # No resolutions in this test
             else:
                 return FakeResult(fake_eps)
 
@@ -276,6 +284,8 @@ async def test_restore_preserves_relative_offsets():
                 return FakeResult([fake_snap])
             elif "memories" in query_str:
                 return FakeResult([])
+            elif "resolutions" in query_str:
+                return FakeResult([])  # No resolutions in this test
             else:
                 return FakeResult(fake_eps)
 
@@ -343,6 +353,8 @@ async def test_restore_adds_provenance_metadata():
                 return FakeResult([fake_snap])
             elif "memories" in query_str:
                 return FakeResult([])
+            elif "resolutions" in query_str:
+                return FakeResult([])  # No resolutions in this test
             else:
                 return FakeResult(fake_eps)
 

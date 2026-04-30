@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 
-pytestmark = pytest.mark.anyio
+pytestmark = pytest.mark.asyncio
 
 
 async def test_list_subjects_empty(client: AsyncClient):

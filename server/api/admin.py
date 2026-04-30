@@ -221,10 +221,8 @@ async def list_subjects_admin(
     offset: int = Query(0, ge=0),
 ):
     """List subjects with search, filtering, and aggregated stats for admin explorer."""
-    from datetime import timezone
 
-    from sqlalchemy import and_, case, func, literal, or_, select
-    from sqlalchemy.sql import text
+    from sqlalchemy import func, select
 
     from server.db import engine as engine_module
     from server.db.tables import (
@@ -283,9 +281,7 @@ async def list_subjects_admin(
             health_cache.c.last_score.label("health_score"),
             func.coalesce(open_sessions.c.open_count, 0).label("open_sessions"),
         ).select_from(
-            ep_stats.outerjoin(
-                mem_stats, ep_stats.c.subject_id == mem_stats.c.subject_id
-            )
+            ep_stats.outerjoin(mem_stats, ep_stats.c.subject_id == mem_stats.c.subject_id)
             .outerjoin(open_sessions, ep_stats.c.subject_id == open_sessions.c.subject_id)
             .outerjoin(health_cache, ep_stats.c.subject_id == health_cache.c.subject_id)
         )
@@ -365,21 +361,21 @@ async def get_subject_detail(
     from sqlalchemy import func, select
 
     from server.db import engine as engine_module
-    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectHealthCacheRow
+    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow
     from server.services.health import compute_health
     from server.services.sla import compute_sla
 
     async with engine_module.async_session_factory() as session:
         # Check subject exists
-        ep_count_stmt = select(func.count()).select_from(EpisodeRow).where(
-            EpisodeRow.subject_id == subject_id
+        ep_count_stmt = (
+            select(func.count()).select_from(EpisodeRow).where(EpisodeRow.subject_id == subject_id)
         )
         if tenant_id:
             ep_count_stmt = ep_count_stmt.where(EpisodeRow.tenant_id == tenant_id)
         ep_count = await session.scalar(ep_count_stmt) or 0
 
-        mem_count_stmt = select(func.count()).select_from(MemoryRow).where(
-            MemoryRow.subject_id == subject_id
+        mem_count_stmt = (
+            select(func.count()).select_from(MemoryRow).where(MemoryRow.subject_id == subject_id)
         )
         if tenant_id:
             mem_count_stmt = mem_count_stmt.where(MemoryRow.tenant_id == tenant_id)
@@ -398,20 +394,33 @@ async def get_subject_detail(
         time_result = await session.execute(time_stmt)
         time_row = time_result.one()
 
-        # Session count
-        session_count_stmt = select(func.count(func.distinct(ResolutionRow.session_id))).where(
+        # Session count — count distinct session_ids from both episodes and resolutions
+        # First, from episodes (where session_id is not null)
+        ep_session_stmt = select(func.count(func.distinct(EpisodeRow.session_id))).where(
+            EpisodeRow.subject_id == subject_id,
+            EpisodeRow.session_id.isnot(None),
+        )
+        if tenant_id:
+            ep_session_stmt = ep_session_stmt.where(EpisodeRow.tenant_id == tenant_id)
+        ep_session_count = await session.scalar(ep_session_stmt) or 0
+
+        # Also from resolutions table
+        res_session_stmt = select(func.count(func.distinct(ResolutionRow.session_id))).where(
             ResolutionRow.subject_id == subject_id
         )
         if tenant_id:
-            session_count_stmt = session_count_stmt.where(ResolutionRow.tenant_id == tenant_id)
-        session_count = await session.scalar(session_count_stmt) or 0
+            res_session_stmt = res_session_stmt.where(ResolutionRow.tenant_id == tenant_id)
+        res_session_count = await session.scalar(res_session_stmt) or 0
+
+        # Use the higher of the two (they may overlap)
+        session_count = max(ep_session_count, res_session_count)
 
         # Get tenant_id from the data if not specified
         actual_tenant_id = tenant_id
         if not actual_tenant_id:
-            tenant_stmt = select(EpisodeRow.tenant_id).where(
-                EpisodeRow.subject_id == subject_id
-            ).limit(1)
+            tenant_stmt = (
+                select(EpisodeRow.tenant_id).where(EpisodeRow.subject_id == subject_id).limit(1)
+            )
             actual_tenant_id = await session.scalar(tenant_stmt)
 
         summary = SubjectSummary(

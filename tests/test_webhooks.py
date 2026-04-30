@@ -33,7 +33,10 @@ async def test_fire_persists_event_when_url_set():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("server.services.webhooks.async_session_factory", return_value=mock_session):
+    def mock_factory():
+        return mock_session
+
+    with patch("server.services.webhooks.get_session_factory", return_value=mock_factory):
         event_id = await webhooks.fire("episode.created", {"id": "123"})
 
     assert event_id is not None

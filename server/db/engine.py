@@ -47,3 +47,14 @@ async def dispose_engine() -> None:
         await _engine.dispose()
         _engine = None
         _async_session_factory = None
+
+
+def set_engine_for_testing(
+    engine: AsyncEngine | None, factory: async_sessionmaker[AsyncSession] | None
+) -> tuple[AsyncEngine | None, async_sessionmaker[AsyncSession] | None]:
+    """Override engine and factory for testing. Returns previous values for restoration."""
+    global _engine, _async_session_factory
+    prev_engine, prev_factory = _engine, _async_session_factory
+    _engine = engine
+    _async_session_factory = factory
+    return prev_engine, prev_factory

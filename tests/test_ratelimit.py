@@ -102,8 +102,10 @@ class TestDistributedStrategy:
         # so we test that behavior directly
         from server.services.ratelimit import check_rate_limit
 
-        with patch("server.services.ratelimit.async_session_factory") as mock_factory:
-            mock_factory.side_effect = Exception("DB down")
+        def mock_factory():
+            raise Exception("DB down")
+
+        with patch("server.services.ratelimit.get_session_factory", return_value=mock_factory):
             allowed, retry = await check_rate_limit("test-ip", 10)
             assert allowed is True
             assert retry == 0

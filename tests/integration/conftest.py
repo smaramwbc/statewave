@@ -66,25 +66,20 @@ async def _override_get_session():
 async def client():
     """Async HTTP client wired to the real app with test DB."""
     from server.app import create_app
-    from server.db import engine as engine_module
-    from server.db.engine import get_session
+    from server.db.engine import get_session, set_engine_for_testing
 
     app = create_app()
     app.dependency_overrides[get_session] = _override_get_session
 
     # Patch the module-level engine and session factory so that readyz
     # and background tasks use the test engine (same event loop).
-    original_engine = engine_module.engine
-    original_factory = engine_module.async_session_factory
-    engine_module.engine = _engine
-    engine_module.async_session_factory = _session_factory
+    prev_engine, prev_factory = set_engine_for_testing(_engine, _session_factory)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
-    engine_module.engine = original_engine
-    engine_module.async_session_factory = original_factory
+    set_engine_for_testing(prev_engine, prev_factory)
 
 
 # ---------------------------------------------------------------------------

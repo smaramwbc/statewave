@@ -90,9 +90,12 @@ class TestDurableJobs:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             job = await submit_job_durable("test-subject")
 
@@ -104,9 +107,12 @@ class TestDurableJobs:
     @pytest.mark.anyio
     async def test_submit_job_durable_falls_back_on_db_error(self):
         """If durable persist fails, falls back to in-memory only."""
+        def mock_factory():
+            raise RuntimeError("DB down")
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            side_effect=RuntimeError("DB down"),
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             job = await submit_job_durable("test-subject")
 
@@ -142,9 +148,12 @@ class TestDurableJobs:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             result = await get_job_durable("db-job-1")
 
@@ -164,9 +173,12 @@ class TestDurableJobs:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             result = await get_job_durable("nonexistent")
 
@@ -180,9 +192,12 @@ class TestDurableJobs:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             await mark_running_durable(job.id)
 
@@ -196,9 +211,12 @@ class TestDurableJobs:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             await mark_completed_durable(job.id, 7, [])
 
@@ -213,9 +231,12 @@ class TestDurableJobs:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
+        def mock_factory():
+            return mock_session
+
         with patch(
-            "server.services.compile_jobs_durable.async_session_factory",
-            return_value=mock_session,
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
         ):
             await mark_failed_durable(job.id, "timeout")
 

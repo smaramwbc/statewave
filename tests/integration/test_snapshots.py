@@ -248,19 +248,20 @@ async def test_timestamp_shifting_lands_near_now(client: AsyncClient, subject_id
         # Fetch timeline for restored subject
         r = await client.get("/v1/timeline", params={"subject_id": target_id})
         assert r.status_code == 200
-        events = r.json().get("events", r.json().get("items", []))
-        assert len(events) >= 2
+        timeline = r.json()
+        episodes = timeline.get("episodes", [])
+        assert len(episodes) >= 2, f"Expected at least 2 episodes, got {len(episodes)}: {timeline}"
 
         # All timestamps should be within the last 60 seconds
         now = datetime.datetime.now(datetime.timezone.utc)
-        for event in events:
+        for event in episodes:
             ts = datetime.datetime.fromisoformat(event["created_at"].replace("Z", "+00:00"))
             delta = (now - ts).total_seconds()
             assert delta < 60, f"Restored timestamp too old: {delta}s ago"
 
         # Relative order preserved (second event after first)
         timestamps = [
-            datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00")) for e in events
+            datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00")) for e in episodes
         ]
         assert timestamps == sorted(timestamps)
 

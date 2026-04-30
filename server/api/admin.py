@@ -818,6 +818,13 @@ class RestoreByNameRequest(BaseModel):
     version: Optional[int] = None
 
 
+class CreateSnapshotRequest(BaseModel):
+    name: str
+    source_subject_id: str
+    version: int = 1
+    metadata: Optional[dict] = None
+
+
 @router.get("/snapshots")
 async def list_snapshots_endpoint():
     """List available subject snapshots."""
@@ -825,6 +832,24 @@ async def list_snapshots_endpoint():
     from server.services.snapshots import list_snapshots
 
     return {"snapshots": await list_snapshots()}
+
+
+@router.post("/snapshots")
+async def create_snapshot_endpoint(req: CreateSnapshotRequest):
+    """Create a snapshot from an existing subject."""
+    _require_snapshots()
+    from server.services.snapshots import create_snapshot
+
+    try:
+        result = await create_snapshot(
+            name=req.name,
+            source_subject_id=req.source_subject_id,
+            version=req.version,
+            metadata=req.metadata or {},
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/snapshots/{snapshot_id}/restore")

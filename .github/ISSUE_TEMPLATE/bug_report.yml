@@ -1,0 +1,126 @@
+name: 🐛 Bug Report
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the form below.
+        
+        **Before submitting:**
+        - Search [existing issues](https://github.com/smaramwbc/statewave/issues) to avoid duplicates
+        - Make sure you're using a supported version
+
+  - type: dropdown
+    id: affected-component
+    attributes:
+      label: Affected Component
+      description: Which part of Statewave is affected?
+      options:
+        - Backend API / Server
+        - Python SDK (statewave-py)
+        - TypeScript SDK (statewave-ts)
+        - Documentation
+        - Examples
+        - Demo Site
+        - Website
+        - Admin Dashboard
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: What should have happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior
+      placeholder: |
+        1. Go to '...'
+        2. Click on '...'
+        3. Scroll down to '...'
+        4. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: code-sample
+    attributes:
+      label: Code Sample
+      description: If applicable, provide a minimal code sample that reproduces the issue.
+      render: python
+      placeholder: |
+        from statewave import StatewaveClient
+        
+        client = StatewaveClient(api_key="...")
+        # Code that triggers the bug
+
+  - type: textarea
+    id: error-output
+    attributes:
+      label: Error Output / Logs
+      description: If applicable, paste any error messages or relevant logs.
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Please provide environment details:
+      placeholder: |
+        - OS: [e.g., macOS 14.0, Ubuntu 22.04]
+        - Python version: [e.g., 3.11.4]
+        - Node.js version: [if applicable]
+        - Statewave version: [e.g., 0.5.0]
+        - SDK version: [if using SDK]
+        - Deployment: [local, Docker, Fly.io, etc.]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How severe is this bug?
+      options:
+        - Critical - System unusable, data loss, security issue
+        - High - Major feature broken, no workaround
+        - Medium - Feature partially broken, workaround exists
+        - Low - Minor issue, cosmetic, edge case
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context, screenshots, or information about the problem here.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues to ensure this is not a duplicate
+          required: true
+        - label: I have provided all required information above
+          required: true

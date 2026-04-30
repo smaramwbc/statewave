@@ -1,0 +1,81 @@
+name: 📚 Documentation Issue
+description: Report missing, incorrect, or unclear documentation
+title: "[Docs]: "
+labels: ["docs", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve Statewave documentation! Please describe the issue.
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: Documentation Type
+      description: What type of documentation is affected?
+      options:
+        - API Reference
+        - Getting Started / Quickstart
+        - Tutorials / Guides
+        - SDK Documentation
+        - Architecture / Concepts
+        - Deployment / Operations
+        - Examples
+        - README
+        - Changelog
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      description: What's wrong with the documentation?
+      options:
+        - Missing documentation
+        - Incorrect information
+        - Outdated information
+        - Unclear explanation
+        - Broken links
+        - Code samples don't work
+        - Typo / Grammar
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: doc-url
+    attributes:
+      label: Documentation URL
+      description: Link to the affected documentation page (if applicable)
+      placeholder: https://docs.statewave.ai/...
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the documentation issue
+      placeholder: |
+        The documentation says X, but Y is actually correct...
+        I couldn't find documentation for...
+        This section is confusing because...
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested Improvement
+      description: How could this documentation be improved?
+      placeholder: |
+        The docs should explain...
+        Adding an example of...
+        Clarifying that...
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to submit a PR to fix this documentation issue

@@ -1,0 +1,107 @@
+name: 🔧 SDK / Developer Experience
+description: Report issues with SDKs or developer experience
+title: "[SDK]: "
+labels: ["feature", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Help us improve the Statewave developer experience!
+        
+        Use this template for:
+        - SDK usability issues
+        - Missing SDK methods
+        - Type definition problems
+        - Developer workflow improvements
+
+  - type: dropdown
+    id: sdk
+    attributes:
+      label: SDK / Tool
+      description: Which SDK or tool is affected?
+      options:
+        - Python SDK (statewave-py)
+        - TypeScript SDK (statewave-ts)
+        - Both SDKs
+        - CLI (if applicable)
+        - Examples
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      description: What kind of issue is this?
+      options:
+        - Missing feature / method
+        - Type definitions incorrect
+        - Ergonomics / usability
+        - Error handling
+        - Performance
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the issue or improvement
+      placeholder: |
+        When using the SDK, I expected...
+        The types don't match...
+        It would be easier if...
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current Behavior
+      description: What happens currently?
+      render: python
+      placeholder: |
+        # Current code
+        from statewave import StatewaveClient
+        client = StatewaveClient(...)
+        # This doesn't work as expected...
+
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen?
+      render: python
+      placeholder: |
+        # Ideal code
+        from statewave import StatewaveClient
+        client = StatewaveClient(...)
+        # I expect this to...
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide your environment details
+      placeholder: |
+        - SDK version: [e.g., 0.5.0]
+        - Python/Node.js version:
+        - OS:
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context or screenshots
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I would be willing to submit a PR for this improvement

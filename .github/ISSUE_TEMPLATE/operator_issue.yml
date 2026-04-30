@@ -1,0 +1,101 @@
+name: 🚀 Operator / Deployment Issue
+description: Report deployment, operations, or infrastructure issues
+title: "[Operator]: "
+labels: ["bug", "area:operator", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report issues related to deploying or operating Statewave.
+        
+        Use this template for:
+        - Docker / container issues
+        - Database migration problems
+        - Cloud deployment issues (Fly.io, AWS, etc.)
+        - Performance / scaling concerns
+        - Monitoring / observability
+        - Configuration problems
+
+  - type: dropdown
+    id: deployment-type
+    attributes:
+      label: Deployment Type
+      description: How are you deploying Statewave?
+      options:
+        - Docker / Docker Compose (local)
+        - Fly.io
+        - AWS (ECS, EKS, Lambda, etc.)
+        - GCP
+        - Azure
+        - Kubernetes (self-managed)
+        - Bare metal / VM
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: issue-type
+    attributes:
+      label: Issue Type
+      description: What kind of issue are you experiencing?
+      options:
+        - Container / Docker issue
+        - Database / migrations
+        - Networking / connectivity
+        - Authentication / authorization
+        - Performance / scaling
+        - Monitoring / logs
+        - Configuration
+        - Security concern
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe the issue you're experiencing
+      placeholder: |
+        When deploying to...
+        The container fails to...
+        Migrations don't run because...
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Relevant configuration (sanitize any secrets!)
+      render: yaml
+      placeholder: |
+        # docker-compose.yml, env vars, fly.toml, etc.
+        # REMOVE ANY SECRETS!
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / Error Output
+      description: Relevant logs or error messages
+      render: shell
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Provide your environment details
+      placeholder: |
+        - Statewave version: [e.g., 0.5.0]
+        - Docker version: [if applicable]
+        - Database: [PostgreSQL version]
+        - Cloud region: [if applicable]
+        - OS: [for local deployments]
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Any other context, architecture diagrams, or information

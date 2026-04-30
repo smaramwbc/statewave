@@ -35,17 +35,6 @@ _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_co
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an event loop that lives for the entire test session."""
-    import asyncio
-
-    policy = asyncio.get_event_loop_policy()
-    loop = policy.new_event_loop()
-    yield loop
-    loop.close()
-
-
 # ---------------------------------------------------------------------------
 # Session-scoped: create tables once, drop after all tests
 # ---------------------------------------------------------------------------
@@ -56,8 +45,8 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture(scope="session", autouse=True)
-async def _setup_database(event_loop):
+@pytest.fixture(scope="session", autouse=True, loop_scope="session")
+async def _setup_database():
     """Create pgvector extension + all tables, then tear down after the session."""
     async with _engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))

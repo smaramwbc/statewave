@@ -59,7 +59,14 @@ async def check_rate_limit(key: str, rpm: int) -> tuple[bool, int]:
             return True, 0
 
     except Exception:
-        logger.warning("distributed_rate_limit_db_error", key=key, exc_info=True)
+        logger.warning(
+            "distributed_rate_limit_db_error",
+            key=key,
+            hint="DB connection pool may be exhausted by rate limiter. "
+            "Consider switching to STATEWAVE_RATE_LIMIT_STRATEGY=memory for single-instance deployments. "
+            "See: https://docs.statewave.ai/deployment/troubleshooting#statewave-ts-001",
+            exc_info=True,
+        )
         # Graceful degradation: allow the request if DB is down
         return True, 0
 

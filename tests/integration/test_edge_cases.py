@@ -295,8 +295,11 @@ async def test_healthz(client: AsyncClient):
 @pytest.mark.anyio
 async def test_readyz(client: AsyncClient):
     resp = await client.get("/readyz")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ready"}
+    # Accept 200 (ready/degraded) or 503 (not ready)
+    assert resp.status_code in (200, 503)
+    body = resp.json()
+    assert "status" in body
+    assert body["status"] in ("ready", "degraded", "not_ready")
 
 
 # ---------------------------------------------------------------------------

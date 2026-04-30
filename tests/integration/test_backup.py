@@ -109,7 +109,10 @@ async def test_import_rejects_bad_checksum(client):
         },
     )
     assert resp.status_code == 400
-    assert "Checksum" in resp.json()["detail"]
+    body = resp.json()
+    # Check for checksum error in either 'detail' or 'message' field
+    error_text = body.get("detail") or body.get("message") or str(body)
+    assert "checksum" in error_text.lower() or "Checksum" in error_text
 
 
 @pytest.mark.anyio

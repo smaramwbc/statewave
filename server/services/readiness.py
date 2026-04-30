@@ -67,7 +67,7 @@ async def _check_queue(conn: AsyncConnection) -> CheckResult:
         result = await conn.execute(
             text(
                 "SELECT COUNT(*) FROM compile_jobs "
-                "WHERE status = 'running' AND claimed_at < :threshold"
+                "WHERE status = 'running' AND started_at < :threshold"
             ),
             {"threshold": threshold},
         )

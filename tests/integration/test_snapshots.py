@@ -77,7 +77,7 @@ async def test_snapshot_create_and_restore(client: AsyncClient, subject_id: str)
         ]
         for ep in episodes:
             r = await client.post("/v1/episodes", json=ep)
-            assert r.status_code == 200
+            assert r.status_code == 201
 
         # 2. Compile
         r = await client.post("/v1/memories/compile", json={"subject_id": subject_id})
@@ -167,7 +167,7 @@ async def test_restored_subject_behaves_normally(client: AsyncClient, subject_id
                 },
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 201
 
         # 2. Re-compile (should not fail)
         r = await client.post("/v1/memories/compile", json={"subject_id": target_id})
@@ -211,7 +211,7 @@ async def test_timestamp_shifting_lands_near_now(client: AsyncClient, subject_id
                 "payload": {"text": "first event"},
             },
         )
-        assert r1.status_code == 200
+        assert r1.status_code == 201
 
         # Small delay to ensure ordering
         import asyncio
@@ -227,7 +227,7 @@ async def test_timestamp_shifting_lands_near_now(client: AsyncClient, subject_id
                 "payload": {"text": "second event"},
             },
         )
-        assert r2.status_code == 200
+        assert r2.status_code == 201
 
         await client.post("/v1/memories/compile", json={"subject_id": subject_id})
 
@@ -276,7 +276,7 @@ async def test_snapshot_restore_by_name(client: AsyncClient, subject_id: str):
                 "payload": {"text": "User prefers dark mode"},
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 201
         await client.post("/v1/memories/compile", json={"subject_id": subject_id})
 
         from server.services.snapshots import create_snapshot
@@ -317,7 +317,7 @@ async def test_restored_provenance_uses_new_ids(client: AsyncClient, subject_id:
                 },
             },
         )
-        assert r.status_code == 200
+        assert r.status_code == 201
         original_ep_id = r.json()["id"]
 
         await client.post("/v1/memories/compile", json={"subject_id": subject_id})

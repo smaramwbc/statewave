@@ -1,18 +1,49 @@
 """SQLAlchemy async engine and session factory."""
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from typing import AsyncGenerator
+
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from server.core.config import settings
 
-engine = create_async_engine(
-    settings.database_url,
-    echo=settings.database_echo,
-    pool_pre_ping=True,
-)
-
-async_session_factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+# Lazy engine initialization to avoid event loop binding at import time
+_engine: AsyncEngine | None = None
+_async_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-async def get_session() -> AsyncSession:  # type: ignore[misc]
-    async with async_session_factory() as session:
+def get_engine() -> AsyncEngine:
+    """Get or create the async engine (lazy initialization)."""
+    global _engine
+    if _engine is None:
+        _engine = create_async_engine(
+            settings.database_url,
+            echo=settings.database_echo,
+            pool_pre_ping=True,
+        )
+    return _engine
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Get or create the session factory (lazy initialization)."""
+    global _async_session_factory
+    if _async_session_factory is None:
+        _async_session_factory = async_sessionmaker(
+            get_engine(), class_=AsyncSession, expire_on_commit=False
+        )
+    return _async_session_factory
+
+
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Dependency that yields a database session."""
+    factory = get_session_factory()
+    async with factory() as session:
         yield session
+
+
+async def dispose_engine() -> None:
+    """Dispose of the engine and reset state (for testing)."""
+    global _engine, _async_session_factory
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _async_session_factory = None

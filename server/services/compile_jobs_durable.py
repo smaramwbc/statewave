@@ -22,7 +22,7 @@ from typing import Any
 import structlog
 from sqlalchemy import delete, select, update
 
-from server.db.engine import async_session_factory
+from server.db.engine import get_session_factory
 from server.db.tables import CompileJobRow
 
 logger = structlog.stdlib.get_logger()
@@ -66,7 +66,7 @@ async def submit_job(subject_id: str, tenant_id: str | None = None) -> CompileJo
     now = datetime.now(timezone.utc)
 
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             row = CompileJobRow(
                 id=job_id,
                 subject_id=subject_id,
@@ -86,7 +86,7 @@ async def submit_job(subject_id: str, tenant_id: str | None = None) -> CompileJo
 async def get_job(job_id: str) -> CompileJob | None:
     """Retrieve a job by ID from Postgres."""
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             result = await session.execute(select(CompileJobRow).where(CompileJobRow.id == job_id))
             row = result.scalar_one_or_none()
             if row is None:
@@ -100,7 +100,7 @@ async def get_job(job_id: str) -> CompileJob | None:
 async def mark_running(job_id: str) -> None:
     """Mark job as running."""
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             await session.execute(
                 update(CompileJobRow)
                 .where(CompileJobRow.id == job_id)
@@ -116,7 +116,7 @@ async def mark_completed(
 ) -> None:
     """Mark job as completed with result count."""
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             await session.execute(
                 update(CompileJobRow)
                 .where(CompileJobRow.id == job_id)
@@ -134,7 +134,7 @@ async def mark_completed(
 async def mark_failed(job_id: str, error: str) -> None:
     """Mark job as failed with error message."""
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             await session.execute(
                 update(CompileJobRow)
                 .where(CompileJobRow.id == job_id)
@@ -161,7 +161,7 @@ async def list_jobs(
     Returns (jobs_list, total_count) tuple.
     """
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             from sqlalchemy import func
 
             # Build base filter conditions
@@ -217,7 +217,7 @@ async def cleanup_old_jobs(retention_hours: int = 168) -> int:
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             result = await session.execute(
                 delete(CompileJobRow)
                 .where(CompileJobRow.status.in_(["completed", "failed"]))

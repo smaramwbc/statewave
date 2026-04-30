@@ -29,7 +29,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.db.engine import async_session_factory
+from server.db.engine import get_session_factory
 from server.db.tables import WebhookEventRow
 
 logger = structlog.stdlib.get_logger()
@@ -102,7 +102,7 @@ async def fire(
         db.add(row)
         # Will be committed with the caller's transaction
     else:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             session.add(row)
             await session.commit()
 
@@ -133,7 +133,7 @@ async def _process_pending_batch(batch_size: int = 20) -> int:
     now = datetime.now(timezone.utc)
     processed = 0
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         # Fetch pending events that are due for delivery
         stmt = (
             select(WebhookEventRow)
@@ -217,7 +217,7 @@ def _handle_failure(event: WebhookEventRow, error: str) -> None:
 
 async def get_event_status(event_id: uuid.UUID) -> dict[str, Any] | None:
     """Get the delivery status of a single webhook event."""
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         row = await session.get(WebhookEventRow, event_id)
         if not row:
             return None
@@ -240,7 +240,7 @@ async def get_delivery_stats() -> dict[str, Any]:
     """Get aggregate webhook delivery statistics."""
     from sqlalchemy import func as sqlfunc
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         stmt = select(
             WebhookEventRow.status,
             sqlfunc.count(WebhookEventRow.id).label("count"),
@@ -269,7 +269,7 @@ async def list_events(
     """
     from sqlalchemy import func as sqlfunc
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         # Base query
         query = select(WebhookEventRow).order_by(WebhookEventRow.created_at.desc())
         count_query = select(sqlfunc.count(WebhookEventRow.id))

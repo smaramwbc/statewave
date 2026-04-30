@@ -153,15 +153,18 @@ async def test_restore_snapshot_remaps_provenance():
         async def commit(self):
             pass
 
-    class FakeSessionFactory:
+    class FakeSessionContextManager:
         async def __aenter__(self):
             return FakeSession()
 
         async def __aexit__(self, *args):
             pass
 
+    def fake_session_factory():
+        return FakeSessionContextManager()
+
     with patch(
-        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+        "server.services.snapshots.get_session_factory", return_value=fake_session_factory
     ):
         result = await restore_snapshot(snap_id, "live_test_123")
 
@@ -230,16 +233,19 @@ async def test_restore_snapshot_shifts_timestamps():
         async def commit(self):
             pass
 
-    class FakeSessionFactory:
+    class FakeSessionContextManager:
         async def __aenter__(self):
             return FakeSession()
 
         async def __aexit__(self, *args):
             pass
 
+    def fake_session_factory():
+        return FakeSessionContextManager()
+
     before = datetime.now(timezone.utc)
     with patch(
-        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+        "server.services.snapshots.get_session_factory", return_value=fake_session_factory
     ):
         await restore_snapshot(snap_id, "live_test_456")
     after = datetime.now(timezone.utc)
@@ -295,15 +301,18 @@ async def test_restore_preserves_relative_offsets():
         async def commit(self):
             pass
 
-    class FakeSessionFactory:
+    class FakeSessionContextManager:
         async def __aenter__(self):
             return FakeSession()
 
         async def __aexit__(self, *args):
             pass
 
+    def fake_session_factory():
+        return FakeSessionContextManager()
+
     with patch(
-        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+        "server.services.snapshots.get_session_factory", return_value=fake_session_factory
     ):
         await restore_snapshot(snap_id, "live_test_789")
 
@@ -364,15 +373,18 @@ async def test_restore_adds_provenance_metadata():
         async def commit(self):
             pass
 
-    class FakeSessionFactory:
+    class FakeSessionContextManager:
         async def __aenter__(self):
             return FakeSession()
 
         async def __aexit__(self, *args):
             pass
 
+    def fake_session_factory():
+        return FakeSessionContextManager()
+
     with patch(
-        "server.services.snapshots.async_session_factory", return_value=FakeSessionFactory()
+        "server.services.snapshots.get_session_factory", return_value=fake_session_factory
     ):
         await restore_snapshot(snap_id, "live_test_prov")
 

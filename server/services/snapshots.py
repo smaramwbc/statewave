@@ -19,7 +19,7 @@ from typing import Any
 import structlog
 from sqlalchemy import delete, func, select
 
-from server.db.engine import async_session_factory
+from server.db.engine import get_session_factory
 from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectSnapshotRow
 
 logger = structlog.stdlib.get_logger()
@@ -46,7 +46,7 @@ async def create_snapshot(
     """
     snapshot_subject = f"{SNAPSHOT_SOURCE_PREFIX}{name}/v{version}"
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         # Check for existing snapshot with same name+version
         existing = await session.execute(
             select(SubjectSnapshotRow).where(
@@ -200,7 +200,7 @@ async def restore_snapshot(
     - Remapped provenance (source_episode_ids)
     - Timestamps shifted so newest episode = now
     """
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         # Get snapshot metadata
         snap = (
             await session.execute(
@@ -385,7 +385,7 @@ async def restore_snapshot(
 
 async def list_snapshots() -> list[dict]:
     """List all available snapshots."""
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         result = await session.execute(
             select(SubjectSnapshotRow).order_by(SubjectSnapshotRow.name, SubjectSnapshotRow.version)
         )
@@ -406,7 +406,7 @@ async def list_snapshots() -> list[dict]:
 
 async def get_snapshot(snapshot_id: uuid.UUID) -> dict | None:
     """Get snapshot metadata by ID."""
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         s = (
             await session.execute(
                 select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
@@ -428,7 +428,7 @@ async def get_snapshot(snapshot_id: uuid.UUID) -> dict | None:
 
 async def get_snapshot_by_name(name: str, version: int | None = None) -> dict | None:
     """Get snapshot by name (optionally specific version, else latest)."""
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         query = select(SubjectSnapshotRow).where(SubjectSnapshotRow.name == name)
         if version is not None:
             query = query.where(SubjectSnapshotRow.version == version)
@@ -451,7 +451,7 @@ async def get_snapshot_by_name(name: str, version: int | None = None) -> dict | 
 
 async def delete_snapshot(snapshot_id: uuid.UUID) -> bool:
     """Delete a snapshot and its source data."""
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         s = (
             await session.execute(
                 select(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
@@ -484,7 +484,7 @@ async def cleanup_ephemeral_subjects(
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         # Find subjects with the given prefix whose newest episode is older than cutoff
         result = await session.execute(
             select(EpisodeRow.subject_id, func.max(EpisodeRow.created_at).label("latest"))

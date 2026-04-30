@@ -32,13 +32,13 @@ async def _run_compile(
     subject_id: str, job_id: str | None = None, tenant_id: str | None = None
 ) -> CompileMemoriesResponse:
     """Core compilation logic — used by both sync and async paths."""
-    from server.db.engine import async_session_factory
+    from server.db.engine import get_session_factory
 
     if job_id:
         await compile_jobs.mark_running_durable(job_id)
 
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             episodes = await repo.list_uncompiled_episodes(session, subject_id, tenant_id=tenant_id)
             if not episodes:
                 result = CompileMemoriesResponse(
@@ -197,7 +197,7 @@ async def get_compile_status(job_id: str):
 
 async def _generate_embeddings_background(memory_ids: list, texts: list[str]) -> None:
     """Generate embeddings for memories in the background (non-blocking)."""
-    from server.db.engine import async_session_factory
+    from server.db.engine import get_session_factory
 
     provider = get_embedding_provider()
     if not provider or not texts:
@@ -205,7 +205,7 @@ async def _generate_embeddings_background(memory_ids: list, texts: list[str]) ->
 
     try:
         embeddings = await provider.embed_texts(texts)
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             for mid, emb in zip(memory_ids, embeddings):
                 await session.execute(
                     __import__("sqlalchemy").text(

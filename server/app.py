@@ -102,9 +102,9 @@ async def lifespan(app: FastAPI):
     if cleanup_task:
         cleanup_task.cancel()
     await webhooks.stop_worker()
-    from server.db.engine import engine
+    from server.db.engine import dispose_engine
 
-    await engine.dispose()
+    await dispose_engine()
     logger.info("app_shutdown")
 
 
@@ -188,10 +188,10 @@ def create_app() -> FastAPI:
         """Deep readiness check: DB, queue health, LLM reachability."""
         from fastapi.responses import JSONResponse
 
-        from server.db.engine import engine
+        from server.db.engine import get_engine
         from server.services.readiness import run_readiness_checks
 
-        async with engine.connect() as conn:
+        async with get_engine().connect() as conn:
             result = await run_readiness_checks(conn)
 
         body = {

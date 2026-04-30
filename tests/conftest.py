@@ -16,3 +16,7 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+    
+    # Dispose engine after test to ensure clean state for next test
+    from server.db.engine import dispose_engine
+    await dispose_engine()

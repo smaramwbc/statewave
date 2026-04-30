@@ -21,7 +21,7 @@ import time
 import structlog
 from sqlalchemy import text
 
-from server.db.engine import async_session_factory
+from server.db.engine import get_session_factory
 
 logger = structlog.stdlib.get_logger()
 
@@ -35,7 +35,7 @@ async def check_rate_limit(key: str, rpm: int) -> tuple[bool, int]:
     window_start = int(time.time()) // 60 * 60  # current 60s window start
 
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             # Atomic upsert: increment counter or insert new row
             result = await session.execute(
                 text("""
@@ -71,7 +71,7 @@ async def cleanup_expired_windows(retention_windows: int = 5) -> int:
     """
     cutoff = (int(time.time()) // 60 * 60) - (retention_windows * 60)
     try:
-        async with async_session_factory() as session:
+        async with get_session_factory()() as session:
             result = await session.execute(
                 text("DELETE FROM rate_limit_hits WHERE window_start < :cutoff"),
                 {"cutoff": cutoff},

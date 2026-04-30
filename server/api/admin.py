@@ -132,7 +132,7 @@ async def dashboard_overview():
     from server.services.readiness import run_readiness_checks
 
     async def _get_counts():
-        async with engine_module.async_session_factory() as session:
+        async with engine_module.get_session_factory()() as session:
             episodes = await session.scalar(select(func.count()).select_from(EpisodeRow)) or 0
             memories = await session.scalar(select(func.count()).select_from(MemoryRow)) or 0
             subjects = (
@@ -141,7 +141,7 @@ async def dashboard_overview():
             return {"episodes": episodes, "memories": memories, "subjects": subjects}
 
     async def _get_job_stats():
-        async with engine_module.async_session_factory() as session:
+        async with engine_module.get_session_factory()() as session:
             rows = await session.execute(
                 select(CompileJobRow.status, func.count()).group_by(CompileJobRow.status)
             )
@@ -161,7 +161,7 @@ async def dashboard_overview():
         try:
             from sqlalchemy import text
 
-            async with engine_module.async_session_factory() as session:
+            async with engine_module.get_session_factory()() as session:
                 # Get health state distribution from cache
                 rows = await session.execute(
                     text(
@@ -188,9 +188,9 @@ async def dashboard_overview():
             return None
 
     async def _get_readiness():
-        from server.db.engine import engine
+        from server.db.engine import get_engine
 
-        async with engine.connect() as conn:
+        async with get_engine().connect() as conn:
             return await run_readiness_checks(conn)
 
     # Run all queries concurrently
@@ -232,7 +232,7 @@ async def list_tenants():
     from server.db import engine as engine_module
     from server.db.tables import EpisodeRow
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         result = await session.execute(
             select(distinct(EpisodeRow.tenant_id))
             .where(EpisodeRow.tenant_id.isnot(None))
@@ -270,7 +270,7 @@ async def list_subjects_admin(
         SubjectHealthCacheRow,
     )
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Build base subqueries for aggregation
         # Episode stats per subject
         ep_stats = (
@@ -398,9 +398,9 @@ async def list_subjects_admin(
                     health_score = health_result.score
                     # Cache for future requests (best-effort, separate session)
                     try:
-                        from server.db.engine import async_session_factory
+                        from server.db.engine import get_session_factory
 
-                        async with async_session_factory() as cache_session:
+                        async with get_session_factory()() as cache_session:
                             await repo.upsert_health_cache(
                                 cache_session,
                                 row.subject_id,
@@ -453,7 +453,7 @@ async def get_subject_detail(
     from server.services.health import compute_health
     from server.services.sla import compute_sla
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Check subject exists
         ep_count_stmt = (
             select(func.count()).select_from(EpisodeRow).where(EpisodeRow.subject_id == subject_id)
@@ -537,10 +537,10 @@ async def get_subject_detail(
         # Update health cache in background (separate session to avoid conflicts)
         if health_summary:
             try:
-                from server.db.engine import async_session_factory
+                from server.db.engine import get_session_factory
                 from server.db import repositories as repo
 
-                async with async_session_factory() as cache_session:
+                async with get_session_factory()() as cache_session:
                     await repo.upsert_health_cache(
                         cache_session,
                         subject_id,
@@ -599,7 +599,7 @@ async def list_subject_memories(
     from server.db import engine as engine_module
     from server.db.tables import MemoryRow
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         base = select(MemoryRow).where(MemoryRow.subject_id == subject_id)
         if tenant_id:
             base = base.where(MemoryRow.tenant_id == tenant_id)
@@ -667,7 +667,7 @@ async def list_subject_episodes(
     from server.db import engine as engine_module
     from server.db.tables import EpisodeRow
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         base = select(EpisodeRow).where(EpisodeRow.subject_id == subject_id)
         if tenant_id:
             base = base.where(EpisodeRow.tenant_id == tenant_id)
@@ -747,7 +747,7 @@ async def list_citing_memories(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid episode_id format")
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Find memories where episode_id is in source_episode_ids array
         base = select(MemoryRow).where(
             MemoryRow.subject_id == subject_id,
@@ -846,7 +846,7 @@ async def get_memory_related(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid memory_id format")
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Get the target memory
         stmt = select(MemoryRow).where(
             MemoryRow.id == memory_uuid,
@@ -1046,7 +1046,7 @@ async def get_session_timeline(
     from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow
     from server.services.sla import compute_sla
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Get episodes for this session
         base = select(EpisodeRow).where(
             EpisodeRow.subject_id == subject_id,
@@ -1182,7 +1182,7 @@ async def usage_metering(tenant_id: str | None = None):
     seven_days_ago = now - timedelta(days=7)
     thirty_days_ago = now - timedelta(days=30)
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
 
         async def _count(table, ts_col, *, since=None):
             stmt = select(func.count()).select_from(table)
@@ -1280,10 +1280,10 @@ async def tenant_audit():
     """Report rows with NULL tenant_id — helps operators backfill after enabling tenants."""
     from sqlalchemy import func, select
 
-    from server.db.engine import async_session_factory
+    from server.db.engine import get_session_factory
     from server.db.tables import CompileJobRow, EpisodeRow, MemoryRow
 
-    async with async_session_factory() as session:
+    async with get_session_factory()() as session:
         ep_null = await session.scalar(
             select(func.count()).select_from(EpisodeRow).where(EpisodeRow.tenant_id.is_(None))
         )

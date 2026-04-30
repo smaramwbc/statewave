@@ -40,7 +40,7 @@ async def export_subject(subject_id: str, *, tenant_id: str | None = None) -> di
 
     Returns a dict suitable for JSON serialization.
     """
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Fetch episodes
         ep_stmt = select(EpisodeRow).where(EpisodeRow.subject_id == subject_id)
         if tenant_id is not None:
@@ -159,7 +159,7 @@ async def import_subject(
     # ID remapping (old_id -> new_id) when not preserving
     id_map: dict[str, str] = {}
 
-    async with engine_module.async_session_factory() as session:
+    async with engine_module.get_session_factory()() as session:
         # Check for conflicts if preserving IDs
         if preserve_ids and episodes_data:
             existing_ids = [ep["id"] for ep in episodes_data]

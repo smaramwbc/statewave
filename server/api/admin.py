@@ -583,6 +583,40 @@ async def get_subject_detail(
         )
 
 
+@router.get("/subjects/{subject_id}/sla")
+async def get_subject_sla(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Get SLA metrics and session list for a subject."""
+    from datetime import timedelta
+
+    from server.db import engine as engine_module
+    from server.services.sla import compute_sla
+
+    try:
+        async with engine_module.get_session_factory()() as session:
+            sla_result = await compute_sla(
+                session,
+                subject_id,
+                tenant_id=tenant_id,
+                first_response_threshold=timedelta(minutes=5),
+                resolution_threshold=timedelta(hours=24),
+            )
+            return {
+                "total_sessions": sla_result.total_sessions,
+                "resolved_sessions": sla_result.resolved_sessions,
+                "open_sessions": sla_result.open_sessions,
+                "avg_first_response_seconds": sla_result.avg_first_response_seconds,
+                "avg_resolution_seconds": sla_result.avg_resolution_seconds,
+                "first_response_breach_count": sla_result.first_response_breach_count,
+                "resolution_breach_count": sla_result.resolution_breach_count,
+                "sessions": getattr(sla_result, "sessions", []),
+            }
+    except Exception:
+        return {"total_sessions": 0, "resolved_sessions": 0, "open_sessions": 0, "sessions": []}
+
+
 @router.get("/subjects/{subject_id}/memories", response_model=MemoryListResponse)
 async def list_subject_memories(
     subject_id: str,

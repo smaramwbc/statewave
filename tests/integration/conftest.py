@@ -24,11 +24,6 @@ from server.db.tables import Base
 # ---------------------------------------------------------------------------
 TEST_DATABASE_URL = "postgresql+asyncpg://statewave:statewave@localhost:5432/statewave_test"
 
-# NullPool ensures each request gets a fresh connection — avoids asyncpg
-# "another operation is in progress" errors from connection reuse.
-_engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
-_session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
-
 
 # ---------------------------------------------------------------------------
 # Session-scoped event loop for session-scoped async fixtures
@@ -39,6 +34,11 @@ _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_co
 # Session-scoped: create tables once, drop after all tests
 # ---------------------------------------------------------------------------
 
+# Engine and session factory are created inside the session fixture to ensure
+# they're bound to the test event loop (pytest-asyncio 1.x creates loops lazily).
+_engine = None
+_session_factory = None
+
 
 @pytest.fixture(scope="session")
 def anyio_backend():
@@ -48,6 +48,12 @@ def anyio_backend():
 @pytest.fixture(scope="session", autouse=True)
 async def _setup_database():
     """Create pgvector extension + all tables, then tear down after the session."""
+    global _engine, _session_factory
+    # NullPool ensures each request gets a fresh connection — avoids asyncpg
+    # "another operation is in progress" errors from connection reuse.
+    _engine = create_async_engine(TEST_DATABASE_URL, echo=False, poolclass=NullPool)
+    _session_factory = async_sessionmaker(_engine, class_=AsyncSession, expire_on_commit=False)
+
     async with _engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)

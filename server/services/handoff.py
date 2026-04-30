@@ -142,9 +142,13 @@ async def assemble_handoff(
     sla_lines: list[str] = []
     if sla_result.total_sessions > 0:
         if sla_result.first_response_breach_count > 0:
-            sla_lines.append(f"⚠️ First-response SLA breached in {sla_result.first_response_breach_count} session(s)")
+            sla_lines.append(
+                f"⚠️ First-response SLA breached in {sla_result.first_response_breach_count} session(s)"
+            )
         if sla_result.resolution_breach_count > 0:
-            sla_lines.append(f"⚠️ Resolution SLA breached in {sla_result.resolution_breach_count} session(s)")
+            sla_lines.append(
+                f"⚠️ Resolution SLA breached in {sla_result.resolution_breach_count} session(s)"
+            )
         if sla_result.open_sessions > 0:
             # Find longest open
             open_slas = [s for s in sla_result.sessions if s.status == "open"]

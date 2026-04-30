@@ -182,9 +182,21 @@ Statewave is in active development (v0.6.1). Honest status:
 - **Single-node only** — no clustering, no horizontal scaling yet
 - **PostgreSQL required** — no alternative storage backends
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them
-- **No admin UI** — API-only; inspect via endpoints or direct DB access
 
 See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) for what's being fixed and when.
+
+## Ecosystem
+
+| Repo | Purpose |
+|------|---------|
+| **statewave** (this repo) | Core server — API, domain model, DB, services |
+| [statewave-py](https://github.com/smaramwbc/statewave-py) | Python SDK (sync + async) |
+| [statewave-ts](https://github.com/smaramwbc/statewave-ts) | TypeScript SDK |
+| [statewave-docs](https://github.com/smaramwbc/statewave-docs) | Architecture, API contracts, ADRs |
+| [statewave-examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
+| [statewave-demo](https://github.com/smaramwbc/statewave-demo) | Interactive public demo |
+| [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website |
+| [statewave-admin](https://github.com/smaramwbc/statewave-admin) | Operator console (early) |
 
 ## License
 

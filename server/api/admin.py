@@ -20,6 +20,186 @@ def _require_snapshots():
         raise HTTPException(status_code=404, detail="Not found")
 
 
+# ─── Dashboard Aggregation ───
+
+
+@router.get("/dashboard")
+async def dashboard_overview():
+    """Single aggregation endpoint for the admin dashboard.
+
+    Returns system health, migration status, job stats, webhook stats,
+    data counts, and subject health distribution in one request.
+    """
+    import asyncio
+
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import CompileJobRow, EpisodeRow, MemoryRow
+    from server.services.migrations import check_migration_status
+    from server.services.readiness import run_readiness_checks
+
+    async def _get_counts():
+        async with engine_module.async_session_factory() as session:
+            episodes = await session.scalar(select(func.count()).select_from(EpisodeRow)) or 0
+            memories = await session.scalar(select(func.count()).select_from(MemoryRow)) or 0
+            subjects = (
+                await session.scalar(select(func.count(func.distinct(EpisodeRow.subject_id)))) or 0
+            )
+            return {"episodes": episodes, "memories": memories, "subjects": subjects}
+
+    async def _get_job_stats():
+        async with engine_module.async_session_factory() as session:
+            rows = await session.execute(
+                select(CompileJobRow.status, func.count()).group_by(CompileJobRow.status)
+            )
+            stats = {row[0]: row[1] for row in rows}
+            return stats
+
+    async def _get_health_distribution():
+        """Get subject health score distribution from cache table."""
+        from server.db.tables import Base
+
+        # Check if health cache table exists in metadata
+        if "subject_health_cache" not in Base.metadata.tables:
+            return None
+        try:
+            from sqlalchemy import text
+
+            async with engine_module.async_session_factory() as session:
+                rows = await session.execute(
+                    text(
+                        "SELECT last_state, COUNT(*) FROM subject_health_cache GROUP BY last_state"
+                    )
+                )
+                return {row[0]: row[1] for row in rows}
+        except Exception:
+            return None
+
+    async def _get_readiness():
+        from server.db.engine import engine
+
+        async with engine.connect() as conn:
+            return await run_readiness_checks(conn)
+
+    # Run all queries concurrently
+    readiness, migration, counts, job_stats, webhook_stats, health_dist = await asyncio.gather(
+        _get_readiness(),
+        check_migration_status(),
+        _get_counts(),
+        _get_job_stats(),
+        webhooks.get_delivery_stats(),
+        _get_health_distribution(),
+    )
+
+    return {
+        "readiness": {
+            "status": readiness.status,
+            "checks": [
+                {"name": c.name, "status": c.status, "detail": c.detail, "latency_ms": c.latency_ms}
+                for c in readiness.checks
+            ],
+        },
+        "migration": {
+            "current_revision": migration.current_revision,
+            "expected_head": migration.expected_head,
+            "is_compatible": migration.is_compatible,
+            "pending_count": migration.pending_count,
+        },
+        "counts": counts,
+        "jobs": job_stats,
+        "webhooks": webhook_stats,
+        "health_distribution": health_dist,
+    }
+
+
+# ─── Usage Metering ───
+
+
+@router.get("/usage")
+async def usage_metering(tenant_id: str | None = None):
+    """On-demand usage metrics for operator capacity planning.
+
+    Returns counts for key operations across time windows (today, 7d, 30d, all-time).
+    Optionally filtered by tenant_id.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import and_, func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import CompileJobRow, EpisodeRow, MemoryRow, WebhookEventRow
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    seven_days_ago = now - timedelta(days=7)
+    thirty_days_ago = now - timedelta(days=30)
+
+    async with engine_module.async_session_factory() as session:
+
+        async def _count(table, ts_col, *, since=None):
+            stmt = select(func.count()).select_from(table)
+            conditions = []
+            if tenant_id and hasattr(table, "tenant_id"):
+                conditions.append(table.tenant_id == tenant_id)
+            if since:
+                conditions.append(ts_col >= since)
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            return await session.scalar(stmt) or 0
+
+        # Episodes
+        ep_today = await _count(EpisodeRow, EpisodeRow.created_at, since=today_start)
+        ep_7d = await _count(EpisodeRow, EpisodeRow.created_at, since=seven_days_ago)
+        ep_30d = await _count(EpisodeRow, EpisodeRow.created_at, since=thirty_days_ago)
+        ep_total = await _count(EpisodeRow, EpisodeRow.created_at)
+
+        # Memories compiled
+        mem_today = await _count(MemoryRow, MemoryRow.created_at, since=today_start)
+        mem_7d = await _count(MemoryRow, MemoryRow.created_at, since=seven_days_ago)
+        mem_30d = await _count(MemoryRow, MemoryRow.created_at, since=thirty_days_ago)
+        mem_total = await _count(MemoryRow, MemoryRow.created_at)
+
+        # Compile jobs
+        job_today = await _count(CompileJobRow, CompileJobRow.created_at, since=today_start)
+        job_7d = await _count(CompileJobRow, CompileJobRow.created_at, since=seven_days_ago)
+        job_30d = await _count(CompileJobRow, CompileJobRow.created_at, since=thirty_days_ago)
+        job_total = await _count(CompileJobRow, CompileJobRow.created_at)
+
+        # Webhooks
+        wh_today = await _count(WebhookEventRow, WebhookEventRow.created_at, since=today_start)
+        wh_7d = await _count(WebhookEventRow, WebhookEventRow.created_at, since=seven_days_ago)
+        wh_30d = await _count(WebhookEventRow, WebhookEventRow.created_at, since=thirty_days_ago)
+        wh_total = await _count(WebhookEventRow, WebhookEventRow.created_at)
+
+        # Distinct subjects active in period
+        async def _active_subjects(since=None):
+            stmt = select(func.count(func.distinct(EpisodeRow.subject_id)))
+            conditions = []
+            if tenant_id:
+                conditions.append(EpisodeRow.tenant_id == tenant_id)
+            if since:
+                conditions.append(EpisodeRow.created_at >= since)
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            return await session.scalar(stmt) or 0
+
+        subj_7d = await _active_subjects(since=seven_days_ago)
+        subj_30d = await _active_subjects(since=thirty_days_ago)
+        subj_total = await _active_subjects()
+
+    return {
+        "period_start": today_start.isoformat(),
+        "generated_at": now.isoformat(),
+        "tenant_id": tenant_id,
+        "episodes": {"today": ep_today, "7d": ep_7d, "30d": ep_30d, "total": ep_total},
+        "memories": {"today": mem_today, "7d": mem_7d, "30d": mem_30d, "total": mem_total},
+        "compile_jobs": {"today": job_today, "7d": job_7d, "30d": job_30d, "total": job_total},
+        "webhooks": {"today": wh_today, "7d": wh_7d, "30d": wh_30d, "total": wh_total},
+        "active_subjects": {"7d": subj_7d, "30d": subj_30d, "total": subj_total},
+    }
+
+
 # ─── Compile Jobs (operator introspection) ───
 
 

@@ -68,9 +68,7 @@ async def compute_sla(
     episodes = await repo.list_episodes_by_subject(
         session, subject_id, tenant_id=tenant_id, limit=500
     )
-    resolutions = await repo.list_resolutions(
-        session, subject_id, tenant_id=tenant_id, limit=200
-    )
+    resolutions = await repo.list_resolutions(session, subject_id, tenant_id=tenant_id, limit=200)
 
     # Index resolutions by session_id
     resolution_map: dict[str, object] = {}

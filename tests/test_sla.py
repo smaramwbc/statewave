@@ -12,9 +12,7 @@ from server.services.sla import compute_sla
 
 
 def _ep(source: str, session_id: str, created_at: datetime):
-    return SimpleNamespace(
-        source=source, session_id=session_id, created_at=created_at
-    )
+    return SimpleNamespace(source=source, session_id=session_id, created_at=created_at)
 
 
 def _resolution(session_id: str, status: str, resolved_at: datetime | None = None):

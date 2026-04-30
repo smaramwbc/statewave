@@ -224,7 +224,11 @@ async def compute_health(
         if r.resolved_at:
             # Find first user episode in that session
             session_eps = [e for e in episodes if e.session_id == r.session_id]
-            user_eps = [e for e in session_eps if getattr(e, "source", "") in ("user", "chat", "support-chat")]
+            user_eps = [
+                e
+                for e in session_eps
+                if getattr(e, "source", "") in ("user", "chat", "support-chat")
+            ]
             if user_eps:
                 first_user = min(user_eps, key=lambda e: e.created_at)
                 resolution_hours = (r.resolved_at - first_user.created_at).total_seconds() / 3600
@@ -248,12 +252,21 @@ async def compute_health(
         session_eps = [e for e in episodes if e.session_id == r.session_id]
         session_eps_sorted = sorted(session_eps, key=lambda e: e.created_at)
         first_user = next(
-            (e for e in session_eps_sorted if getattr(e, "source", "") in ("user", "chat", "support-chat")),
+            (
+                e
+                for e in session_eps_sorted
+                if getattr(e, "source", "") in ("user", "chat", "support-chat")
+            ),
             None,
         )
         first_agent = next(
-            (e for e in session_eps_sorted if getattr(e, "source", "") in ("assistant", "agent", "system", "tool")
-             and first_user and e.created_at >= first_user.created_at),
+            (
+                e
+                for e in session_eps_sorted
+                if getattr(e, "source", "") in ("assistant", "agent", "system", "tool")
+                and first_user
+                and e.created_at >= first_user.created_at
+            ),
             None,
         )
         if first_user and first_agent:

@@ -370,8 +370,16 @@ async def test_sla_resolution_breach_penalizes_health():
     )
 
     with (
-        patch("server.services.health.repo.list_resolutions", new_callable=AsyncMock, return_value=[resolution]),
-        patch("server.services.health.repo.list_episodes_by_subject", new_callable=AsyncMock, return_value=[ep]),
+        patch(
+            "server.services.health.repo.list_resolutions",
+            new_callable=AsyncMock,
+            return_value=[resolution],
+        ),
+        patch(
+            "server.services.health.repo.list_episodes_by_subject",
+            new_callable=AsyncMock,
+            return_value=[ep],
+        ),
     ):
         result = await compute_health(AsyncMock(), "user-1")
 
@@ -410,8 +418,16 @@ async def test_slow_first_response_penalizes_health():
     )
 
     with (
-        patch("server.services.health.repo.list_resolutions", new_callable=AsyncMock, return_value=[resolution]),
-        patch("server.services.health.repo.list_episodes_by_subject", new_callable=AsyncMock, return_value=[ep_user, ep_agent]),
+        patch(
+            "server.services.health.repo.list_resolutions",
+            new_callable=AsyncMock,
+            return_value=[resolution],
+        ),
+        patch(
+            "server.services.health.repo.list_episodes_by_subject",
+            new_callable=AsyncMock,
+            return_value=[ep_user, ep_agent],
+        ),
     ):
         result = await compute_health(AsyncMock(), "user-1")
 

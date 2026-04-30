@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import text
 
 from server.api import context, episodes, memories, subjects, timeline
 from server.core.config import settings
@@ -81,7 +80,24 @@ async def lifespan(app: FastAPI):
     if needs_cleanup:
         cleanup_task = asyncio.create_task(_cleanup_loop())
 
-    logger.info("app_startup", version="0.5.0", debug=settings.debug)
+    # Schema compatibility check
+    try:
+        from server.services.migrations import check_migration_status
+
+        migration_status = await check_migration_status()
+        if migration_status.error:
+            logger.error("schema_check_error", error=migration_status.error)
+        elif not migration_status.is_compatible:
+            msg = migration_status.summary
+            logger.warning("schema_mismatch", detail=msg, pending=migration_status.pending_count)
+            if settings.strict_schema:
+                raise RuntimeError(f"Schema mismatch (STATEWAVE_STRICT_SCHEMA=1): {msg}")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        logger.warning("schema_check_skipped", reason=str(exc)[:200])
+
+    logger.info("app_startup", version="0.6.1", debug=settings.debug)
     yield
     if cleanup_task:
         cleanup_task.cancel()
@@ -166,15 +182,47 @@ def create_app() -> FastAPI:
         """Returns 200 if the process is alive."""
         return {"status": "ok"}
 
-    @app.get("/readyz", tags=["ops"], summary="Readiness check")
+    @app.get("/readyz", tags=["ops"], summary="Deep readiness check")
     @app.get("/ready", tags=["ops"], summary="Readiness check (alias)", include_in_schema=False)
     async def readyz():
-        """Returns 200 if the app can reach the database."""
+        """Deep readiness check: DB, queue health, LLM reachability."""
+        from fastapi.responses import JSONResponse
+
         from server.db.engine import engine
+        from server.services.readiness import run_readiness_checks
 
         async with engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
-        return {"status": "ready"}
+            result = await run_readiness_checks(conn)
+
+        body = {
+            "status": result.status,
+            "checks": [
+                {
+                    "name": c.name,
+                    "status": c.status,
+                    **({"detail": c.detail} if c.detail else {}),
+                    **({"latency_ms": c.latency_ms} if c.latency_ms else {}),
+                }
+                for c in result.checks
+            ],
+        }
+        return JSONResponse(content=body, status_code=result.http_status)
+
+    @app.get("/ops/migrations", tags=["ops"], summary="Migration status")
+    async def migration_status():
+        """Return current schema revision, expected head, and pending migrations."""
+        from server.services.migrations import check_migration_status
+
+        status = await check_migration_status()
+        return {
+            "current_revision": status.current_revision,
+            "expected_head": status.expected_head,
+            "is_compatible": status.is_compatible,
+            "pending_count": status.pending_count,
+            "pending_revisions": status.pending_revisions,
+            "error": status.error,
+            "summary": status.summary,
+        }
 
     return app
 

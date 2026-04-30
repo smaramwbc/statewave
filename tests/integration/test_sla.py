@@ -31,7 +31,9 @@ async def test_sla_endpoint_returns_metrics(client: AsyncClient, subject_id: str
             "session_id": "sess-sla-1",
             "source": "assistant",
             "type": "message",
-            "payload": {"messages": [{"role": "assistant", "content": "Let me check your account"}]},
+            "payload": {
+                "messages": [{"role": "assistant", "content": "Let me check your account"}]
+            },
         },
     )
     assert resp.status_code == 201

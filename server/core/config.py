@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     tenant_header: str = "X-Tenant-ID"
     require_tenant: bool = False
 
+    # Migration safety
+    strict_schema: bool = False  # if True, refuse to start on schema mismatch
+
     model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
 
 

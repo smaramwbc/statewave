@@ -45,7 +45,7 @@ def anyio_backend():
     return "asyncio"
 
 
-@pytest.fixture(scope="session", autouse=True, loop_scope="session")
+@pytest.fixture(scope="session", autouse=True)
 async def _setup_database():
     """Create pgvector extension + all tables, then tear down after the session."""
     async with _engine.begin() as conn:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -12,6 +12,97 @@ from server.core.config import settings
 from server.services import webhooks
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+# ─── Response Models ─────────────────────────────────────────────────────────
+
+
+class SubjectListItem(BaseModel):
+    subject_id: str
+    tenant_id: str | None
+    episode_count: int
+    memory_count: int
+    last_episode_at: str | None
+    health_state: str | None
+    health_score: int | None
+    open_sessions: int
+
+
+class SubjectListResponse(BaseModel):
+    subjects: list[SubjectListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class SubjectSummary(BaseModel):
+    episode_count: int
+    memory_count: int
+    session_count: int
+    first_seen_at: str | None
+    last_activity_at: str | None
+
+
+class SubjectHealthSummary(BaseModel):
+    score: int
+    state: str
+    factors: list[dict]
+
+
+class SubjectSLASummary(BaseModel):
+    total_sessions: int
+    resolved_sessions: int
+    open_sessions: int
+    avg_first_response_seconds: float | None
+    avg_resolution_seconds: float | None
+    first_response_breach_count: int
+    resolution_breach_count: int
+
+
+class SubjectDetailResponse(BaseModel):
+    subject_id: str
+    tenant_id: str | None
+    summary: SubjectSummary
+    health: SubjectHealthSummary | None
+    sla: SubjectSLASummary | None
+
+
+class MemoryListItem(BaseModel):
+    id: str
+    kind: str
+    content: str
+    summary: str
+    confidence: float
+    status: str
+    source_episode_ids: list[str]
+    valid_from: str
+    valid_to: str | None
+    created_at: str
+
+
+class MemoryListResponse(BaseModel):
+    memories: list[MemoryListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class EpisodeListItem(BaseModel):
+    id: str
+    session_id: str | None
+    source: str
+    type: str
+    payload: dict
+    metadata: dict
+    provenance: dict
+    created_at: str
+
+
+class EpisodeListResponse(BaseModel):
+    episodes: list[EpisodeListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 def _require_snapshots():
@@ -111,6 +202,382 @@ async def dashboard_overview():
         "webhooks": webhook_stats,
         "health_distribution": health_dist,
     }
+
+
+# ─── Subject Explorer ────────────────────────────────────────────────────────
+
+
+@router.get("/subjects", response_model=SubjectListResponse)
+async def list_subjects_admin(
+    search: str | None = Query(None, description="Search in subject_id"),
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    health_state: str | None = Query(None, description="Filter by health state"),
+    has_open_sessions: bool | None = Query(None, description="Filter by open sessions"),
+    sort_by: Literal["subject_id", "last_activity", "episode_count", "memory_count"] = Query(
+        "last_activity", description="Sort field"
+    ),
+    sort_order: Literal["asc", "desc"] = Query("desc", description="Sort order"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List subjects with search, filtering, and aggregated stats for admin explorer."""
+    from datetime import timezone
+
+    from sqlalchemy import and_, case, func, literal, or_, select
+    from sqlalchemy.sql import text
+
+    from server.db import engine as engine_module
+    from server.db.tables import (
+        EpisodeRow,
+        MemoryRow,
+        ResolutionRow,
+        SubjectHealthCacheRow,
+    )
+
+    async with engine_module.async_session_factory() as session:
+        # Build base subqueries for aggregation
+        # Episode stats per subject
+        ep_stats = (
+            select(
+                EpisodeRow.subject_id,
+                EpisodeRow.tenant_id,
+                func.count().label("episode_count"),
+                func.max(EpisodeRow.created_at).label("last_episode_at"),
+            )
+            .group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
+            .subquery()
+        )
+
+        # Memory stats per subject
+        mem_stats = (
+            select(
+                MemoryRow.subject_id,
+                func.count().label("memory_count"),
+            )
+            .group_by(MemoryRow.subject_id)
+            .subquery()
+        )
+
+        # Open sessions per subject
+        open_sessions = (
+            select(
+                ResolutionRow.subject_id,
+                func.count().label("open_count"),
+            )
+            .where(ResolutionRow.status == "open")
+            .group_by(ResolutionRow.subject_id)
+            .subquery()
+        )
+
+        # Health cache
+        health_cache = select(SubjectHealthCacheRow).subquery()
+
+        # Main query joining all
+        stmt = select(
+            ep_stats.c.subject_id,
+            ep_stats.c.tenant_id,
+            ep_stats.c.episode_count,
+            func.coalesce(mem_stats.c.memory_count, 0).label("memory_count"),
+            ep_stats.c.last_episode_at,
+            health_cache.c.last_state.label("health_state"),
+            health_cache.c.last_score.label("health_score"),
+            func.coalesce(open_sessions.c.open_count, 0).label("open_sessions"),
+        ).select_from(
+            ep_stats.outerjoin(
+                mem_stats, ep_stats.c.subject_id == mem_stats.c.subject_id
+            )
+            .outerjoin(open_sessions, ep_stats.c.subject_id == open_sessions.c.subject_id)
+            .outerjoin(health_cache, ep_stats.c.subject_id == health_cache.c.subject_id)
+        )
+
+        # Exclude internal subjects
+        stmt = stmt.where(ep_stats.c.subject_id.not_like("_snapshot/%"))
+        stmt = stmt.where(ep_stats.c.subject_id.not_like("_bootstrap_tmp/%"))
+
+        # Apply filters
+        if search:
+            stmt = stmt.where(ep_stats.c.subject_id.ilike(f"%{search}%"))
+
+        if tenant_id:
+            stmt = stmt.where(ep_stats.c.tenant_id == tenant_id)
+
+        if health_state:
+            stmt = stmt.where(health_cache.c.last_state == health_state)
+
+        if has_open_sessions is True:
+            stmt = stmt.where(func.coalesce(open_sessions.c.open_count, 0) > 0)
+        elif has_open_sessions is False:
+            stmt = stmt.where(func.coalesce(open_sessions.c.open_count, 0) == 0)
+
+        # Count total (before pagination)
+        count_stmt = select(func.count()).select_from(stmt.subquery())
+        total = await session.scalar(count_stmt) or 0
+
+        # Apply sorting
+        sort_column = {
+            "subject_id": ep_stats.c.subject_id,
+            "last_activity": ep_stats.c.last_episode_at,
+            "episode_count": ep_stats.c.episode_count,
+            "memory_count": func.coalesce(mem_stats.c.memory_count, 0),
+        }.get(sort_by, ep_stats.c.last_episode_at)
+
+        if sort_order == "desc":
+            stmt = stmt.order_by(sort_column.desc().nulls_last())
+        else:
+            stmt = stmt.order_by(sort_column.asc().nulls_last())
+
+        # Pagination
+        stmt = stmt.limit(limit).offset(offset)
+
+        result = await session.execute(stmt)
+        rows = result.all()
+
+        subjects = [
+            SubjectListItem(
+                subject_id=row.subject_id,
+                tenant_id=row.tenant_id,
+                episode_count=row.episode_count,
+                memory_count=row.memory_count,
+                last_episode_at=row.last_episode_at.isoformat() if row.last_episode_at else None,
+                health_state=row.health_state,
+                health_score=row.health_score,
+                open_sessions=row.open_sessions,
+            )
+            for row in rows
+        ]
+
+        return SubjectListResponse(
+            subjects=subjects,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@router.get("/subjects/{subject_id}", response_model=SubjectDetailResponse)
+async def get_subject_detail(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Get detailed information about a specific subject for admin inspection."""
+    from datetime import timedelta
+
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectHealthCacheRow
+    from server.services.health import compute_health
+    from server.services.sla import compute_sla
+
+    async with engine_module.async_session_factory() as session:
+        # Check subject exists
+        ep_count_stmt = select(func.count()).select_from(EpisodeRow).where(
+            EpisodeRow.subject_id == subject_id
+        )
+        if tenant_id:
+            ep_count_stmt = ep_count_stmt.where(EpisodeRow.tenant_id == tenant_id)
+        ep_count = await session.scalar(ep_count_stmt) or 0
+
+        mem_count_stmt = select(func.count()).select_from(MemoryRow).where(
+            MemoryRow.subject_id == subject_id
+        )
+        if tenant_id:
+            mem_count_stmt = mem_count_stmt.where(MemoryRow.tenant_id == tenant_id)
+        mem_count = await session.scalar(mem_count_stmt) or 0
+
+        if ep_count == 0 and mem_count == 0:
+            raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
+
+        # Get timestamps
+        time_stmt = select(
+            func.min(EpisodeRow.created_at).label("first_seen"),
+            func.max(EpisodeRow.created_at).label("last_activity"),
+        ).where(EpisodeRow.subject_id == subject_id)
+        if tenant_id:
+            time_stmt = time_stmt.where(EpisodeRow.tenant_id == tenant_id)
+        time_result = await session.execute(time_stmt)
+        time_row = time_result.one()
+
+        # Session count
+        session_count_stmt = select(func.count(func.distinct(ResolutionRow.session_id))).where(
+            ResolutionRow.subject_id == subject_id
+        )
+        if tenant_id:
+            session_count_stmt = session_count_stmt.where(ResolutionRow.tenant_id == tenant_id)
+        session_count = await session.scalar(session_count_stmt) or 0
+
+        # Get tenant_id from the data if not specified
+        actual_tenant_id = tenant_id
+        if not actual_tenant_id:
+            tenant_stmt = select(EpisodeRow.tenant_id).where(
+                EpisodeRow.subject_id == subject_id
+            ).limit(1)
+            actual_tenant_id = await session.scalar(tenant_stmt)
+
+        summary = SubjectSummary(
+            episode_count=ep_count,
+            memory_count=mem_count,
+            session_count=session_count,
+            first_seen_at=time_row.first_seen.isoformat() if time_row.first_seen else None,
+            last_activity_at=time_row.last_activity.isoformat() if time_row.last_activity else None,
+        )
+
+        # Health
+        health_summary = None
+        try:
+            health_result = await compute_health(session, subject_id, tenant_id=tenant_id)
+            health_summary = SubjectHealthSummary(
+                score=health_result.score,
+                state=health_result.state,
+                factors=[
+                    {"signal": f.signal, "impact": f.impact, "detail": f.detail}
+                    for f in health_result.factors
+                ],
+            )
+        except Exception:
+            pass
+
+        # SLA
+        sla_summary = None
+        try:
+            sla_result = await compute_sla(
+                session,
+                subject_id,
+                tenant_id=tenant_id,
+                first_response_threshold=timedelta(minutes=5),
+                resolution_threshold=timedelta(hours=24),
+            )
+            sla_summary = SubjectSLASummary(
+                total_sessions=sla_result.total_sessions,
+                resolved_sessions=sla_result.resolved_sessions,
+                open_sessions=sla_result.open_sessions,
+                avg_first_response_seconds=sla_result.avg_first_response_seconds,
+                avg_resolution_seconds=sla_result.avg_resolution_seconds,
+                first_response_breach_count=sla_result.first_response_breach_count,
+                resolution_breach_count=sla_result.resolution_breach_count,
+            )
+        except Exception:
+            pass
+
+        return SubjectDetailResponse(
+            subject_id=subject_id,
+            tenant_id=actual_tenant_id,
+            summary=summary,
+            health=health_summary,
+            sla=sla_summary,
+        )
+
+
+@router.get("/subjects/{subject_id}/memories", response_model=MemoryListResponse)
+async def list_subject_memories(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    status: Literal["active", "superseded", "all"] = Query("all", description="Filter by status"),
+    kind: str | None = Query(None, description="Filter by memory kind"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List memories for a subject with filtering and pagination."""
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    async with engine_module.async_session_factory() as session:
+        base = select(MemoryRow).where(MemoryRow.subject_id == subject_id)
+        if tenant_id:
+            base = base.where(MemoryRow.tenant_id == tenant_id)
+        if status != "all":
+            base = base.where(MemoryRow.status == status)
+        if kind:
+            base = base.where(MemoryRow.kind == kind)
+
+        # Count
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = await session.scalar(count_stmt) or 0
+
+        # Get data
+        stmt = base.order_by(MemoryRow.created_at.desc()).limit(limit).offset(offset)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+        memories = [
+            MemoryListItem(
+                id=str(m.id),
+                kind=m.kind,
+                content=m.content,
+                summary=m.summary,
+                confidence=m.confidence,
+                status=m.status,
+                source_episode_ids=[str(ep_id) for ep_id in (m.source_episode_ids or [])],
+                valid_from=m.valid_from.isoformat(),
+                valid_to=m.valid_to.isoformat() if m.valid_to else None,
+                created_at=m.created_at.isoformat(),
+            )
+            for m in rows
+        ]
+
+        return MemoryListResponse(
+            memories=memories,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+
+@router.get("/subjects/{subject_id}/episodes", response_model=EpisodeListResponse)
+async def list_subject_episodes(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    session_id: str | None = Query(None, description="Filter by session"),
+    type: str | None = Query(None, description="Filter by episode type"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List episodes for a subject with filtering and pagination."""
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow
+
+    async with engine_module.async_session_factory() as session:
+        base = select(EpisodeRow).where(EpisodeRow.subject_id == subject_id)
+        if tenant_id:
+            base = base.where(EpisodeRow.tenant_id == tenant_id)
+        if session_id:
+            base = base.where(EpisodeRow.session_id == session_id)
+        if type:
+            base = base.where(EpisodeRow.type == type)
+
+        # Count
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = await session.scalar(count_stmt) or 0
+
+        # Get data
+        stmt = base.order_by(EpisodeRow.created_at.desc()).limit(limit).offset(offset)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+        episodes = [
+            EpisodeListItem(
+                id=str(e.id),
+                session_id=e.session_id,
+                source=e.source,
+                type=e.type,
+                payload=e.payload,
+                metadata=e.metadata_,
+                provenance=e.provenance,
+                created_at=e.created_at.isoformat(),
+            )
+            for e in rows
+        ]
+
+        return EpisodeListResponse(
+            episodes=episodes,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
 
 
 # ─── Usage Metering ───

@@ -14,6 +14,7 @@ python - <<'PY'
 import asyncio
 import os
 import sys
+import urllib.parse
 import asyncpg
 
 URL = os.environ.get("STATEWAVE_DATABASE_URL") or os.environ.get("DATABASE_URL")
@@ -23,6 +24,27 @@ if not URL:
 # asyncpg.connect doesn't understand the SQLAlchemy '+asyncpg' driver suffix.
 URL = URL.replace("+asyncpg", "")
 
+# SQLAlchemy URLs may carry SSL hints as query params (ssl=disable / ssl=require)
+# that SQLAlchemy translates internally. Raw asyncpg interprets unknown params
+# as "SET <param>=<value>" runtime knobs and chokes — drop ssl* params from the
+# URL and surface them as a kwarg instead.
+parsed = urllib.parse.urlsplit(URL)
+qs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+ssl_kwarg = None
+clean_qs = []
+for k, v in qs:
+    if k.lower() in ("ssl", "sslmode"):
+        if v.lower() in ("disable", "false", "off", "0", ""):
+            ssl_kwarg = False
+        elif v.lower() in ("require", "verify-full", "verify-ca", "true", "on", "1"):
+            ssl_kwarg = True
+        # else: leave to asyncpg defaults
+    else:
+        clean_qs.append((k, v))
+URL = urllib.parse.urlunsplit(
+    (parsed.scheme, parsed.netloc, parsed.path, urllib.parse.urlencode(clean_qs), parsed.fragment)
+)
+
 ATTEMPTS = 30  # ~60s with 2s backoff
 DELAY_S = 2.0
 
@@ -31,7 +53,10 @@ async def wait():
     last_exc = None
     for i in range(1, ATTEMPTS + 1):
         try:
-            conn = await asyncpg.connect(URL, timeout=5)
+            kwargs = {"timeout": 5}
+            if ssl_kwarg is not None:
+                kwargs["ssl"] = ssl_kwarg
+            conn = await asyncpg.connect(URL, **kwargs)
             await conn.close()
             print(f"  database reachable (attempt {i})")
             return

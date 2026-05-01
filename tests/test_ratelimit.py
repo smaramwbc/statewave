@@ -105,7 +105,7 @@ class TestDistributedStrategy:
         def mock_factory():
             raise Exception("DB down")
 
-        with patch("server.services.ratelimit.get_session_factory", return_value=mock_factory):
+        with patch("server.services.ratelimit._get_ratelimit_session_factory", return_value=mock_factory):
             allowed, retry = await check_rate_limit("test-ip", 10)
             assert allowed is True
             assert retry == 0

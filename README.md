@@ -35,11 +35,9 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 
 > **Status:** v0.6.1 — actively developed. Full support-agent intelligence stack: session-aware context, resolution tracking, handoff packs, health scoring, SLA tracking, proactive alerts. See [current limitations](#current-limitations) below.
 
-## 🎯 Live Demo
+## 🎯 Try it
 
-> **[▶ Try the interactive demo →](https://demo.statewave.ai)**
->
-> Two identical AI agents answer the same question — one has zero memory, one uses Statewave. See the difference in 10 seconds, no setup required.
+> The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
 
 ## Documentation
 
@@ -194,9 +192,8 @@ See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.
 | [statewave-ts](https://github.com/smaramwbc/statewave-ts) | TypeScript SDK |
 | [statewave-docs](https://github.com/smaramwbc/statewave-docs) | Architecture, API contracts, ADRs |
 | [statewave-examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
-| [statewave-demo](https://github.com/smaramwbc/statewave-demo) | Interactive public demo |
-| [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website |
-| [statewave-admin](https://github.com/smaramwbc/statewave-admin) | Operator console (early) |
+| [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
+| [statewave-admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
 
 ## License
 

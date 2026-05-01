@@ -92,7 +92,7 @@ async def check_rate_limit(key: str, rpm: int) -> tuple[bool, int]:
             key=key,
             hint="Rate limiter DB pool exhausted or unreachable. "
             "Request allowed (fail-open). No impact on main API pool.",
-            docs="https://docs.statewave.ai/deployment/troubleshooting#statewave-ts-001",
+            docs="https://github.com/smaramwbc/statewave-docs/blob/main/deployment/troubleshooting.md#statewave-ts-001",
         )
         # Graceful degradation: allow the request if DB is down
         return True, 0

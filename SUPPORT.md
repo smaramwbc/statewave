@@ -6,9 +6,9 @@ Welcome to Statewave! Here's how to get help.
 
 Start with the documentation:
 
-- **[Getting Started](https://docs.statewave.ai/getting-started)** - Quick start guide
-- **[API Reference](https://docs.statewave.ai/api)** - Full API documentation
-- **[Architecture](https://docs.statewave.ai/architecture)** - How Statewave works
+- **[Getting Started](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md)** - Quick start guide
+- **[API Reference](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md)** - Full API documentation
+- **[Architecture](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/overview.md)** - How Statewave works
 - **[Examples](https://github.com/smaramwbc/statewave-examples)** - Working code examples
 
 ## 💬 Community
@@ -55,8 +55,7 @@ See our [Security Policy](./SECURITY.md) for details.
 | TypeScript SDK | [statewave-ts](https://github.com/smaramwbc/statewave-ts) |
 | Documentation | [statewave-docs](https://github.com/smaramwbc/statewave-docs) |
 | Examples | [statewave-examples](https://github.com/smaramwbc/statewave-examples) |
-| Demo site | [statewave-demo](https://github.com/smaramwbc/statewave-demo) |
-| Marketing site | [statewave-web](https://github.com/smaramwbc/statewave-web) |
+| Marketing site + embedded demo | [statewave-web](https://github.com/smaramwbc/statewave-web) |
 | Admin dashboard | [statewave-admin](https://github.com/smaramwbc/statewave-admin) |
 
 Not sure? Open an issue in the main [statewave](https://github.com/smaramwbc/statewave) repo and we'll route it.

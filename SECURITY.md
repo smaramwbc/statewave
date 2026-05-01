@@ -72,8 +72,7 @@ This policy applies to all Statewave repositories:
 - `statewave-ts` - TypeScript SDK
 - `statewave-docs` - Documentation
 - `statewave-examples` - Examples
-- `statewave-demo` - Demo site
-- `statewave-web` - Marketing site
+- `statewave-web` - Marketing site + embedded demo
 - `statewave-admin` - Admin dashboard
 
 ## Contact

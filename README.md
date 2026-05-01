@@ -28,7 +28,8 @@ Everything is organised around **subjects** — a user, account, agent, repo, or
 - **Your AI remembers** — preferences, decisions, history persist across sessions
 - **Context is structured, not dumped** — ranked retrieval with token budgets, not raw chat log stuffing
 - **Provenance is built in** — every memory traces back to its source episodes
-- **You own it** — self-hosted, open source, no vendor lock-in
+- **You own the storage** — self-hosted, open source, no vendor lock-in. Episodes and compiled memories live in your Postgres. The default heuristic compiler runs fully local; choose an LLM compiler or hosted embeddings if you want them. See [Privacy & Data Flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md).
+- **No GPU required** — the API process is CPU-only. GPUs only enter the picture if you self-host an LLM compiler or embedding model. See [Hardware & Scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md).
 - **Framework-neutral** — works with any AI stack, any language, via REST API or typed SDKs
 
 Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
@@ -48,6 +49,9 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 | [Why Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/why-statewave.md) | Technical comparison for support-agent workflows |
 | [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md) | Full endpoint reference |
 | [Architecture overview](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/overview.md) | System design and data flow |
+| [Compiler modes](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/compiler-modes.md) | Heuristic vs LLM — when to use which |
+| [Privacy & data flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md) | What stays local, what leaves your network |
+| [Hardware & scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md) | GPU is never required; scaling characteristics |
 | [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
 | [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
 | [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |

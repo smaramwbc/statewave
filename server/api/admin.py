@@ -1430,6 +1430,274 @@ async def webhook_event_status(event_id: uuid.UUID):
     return result
 
 
+# ─── Subject Deletion (single + filtered bulk) ─────────────────────────────
+
+
+class BulkDeleteFilter(BaseModel):
+    """Selector for matching subjects to delete.
+
+    At least one filter MUST be set — refusing to operate on "all subjects"
+    is a deliberate footgun guard. To delete everything, scope by tenant.
+    """
+
+    subject_id_prefix: str | None = None
+    """Match subjects whose id starts with this prefix (e.g. 'demo_web_')."""
+
+    older_than_days: int | None = None
+    """Match subjects whose most recent episode is older than N days."""
+
+    tenant_id: str | None = None
+    """Restrict to a specific tenant. Combined with other filters via AND."""
+
+
+class BulkDeleteSample(BaseModel):
+    subject_id: str
+    tenant_id: str | None
+    episode_count: int
+    memory_count: int
+    last_episode_at: str | None
+
+
+class BulkDeletePreview(BaseModel):
+    matched: int
+    sample: list[BulkDeleteSample]
+    total_episodes: int
+    total_memories: int
+
+
+class BulkDeleteCommitRequest(BulkDeleteFilter):
+    confirm: bool = False
+    """Must be True. Refused otherwise."""
+
+    expected_count: int
+    """Optimistic-concurrency guard: must equal the current matched count.
+    Prevents accidentally deleting more than the operator previewed when the
+    set drifts between preview and commit.
+    """
+
+
+class BulkDeleteResult(BaseModel):
+    deleted_subjects: int
+    deleted_episodes: int
+    deleted_memories: int
+    failed: list[str]
+
+
+def _filter_is_empty(f: BulkDeleteFilter) -> bool:
+    return (
+        not f.subject_id_prefix
+        and f.older_than_days is None
+        and not f.tenant_id
+    )
+
+
+async def _matching_subjects(
+    f: BulkDeleteFilter,
+) -> tuple[list[BulkDeleteSample], int, int]:
+    """Resolve the filter to a concrete list of matching subjects.
+
+    Returns (all_matches, total_eps, total_mems). The caller decides how many
+    matches to surface in a response — the full list is needed for committing.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow, MemoryRow
+
+    async with engine_module.get_session_factory()() as session:
+        # Aggregate per (subject_id, tenant_id) from episodes — this is the
+        # authoritative grouping used elsewhere in admin.
+        ep_stmt = (
+            select(
+                EpisodeRow.subject_id,
+                EpisodeRow.tenant_id,
+                func.count().label("ep_count"),
+                func.max(EpisodeRow.created_at).label("last_episode_at"),
+            )
+            .group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
+        )
+        if f.subject_id_prefix:
+            ep_stmt = ep_stmt.where(EpisodeRow.subject_id.like(f"{f.subject_id_prefix}%"))
+        if f.tenant_id:
+            ep_stmt = ep_stmt.where(EpisodeRow.tenant_id == f.tenant_id)
+        if f.older_than_days is not None:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=f.older_than_days)
+            # The HAVING-style filter on the max(created_at) — apply via subquery.
+            sub = ep_stmt.subquery()
+            ep_stmt = select(
+                sub.c.subject_id,
+                sub.c.tenant_id,
+                sub.c.ep_count,
+                sub.c.last_episode_at,
+            ).where(sub.c.last_episode_at < cutoff)
+
+        rows = (await session.execute(ep_stmt)).all()
+
+        # Memory counts per subject — separate query for clarity.
+        mem_counts: dict[tuple[str, str | None], int] = {}
+        if rows:
+            mem_stmt = (
+                select(
+                    MemoryRow.subject_id,
+                    MemoryRow.tenant_id,
+                    func.count().label("mem_count"),
+                )
+                .where(MemoryRow.subject_id.in_([r.subject_id for r in rows]))
+                .group_by(MemoryRow.subject_id, MemoryRow.tenant_id)
+            )
+            for m in (await session.execute(mem_stmt)).all():
+                mem_counts[(m.subject_id, m.tenant_id)] = m.mem_count
+
+    total_eps = sum(r.ep_count for r in rows)
+    total_mems = sum(mem_counts.values())
+
+    matches: list[BulkDeleteSample] = []
+    for r in rows:
+        matches.append(
+            BulkDeleteSample(
+                subject_id=r.subject_id,
+                tenant_id=r.tenant_id,
+                episode_count=r.ep_count,
+                memory_count=mem_counts.get((r.subject_id, r.tenant_id), 0),
+                last_episode_at=r.last_episode_at.isoformat() if r.last_episode_at else None,
+            )
+        )
+    return matches, total_eps, total_mems
+
+
+@router.delete("/subjects/{subject_id}")
+async def delete_subject_admin(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Restrict to tenant"),
+):
+    """Permanently delete all episodes and memories for a subject.
+
+    This is the admin-tool equivalent of `DELETE /v1/subjects/{id}` — same
+    cascade, same webhook, same irreversibility.
+    """
+    from server.db import engine as engine_module
+    from server.db import repositories as repo
+
+    async with engine_module.get_session_factory()() as session:
+        ep_count = await repo.delete_episodes_by_subject(
+            session, subject_id, tenant_id=tenant_id
+        )
+        mem_count = await repo.delete_memories_by_subject(
+            session, subject_id, tenant_id=tenant_id
+        )
+        await session.commit()
+
+    if ep_count == 0 and mem_count == 0:
+        raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
+
+    await webhooks.fire(
+        "subject.deleted",
+        {
+            "subject_id": subject_id,
+            "episodes_deleted": ep_count,
+            "memories_deleted": mem_count,
+        },
+    )
+    return {
+        "subject_id": subject_id,
+        "episodes_deleted": ep_count,
+        "memories_deleted": mem_count,
+    }
+
+
+@router.post("/subjects/preview-delete", response_model=BulkDeletePreview)
+async def preview_bulk_delete(filter: BulkDeleteFilter):
+    """Preview a filtered bulk delete without committing.
+
+    Returns the match count, totals (episodes + memories), and a sample list
+    so the operator can eyeball what they're about to wipe.
+    """
+    if _filter_is_empty(filter):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one filter must be set (subject_id_prefix, older_than_days, or tenant_id).",
+        )
+    matches, total_eps, total_mems = await _matching_subjects(filter)
+    return BulkDeletePreview(
+        matched=len(matches),
+        sample=matches[:20],
+        total_episodes=total_eps,
+        total_memories=total_mems,
+    )
+
+
+@router.post("/subjects/bulk-delete", response_model=BulkDeleteResult)
+async def commit_bulk_delete(req: BulkDeleteCommitRequest):
+    """Commit a previously previewed filtered bulk delete.
+
+    Safety: requires `confirm: true` and `expected_count` matching the current
+    match count. If subjects have been added or removed since the preview, the
+    request is rejected with 409 — the operator must re-preview.
+    """
+    from server.db import engine as engine_module
+    from server.db import repositories as repo
+
+    if not req.confirm:
+        raise HTTPException(status_code=400, detail="confirm must be true to commit a bulk delete")
+    if _filter_is_empty(req):
+        raise HTTPException(
+            status_code=400,
+            detail="At least one filter must be set (subject_id_prefix, older_than_days, or tenant_id).",
+        )
+
+    # Recompute the match set against current state.
+    matches, _, _ = await _matching_subjects(req)
+    if len(matches) != req.expected_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Match count changed since preview "
+                f"({len(matches)} now vs expected {req.expected_count}). Re-preview before committing."
+            ),
+        )
+
+    deleted_subjects = 0
+    deleted_eps = 0
+    deleted_mems = 0
+    failed: list[str] = []
+
+    async with engine_module.get_session_factory()() as session:
+        for s in matches:
+            try:
+                ep_n = await repo.delete_episodes_by_subject(
+                    session, s.subject_id, tenant_id=s.tenant_id
+                )
+                mem_n = await repo.delete_memories_by_subject(
+                    session, s.subject_id, tenant_id=s.tenant_id
+                )
+                await session.commit()
+                deleted_subjects += 1
+                deleted_eps += ep_n
+                deleted_mems += mem_n
+                # Fire one webhook per subject so downstream pipelines get the
+                # same shape they get for /v1/subjects/{id} deletes.
+                await webhooks.fire(
+                    "subject.deleted",
+                    {
+                        "subject_id": s.subject_id,
+                        "episodes_deleted": ep_n,
+                        "memories_deleted": mem_n,
+                    },
+                )
+            except Exception:
+                await session.rollback()
+                failed.append(s.subject_id)
+
+    return BulkDeleteResult(
+        deleted_subjects=deleted_subjects,
+        deleted_episodes=deleted_eps,
+        deleted_memories=deleted_mems,
+        failed=failed,
+    )
+
+
 # ─── Subject Snapshots (advanced bootstrap/admin, feature-flagged) ───
 
 

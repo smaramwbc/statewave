@@ -225,3 +225,132 @@ async def test_memory_related_basic(client: AsyncClient):
     assert "superseded_memories" in data
     assert "sibling_memories" in data
     assert "source_episode_count" in data
+
+
+# ─── Subject deletion (admin) ────────────────────────────────────────────────
+
+
+async def test_admin_delete_subject_single(client: AsyncClient):
+    """DELETE /admin/subjects/{id} permanently removes the subject's data."""
+    # Seed
+    for i in range(3):
+        ep = await client.post(
+            "/v1/episodes",
+            json={
+                "subject_id": "to_delete_user",
+                "source": "test",
+                "type": "message",
+                "payload": {"text": f"hello {i}"},
+            },
+        )
+        assert ep.status_code == 201
+
+    resp = await client.delete("/admin/subjects/to_delete_user")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["subject_id"] == "to_delete_user"
+    assert body["episodes_deleted"] >= 3
+
+    # Subsequent fetches should 404 (no data)
+    detail = await client.get("/admin/subjects/to_delete_user")
+    assert detail.status_code == 404
+
+
+async def test_admin_delete_subject_not_found(client: AsyncClient):
+    """DELETE /admin/subjects/{id} returns 404 when nothing exists for that id."""
+    resp = await client.delete("/admin/subjects/nope_does_not_exist_xyz")
+    assert resp.status_code == 404
+
+
+async def test_admin_preview_delete_rejects_empty_filter(client: AsyncClient):
+    """Empty filter is refused — operator must scope by prefix, age, or tenant."""
+    resp = await client.post("/admin/subjects/preview-delete", json={})
+    assert resp.status_code == 400
+    assert "filter" in resp.json()["error"]["message"].lower()
+
+
+async def test_admin_preview_delete_by_prefix(client: AsyncClient):
+    """Prefix filter returns the matching subject set + counts + a sample."""
+    for sid in ["bulkpfx_a", "bulkpfx_b", "bulkpfx_c", "other_unrelated"]:
+        await client.post(
+            "/v1/episodes",
+            json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
+        )
+
+    resp = await client.post(
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkpfx_"}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["matched"] == 3
+    assert data["total_episodes"] >= 3
+    sample_ids = {s["subject_id"] for s in data["sample"]}
+    assert sample_ids == {"bulkpfx_a", "bulkpfx_b", "bulkpfx_c"}
+
+
+async def test_admin_bulk_delete_requires_confirm(client: AsyncClient):
+    """Refuses to delete without confirm=true."""
+    await client.post(
+        "/v1/episodes",
+        json={
+            "subject_id": "bulkconfirm_a",
+            "source": "test",
+            "type": "message",
+            "payload": {"text": "x"},
+        },
+    )
+    resp = await client.post(
+        "/admin/subjects/bulk-delete",
+        json={"subject_id_prefix": "bulkconfirm_", "expected_count": 1, "confirm": False},
+    )
+    assert resp.status_code == 400
+
+
+async def test_admin_bulk_delete_count_mismatch(client: AsyncClient):
+    """Refuses with 409 when the live match count differs from expected."""
+    for sid in ["bulkmm_a", "bulkmm_b"]:
+        await client.post(
+            "/v1/episodes",
+            json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
+        )
+
+    # Operator previewed and saw 1, but there are actually 2 — must refuse.
+    resp = await client.post(
+        "/admin/subjects/bulk-delete",
+        json={"subject_id_prefix": "bulkmm_", "expected_count": 1, "confirm": True},
+    )
+    assert resp.status_code == 409
+
+
+async def test_admin_bulk_delete_commits(client: AsyncClient):
+    """Happy path: preview, then commit, then verify the subjects are gone."""
+    for sid in ["bulkok_a", "bulkok_b", "bulkok_c"]:
+        await client.post(
+            "/v1/episodes",
+            json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
+        )
+
+    # Preview to learn the count
+    pv = await client.post(
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkok_"}
+    )
+    assert pv.status_code == 200
+    matched = pv.json()["matched"]
+    assert matched == 3
+
+    # Commit
+    resp = await client.post(
+        "/admin/subjects/bulk-delete",
+        json={"subject_id_prefix": "bulkok_", "expected_count": matched, "confirm": True},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deleted_subjects"] == 3
+    assert body["deleted_episodes"] >= 3
+    assert body["failed"] == []
+
+    # Verify gone
+    pv2 = await client.post(
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkok_"}
+    )
+    assert pv2.json()["matched"] == 0

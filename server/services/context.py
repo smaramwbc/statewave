@@ -137,10 +137,13 @@ async def assemble_context(
     use_semantic_provider = bool(
         provider and getattr(provider, "provides_semantic_similarity", True)
     )
+    semantic_results: list[tuple[Any, float]] = []
     if use_semantic_provider:
         try:
             task_embedding = await provider.embed_query(task)
-            # Get semantic scores for all memories in one query
+            # Top 100 memories by cosine distance — this set is the SEMANTIC
+            # contribution to the candidate pool below, in addition to being
+            # used as a score lookup during ranking.
             semantic_results = await repo.search_memories_by_embedding(
                 session,
                 subject_id,
@@ -163,6 +166,56 @@ async def assemble_context(
         )
 
     use_semantic = len(semantic_scores) > 0
+
+    # -- Union semantic candidates into the per-kind pools ------------------
+    #
+    # The recency-bounded fetches above (top-50 profile_facts, top-20
+    # procedures, top-30 episode_summaries by created_at DESC) were the
+    # candidate pool for ranking. Memories outside those windows could
+    # never be ranked, even when their cosine distance to the query was
+    # zero — verified live: docs-pack memories like "API process is
+    # CPU-only, no GPU required" sit at position ~130 of 160 profile_facts
+    # by recency in the docs subject and were locked out, producing the
+    # 25%↔75% eval variability across re-bootstraps depending on which
+    # memories happened to land in the top-50 window.
+    #
+    # Fix: when a real semantic provider is available, also feed every
+    # memory returned by search_memories_by_embedding into the candidate
+    # pool — bucketed by kind, deduped by id with the recency-fetched
+    # rows. The semantic call is already happening for score lookup; we
+    # just stop throwing away the rows it returned. Final ranking is
+    # unchanged.
+    #
+    # Stub-provider / no-provider deployments are unaffected:
+    # `semantic_results` is empty, the union below is a no-op, behavior
+    # is byte-identical to the previous recency-only pool.
+    if semantic_results:
+        sem_by_id: dict[uuid.UUID, Any] = {row.id: row for row, _ in semantic_results}
+        existing_fact_ids = {r.id for r in fact_rows}
+        existing_proc_ids = {r.id for r in procedure_rows}
+        existing_summary_ids = {r.id for r in summary_rows}
+        added_facts = []
+        added_procs = []
+        added_summaries = []
+        for row in sem_by_id.values():
+            if row.kind == "profile_fact" and row.id not in existing_fact_ids:
+                added_facts.append(row)
+            elif row.kind == "procedure" and row.id not in existing_proc_ids:
+                added_procs.append(row)
+            elif row.kind == "episode_summary" and row.id not in existing_summary_ids:
+                added_summaries.append(row)
+        if added_facts or added_procs or added_summaries:
+            logger.debug(
+                "semantic_candidates_unioned",
+                added_facts=len(added_facts),
+                added_procs=len(added_procs),
+                added_summaries=len(added_summaries),
+            )
+        # SQLAlchemy returns ScalarResult-backed sequences from search_memories;
+        # convert to lists so we can extend safely.
+        fact_rows = list(fact_rows) + added_facts
+        procedure_rows = list(procedure_rows) + added_procs
+        summary_rows = list(summary_rows) + added_summaries
 
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)

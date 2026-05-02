@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("schema_check_skipped", reason=str(exc)[:200])
 
-    logger.info("app_startup", version="0.6.1", debug=settings.debug)
+    logger.info("app_startup", version="0.7.0", debug=settings.debug)
     yield
     if cleanup_task:
         cleanup_task.cancel()
@@ -113,7 +113,7 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.5.0",
+        version="0.7.0",
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,
@@ -168,6 +168,10 @@ def create_app() -> FastAPI:
     from server.api.sla import router as sla_router
 
     app.include_router(sla_router)
+
+    from server.api.llm import router as llm_router
+
+    app.include_router(llm_router)
 
     # -- Ops endpoints -------------------------------------------------------
     @app.get("/healthz", tags=["ops"], summary="Liveness check")

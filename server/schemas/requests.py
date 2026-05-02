@@ -59,3 +59,24 @@ class HandoffRequest(BaseModel):
     )
     reason: str = Field("escalation", max_length=256, description="Why the handoff is happening")
     max_tokens: int | None = Field(None, ge=1, le=16000)
+
+
+class LLMChatMessage(BaseModel):
+    """Single chat-completion message. Mirrors the OpenAI/LiteLLM wire shape."""
+
+    role: str = Field(..., pattern=r"^(system|user|assistant|tool)$")
+    content: str = Field(..., max_length=16000)
+
+
+class LLMCompleteRequest(BaseModel):
+    """Request body for `POST /v1/llm/complete`.
+
+    Intentionally narrow: callers (the website widget, internal demo flows)
+    pass messages and optional generation knobs; **provider/model selection
+    lives entirely in server config** (`STATEWAVE_LITELLM_MODEL` and
+    friends). This is not a generic public LLM API.
+    """
+
+    messages: list[LLMChatMessage] = Field(..., min_length=1, max_length=50)
+    max_tokens: int | None = Field(None, ge=1, le=4096)
+    temperature: float | None = Field(None, ge=0.0, le=2.0)

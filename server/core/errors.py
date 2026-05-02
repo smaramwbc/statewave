@@ -81,9 +81,21 @@ def register_exception_handlers(app: FastAPI) -> None:
             status=exc.status_code,
             detail=exc.detail,
         )
+        # Endpoints can pass `detail={"code": "...", "message": "..."}` to set
+        # a stable machine-readable error code; otherwise we fall back to the
+        # generic `http_error` code with the stringified detail as the message.
+        code: str = "http_error"
+        message: str = str(exc.detail)
+        if isinstance(exc.detail, dict):
+            raw_code = exc.detail.get("code")
+            raw_message = exc.detail.get("message")
+            if isinstance(raw_code, str) and raw_code:
+                code = raw_code
+            if isinstance(raw_message, str) and raw_message:
+                message = raw_message
         return _error_json(
-            code="http_error",
-            message=str(exc.detail),
+            code=code,
+            message=message,
             request=request,
             status=exc.status_code,
         )

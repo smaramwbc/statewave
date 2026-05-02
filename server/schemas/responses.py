@@ -172,3 +172,10 @@ class SLASummaryResponse(BaseModel):
     first_response_breach_count: int = 0
     resolution_breach_count: int = 0
     sessions: list[SessionSLAResponse] = Field(default_factory=list)
+
+
+class LLMCompleteResponse(BaseModel):
+    """Response body for `POST /v1/llm/complete`. Just the assistant text;
+    callers don't need usage/tokens for the widget-completion use case."""
+
+    reply: str

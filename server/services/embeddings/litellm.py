@@ -1,16 +1,18 @@
-"""LiteLLM embedding provider — supports OpenAI, Azure, Cohere, Bedrock, Ollama, etc.
+"""LiteLLM-backed embedding provider.
 
-Uses litellm.embedding() for unified multi-provider embedding generation.
-Backward compatible: STATEWAVE_EMBEDDING_PROVIDER=openai still works.
+Routes all calls through the central LLM adapter at `server.services.llm`,
+which is the only module in Statewave that imports LiteLLM directly. Model,
+api-base, timeout, and credential config is provider-neutral — the
+adapter resolves it from `server.core.config.settings` (LITELLM_* vars
+under the `STATEWAVE_` env prefix).
 
-Requires:
-- pip install 'statewave[llm]'
-- Appropriate API key for the chosen model (e.g. OPENAI_API_KEY)
+The model identifier (e.g. "text-embedding-3-small", "cohere/embed-english-v3.0",
+"ollama/mxbai-embed-large") is what selects the actual backend; this provider
+is provider-agnostic.
 """
 
 from __future__ import annotations
 
-import os
 import time
 from collections import OrderedDict
 from typing import Generic, TypeVar
@@ -25,7 +27,7 @@ logger = structlog.stdlib.get_logger()
 # /v1/context calls embed_query(task) on every request. In production
 # the task text is highly repetitive (the widget wraps user messages in
 # a deterministic template, so identical demo questions produce identical
-# task strings). Each call costs a network round-trip to OpenAI — we
+# task strings). Each call costs a network round-trip to the provider — we
 # observed 16–40s p95 latency per /v1/context, which broke the dev proxy
 # at 30s and stretched the production turn time to ~20s. Caching the
 # task→vector pair eliminates the repeat cost entirely.
@@ -100,28 +102,18 @@ class _TTLCache(Generic[K, V]):
         return len(self._store)
 
 
-class OpenAIEmbeddingProvider:
-    """LiteLLM-based embedding provider. Name kept for backward compat."""
+class LiteLLMEmbeddingProvider:
+    """LiteLLM-based embedding provider — supports any embedding model
+    LiteLLM dispatches to (OpenAI, Cohere, Voyage, Bedrock, Ollama, …)."""
 
     def __init__(
         self,
-        api_key: str | None = None,
         model: str = "text-embedding-3-small",
         dimensions: int = 1536,
         *,
         query_cache_max_size: int = _QUERY_CACHE_MAX_SIZE,
         query_cache_ttl_seconds: float = _QUERY_CACHE_TTL_SECONDS,
     ) -> None:
-        try:
-            import litellm  # noqa: F401
-        except ImportError:
-            raise ImportError(
-                "litellm package is required for embeddings. "
-                "Install with: pip install 'statewave[llm]'"
-            )
-        # Set API key for backward compat (STATEWAVE_OPENAI_API_KEY → OPENAI_API_KEY)
-        if api_key and not os.environ.get("OPENAI_API_KEY"):
-            os.environ["OPENAI_API_KEY"] = api_key
         self._model = model
         self._dimensions = dimensions
         self._query_cache: _TTLCache[str, list[float]] = _TTLCache(
@@ -160,26 +152,17 @@ class OpenAIEmbeddingProvider:
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        import litellm
+        from server.services import llm as llm_adapter
 
-        response = await litellm.aembedding(
-            model=self._model,
-            input=texts,
-            dimensions=self._dimensions,
+        return await llm_adapter.aembed_texts(
+            texts, model=self._model, dimensions=self._dimensions
         )
-        logger.debug(
-            "litellm_embeddings_generated",
-            count=len(texts),
-            model=self._model,
-            usage=response.usage.total_tokens if response.usage else None,
-        )
-        return [item["embedding"] for item in response.data]
 
     async def embed_query(self, text: str) -> list[float]:
-        # Cache by exact text — different casing/whitespace produces
-        # different embeddings on the OpenAI side, so exact match is the
-        # safe key. The widget already sends a deterministic template so
-        # repeat queries hit the same key naturally.
+        # Cache by exact text — different casing/whitespace can produce
+        # different embeddings provider-side, so exact match is the safe
+        # key. The widget already sends a deterministic template so repeat
+        # queries hit the same key naturally.
         cached = self._query_cache.get(text)
         if cached is not None:
             return cached

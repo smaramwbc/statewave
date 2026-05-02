@@ -52,6 +52,8 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 | [Compiler modes](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/compiler-modes.md) | Heuristic vs LLM — when to use which |
 | [Privacy & data flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md) | What stays local, what leaves your network |
 | [Hardware & scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md) | GPU is never required; scaling characteristics |
+| [Deployment sizing guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/sizing.md) | Hardware profiles by tier (local → enterprise) and topology patterns |
+| [Capacity planning checklist](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/capacity-planning.md) | Diagnostic flow + tuning order when load grows |
 | [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
 | [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
 | [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
@@ -64,7 +66,7 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 ## Capabilities
 
 - **Episode ingestion** — append-only raw event recording, single or batch (up to 100)
-- **Pluggable compilers** — heuristic (regex) or LLM (OpenAI) memory extraction
+- **Pluggable compilers** — heuristic (regex) or LLM (any LiteLLM-supported provider) memory extraction
 - **Idempotent compilation** — recompiling the same subject produces no duplicates
 - **Semantic search** — pgvector cosine similarity with text-search fallback
 - **Token-bounded context** — context bundles respect a configurable token budget
@@ -139,17 +141,20 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to get started.
 
-> **For best results:** Set `STATEWAVE_COMPILER_TYPE=llm` and `STATEWAVE_EMBEDDING_PROVIDER=openai` with an appropriate API key. Statewave uses [LiteLLM](https://github.com/BerriAI/litellm) under the hood, so you can use any supported provider — OpenAI, Anthropic, Azure, Ollama, Cohere, Gemini, Bedrock, Mistral, Groq, and 100+ others. Set `STATEWAVE_LLM_COMPILER_MODEL` to any LiteLLM model string (e.g. `gpt-4o-mini`, `claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`). The heuristic compiler still works without any LLM API key.
+> **For best results:** Set `STATEWAVE_COMPILER_TYPE=llm` and `STATEWAVE_EMBEDDING_PROVIDER=litellm` with an `STATEWAVE_LITELLM_API_KEY`. Statewave uses [LiteLLM](https://github.com/BerriAI/litellm) as its single provider abstraction, so you can use any supported provider — OpenAI, Anthropic, Azure, Ollama, Cohere, Gemini, Bedrock, Mistral, Groq, and 100+ others — by setting `STATEWAVE_LITELLM_MODEL` to any LiteLLM model identifier (e.g. `gpt-4o-mini`, `claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`). The heuristic compiler still works without any LLM API key.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `STATEWAVE_DATABASE_URL` | `postgresql+asyncpg://statewave:statewave@localhost:5432/statewave` | Postgres connection string |
 | `STATEWAVE_DEBUG` | `false` | Enable debug logging |
 | `STATEWAVE_COMPILER_TYPE` | `heuristic` | `heuristic` or `llm` |
-| `STATEWAVE_EMBEDDING_PROVIDER` | `stub` | `stub`, `openai`, or `none` |
-| `STATEWAVE_OPENAI_API_KEY` | — | API key (also reads `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc. per LiteLLM conventions) |
-| `STATEWAVE_LLM_COMPILER_MODEL` | `gpt-4o-mini` | Any [LiteLLM model string](https://docs.litellm.ai/docs/providers) (`claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`, etc.) |
-| `STATEWAVE_OPENAI_EMBEDDING_MODEL` | `text-embedding-3-small` | Model for OpenAI embeddings |
+| `STATEWAVE_EMBEDDING_PROVIDER` | `stub` | `stub`, `litellm`, or `none` |
+| `STATEWAVE_LITELLM_API_KEY` | — | Provider-neutral API key (e.g. OpenAI `sk-...`, Anthropic `sk-ant-...`) — passed through to the provider chosen by `STATEWAVE_LITELLM_MODEL` |
+| `STATEWAVE_LITELLM_MODEL` | `gpt-4o-mini` | Chat-completion model — any [LiteLLM identifier](https://docs.litellm.ai/docs/providers) (`claude-3-haiku-20240307`, `ollama/llama3`, `azure/gpt-4`, etc.) |
+| `STATEWAVE_LITELLM_EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model — any LiteLLM-supported (`cohere/embed-english-v3.0`, `voyage/voyage-large-2`, …) |
+| `STATEWAVE_LITELLM_API_BASE` | — | Custom base URL (e.g. `http://localhost:11434` for Ollama, or a self-hosted OpenAI-compatible gateway) |
+| `STATEWAVE_LITELLM_TIMEOUT_SECONDS` | `60` | Request timeout |
+| `STATEWAVE_LITELLM_MAX_RETRIES` | `2` | Retries on transient errors |
 | `STATEWAVE_EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `STATEWAVE_API_KEY` | — | API key for auth (empty = open access) |
 | `STATEWAVE_RATE_LIMIT_RPM` | `0` | Requests/min/IP (0 = disabled) |

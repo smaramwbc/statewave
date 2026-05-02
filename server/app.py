@@ -56,12 +56,6 @@ async def _cleanup_loop():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Propagate STATEWAVE_OPENAI_API_KEY to OPENAI_API_KEY for LiteLLM
-    import os
-
-    if settings.openai_api_key and not os.environ.get("OPENAI_API_KEY"):
-        os.environ["OPENAI_API_KEY"] = settings.openai_api_key
-
     # Configure tracing (no-op if opentelemetry not installed)
     setup_tracing()
     # Configure webhooks

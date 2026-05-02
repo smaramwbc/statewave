@@ -1,17 +1,17 @@
 """Cross-machine query embedding cache (L2).
 
 Wraps `provider.embed_query(text)` with a Postgres-backed lookup so that
-identical task text across multiple Fly machines pays the OpenAI round-trip
-exactly once. The provider's own in-process LRU+TTL (the L1 layer in
-`OpenAIEmbeddingProvider._query_cache`) is unchanged — this layer sits in
-front of it.
+identical task text across multiple Fly machines pays the provider
+round-trip exactly once. The provider's own in-process LRU+TTL (the L1
+layer in `LiteLLMEmbeddingProvider._query_cache`) is unchanged — this
+layer sits in front of it.
 
 Layering, in order of precedence:
 
     1. L1 — provider's in-process LRU (~0.1ms hit, machine-local)
     2. L2 — Postgres `query_embedding_cache` table (~1-5ms hit,
             cross-machine via the shared DB)
-    3. Provider call — OpenAI API (~500ms-30s, occasional spikes)
+    3. Provider call — embedding API (~500ms-30s, occasional spikes)
 
 The implementation here is L2 + the provider's own L1+API path; we don't
 re-implement L1 inside the helper because it already lives correctly
@@ -45,7 +45,7 @@ from server.db import repositories as repo
 logger = structlog.stdlib.get_logger()
 
 
-# 24h TTL — query embeddings are stable across long windows (the OpenAI
+# 24h TTL — query embeddings are stable across long windows (the embedding
 # model doesn't change without a deliberate rotation, which we'd handle
 # by rotating the `model` cache key). Picked higher than the in-process
 # 1h because there's no memory pressure on Postgres and longer reuse is

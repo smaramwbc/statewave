@@ -37,9 +37,6 @@ def get_compiler() -> BaseCompiler:
     elif settings.compiler_type == "llm":
         from server.services.compilers.llm import LLMCompiler
 
-        return LLMCompiler(
-            api_key=settings.openai_api_key,
-            model=settings.llm_compiler_model,
-        )
+        return LLMCompiler(model=settings.litellm_model)
     else:
         raise ValueError(f"Unknown compiler type: {settings.compiler_type}")

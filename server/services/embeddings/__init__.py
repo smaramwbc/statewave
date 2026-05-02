@@ -21,10 +21,11 @@ class BaseEmbeddingProvider(Protocol):
     def provides_semantic_similarity(self) -> bool:
         """Whether the provider produces vectors with real semantic meaning.
 
-        True for real embedding APIs (OpenAI, etc.) where similar texts produce
-        similar vectors. False for the hash-based stub, whose vectors are
-        deterministic but semantically meaningless — callers should NOT use
-        stub-vector cosine similarity as a relevance signal during ranking.
+        True for real embedding APIs (any LiteLLM-supported provider) where
+        similar texts produce similar vectors. False for the hash-based stub,
+        whose vectors are deterministic but semantically meaningless —
+        callers should NOT use stub-vector cosine similarity as a relevance
+        signal during ranking.
         """
         ...
 
@@ -71,12 +72,11 @@ def get_provider() -> BaseEmbeddingProvider | None:
         from server.services.embeddings.stub import StubEmbeddingProvider
 
         _provider_instance = StubEmbeddingProvider(dimensions=settings.embedding_dimensions)
-    elif settings.embedding_provider == "openai":
-        from server.services.embeddings.openai import OpenAIEmbeddingProvider
+    elif settings.embedding_provider == "litellm":
+        from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 
-        _provider_instance = OpenAIEmbeddingProvider(
-            api_key=settings.openai_api_key,
-            model=settings.openai_embedding_model,
+        _provider_instance = LiteLLMEmbeddingProvider(
+            model=settings.litellm_embedding_model,
             dimensions=settings.embedding_dimensions,
         )
     else:

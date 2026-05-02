@@ -6,7 +6,7 @@ Produces consistent vectors for the same input text, making it useful for:
 - Deterministic integration tests
 
 The vectors are NOT semantically meaningful — similar texts don't produce
-similar vectors. For real semantic search, use the OpenAI provider.
+similar vectors. For real semantic search, use the LiteLLM provider.
 """
 
 from __future__ import annotations

@@ -245,7 +245,7 @@ async def search_memories(
                 try:
                     # Cross-machine query embedding cache — same path as
                     # /v1/context. Repeated /v1/memories/search?semantic=
-                    # calls cluster-wide pay the OpenAI round-trip once.
+                    # calls cluster-wide pay the provider round-trip once.
                     from server.db.engine import get_session_factory
                     from server.services.embeddings.query_cache import cached_embed_query
                     query_embedding = await cached_embed_query(

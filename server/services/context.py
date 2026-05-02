@@ -144,8 +144,8 @@ async def assemble_context(
             # Cross-machine query embedding cache: hits the Postgres-backed
             # query_embedding_cache before the provider's in-process L1, so
             # repeated demo queries asked across both Fly machines pay the
-            # OpenAI round-trip exactly once cluster-wide. Falls through to
-            # the provider transparently on miss / DB error.
+            # provider round-trip exactly once cluster-wide. Falls through
+            # to the provider transparently on miss / DB error.
             from server.db.engine import get_session_factory
             task_embedding = await cached_embed_query(
                 get_session_factory(), provider, task

@@ -1,7 +1,9 @@
-"""LLM-backed memory compiler — uses httpx for direct OpenAI API calls.
+"""LLM-backed memory compiler — extracts structured memories from episodes.
 
-Extracts structured memories (profile facts, preferences, episode summaries,
-procedures) from episode payloads using OpenAI-compatible APIs.
+Routes all LLM calls through the central adapter at `server.services.llm`,
+which is the only place in Statewave that imports LiteLLM directly. The
+compiler stays focused on batching + concurrency + result parsing; the
+adapter owns provider selection, timeout, retries, and error mapping.
 
 Optimized for speed:
 - Batches small episodes into a single LLM call
@@ -10,22 +12,21 @@ Optimized for speed:
 
 Requires:
 - STATEWAVE_COMPILER_TYPE=llm
-- OPENAI_API_KEY or STATEWAVE_OPENAI_API_KEY
+- LiteLLM-compatible model + credentials (see server/services/llm.py docstring
+  for the env-var contract — provider-neutral)
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-import httpx
 import structlog
 
 from server.db.tables import EpisodeRow, MemoryRow
+from server.services import llm as llm_adapter
 from server.services.compilers.heuristic import extract_payload_text
 
 logger = structlog.stdlib.get_logger()
@@ -63,32 +64,17 @@ Rules:
 - Return ONLY the JSON array, no markdown fences or extra text.
 """
 
-# OpenAI-compatible base URL (can be overridden for Azure, etc.)
-_OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-
-
 class LLMCompiler:
-    """Async LLM memory compiler with batching + parallelism. Implements BaseCompiler protocol."""
+    """Async LLM memory compiler with batching + parallelism. Implements BaseCompiler protocol.
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model: str = "gpt-4o-mini",
-    ) -> None:
-        if api_key and not os.environ.get("OPENAI_API_KEY"):
-            os.environ["OPENAI_API_KEY"] = api_key
-        self._api_key = os.environ.get("OPENAI_API_KEY", api_key or "")
+    All LLM calls route through `server.services.llm` — see that module's
+    docstring for the provider-neutral env-var contract. `model` is a
+    LiteLLM model identifier (e.g. "gpt-4o-mini",
+    "claude-3-haiku-20240307", "ollama/llama3").
+    """
+
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
         self._model = model
-        self._client: httpx.AsyncClient | None = None
-
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=_OPENAI_BASE_URL,
-                headers={"Authorization": f"Bearer {self._api_key}"},
-                timeout=60.0,
-            )
-        return self._client
 
     def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
         """Sync fallback — uses heuristic compiler."""
@@ -233,35 +219,48 @@ class LLMCompiler:
             return results
 
     async def _call_llm_async(self, text: str, episode_count: int) -> list[dict[str, Any]]:
-        """Async LLM call via direct httpx to OpenAI-compatible endpoint."""
-        client = self._get_client()
+        """Async LLM call via the central LiteLLM adapter.
 
+        Returns the parsed memory-list. Routing through `server.services.llm`
+        gives us provider portability plus standardized timeout/retry/error
+        mapping.
+        """
         # Adjust max tokens based on batch size
         max_tokens = min(_MAX_TOKENS, 500 * episode_count)
 
-        resp = await client.post(
-            "/chat/completions",
-            json={
-                "model": self._model,
-                "messages": [
+        try:
+            parsed = await llm_adapter.acomplete_json(
+                [
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {
                         "role": "user",
-                        "content": f"Extract memories from these {episode_count} episode(s):\n\n{text}",
+                        "content": (
+                            f"Extract memories from these {episode_count} episode(s)."
+                            " Return a JSON object with a single key `memories`"
+                            f" whose value is the array.\n\n{text}"
+                        ),
                     },
                 ],
-                "temperature": 0.1,
-                "max_tokens": max_tokens,
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data["choices"][0]["message"]["content"] or "[]"
-        # Strip markdown fences if the model wraps them
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list):
-            return []
-        return parsed
+                model=self._model,
+                temperature=0.1,
+                max_tokens=max_tokens,
+            )
+        except llm_adapter.StatewaveLLMError as exc:
+            # Same surface as the previous httpx-based path: caller
+            # (_process_batch) catches generic Exception and falls
+            # through to an empty memory list.
+            raise RuntimeError(str(exc)) from exc
+
+        # acomplete_json forces response_format=json_object, so the
+        # provider returns a dict at top level. Some providers / older
+        # behavior may return a bare list — accept both.
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            for key in ("memories", "items", "results"):
+                if key in parsed and isinstance(parsed[key], list):
+                    return parsed[key]
+            # Single-memory dict — wrap as a one-element list.
+            if "kind" in parsed and "content" in parsed:
+                return [parsed]
+        return []

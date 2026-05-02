@@ -7,7 +7,7 @@ Create Date: 2026-05-02
 Adds a tiny Postgres-backed table that lets multiple Fly machines share the
 result of a successful `provider.embed_query(text)` call. Without this,
 each machine has its own in-process LRU cache and the LB can scatter the
-same demo query across machines, repeatedly paying the full OpenAI
+same demo query across machines, repeatedly paying the full provider
 embedding round-trip (observed at 0.5–30s, occasional 30s spikes that
 exceeded the dev-proxy timeout).
 
@@ -19,7 +19,7 @@ Schema notes:
   * expires_at indexed so the opportunistic cleanup at write time can do
     a fast range delete.
   * No subject_id / tenant_id — query embeddings are universal (same text
-    → same OpenAI vector regardless of who's asking) and the cache key is
+    → same provider vector regardless of who's asking) and the cache key is
     only the text + model, so there's no data-leakage risk and no need
     for tenant scoping.
 

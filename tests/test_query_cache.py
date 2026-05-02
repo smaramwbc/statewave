@@ -155,11 +155,11 @@ async def test_provider_failure_does_not_poison_l2():
     poisoned cache would replay the failure forever."""
     factory, _ = _fake_session_factory()
     provider = _real_provider()
-    provider.embed_query = AsyncMock(side_effect=RuntimeError("OpenAI 5xx"))
+    provider.embed_query = AsyncMock(side_effect=RuntimeError("provider 5xx"))
     with patch("server.services.embeddings.query_cache.repo") as mock_repo:
         mock_repo.query_cache_get = AsyncMock(return_value=None)
         mock_repo.query_cache_set = AsyncMock(return_value=None)
-        with pytest.raises(RuntimeError, match="OpenAI 5xx"):
+        with pytest.raises(RuntimeError, match="provider 5xx"):
             await cached_embed_query(factory, provider, "q")
     mock_repo.query_cache_set.assert_not_called()
 

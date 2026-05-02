@@ -73,7 +73,7 @@ async def test_check_queue_stuck_jobs():
 @pytest.mark.asyncio
 async def test_check_llm_not_configured():
     with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.openai_api_key = None
+        mock_settings.litellm_api_key = None
         result = await _check_llm()
         assert result.status == "ok"
         assert "not configured" in result.detail
@@ -84,7 +84,7 @@ async def test_run_readiness_all_ok():
     conn = _mock_conn_with_scalar(0)
 
     with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.openai_api_key = None
+        mock_settings.litellm_api_key = None
         result = await run_readiness_checks(conn)
 
     assert result.status == "ready"
@@ -97,7 +97,7 @@ async def test_run_readiness_db_fail():
     conn.execute = AsyncMock(side_effect=Exception("down"))
 
     with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.openai_api_key = None
+        mock_settings.litellm_api_key = None
         result = await run_readiness_checks(conn)
 
     assert result.status == "not_ready"

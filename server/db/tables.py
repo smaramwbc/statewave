@@ -10,7 +10,7 @@ from sqlalchemy import DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# Embedding dimensionality must match `OpenAIEmbeddingProvider.dimensions`
+# Embedding dimensionality must match `LiteLLMEmbeddingProvider.dimensions`
 # and the `vector(N)` type in the schema. text-embedding-3-small at 1536
 # dims is the project default; bumping requires a migration that ALTERs
 # the column TYPE and rebuilds the HNSW index.
@@ -200,14 +200,14 @@ class SubjectHealthCacheRow(Base):
 class QueryEmbeddingCacheRow(Base):
     """Cross-machine cache of `embed_query(text)` results.
 
-    Eliminates duplicate OpenAI embedding round-trips when the same task
+    Eliminates duplicate provider embedding round-trips when the same task
     text is asked across multiple Fly machines (each of which has its own
     in-process LRU cache). See migration 0014 for the table contract.
 
     Composite PK on (text_key, model) — same text under a different
     embedding model is a different cache entry, so model rotations don't
     return stale embeddings. No tenant scoping: query embeddings are
-    universal (same text → same OpenAI vector regardless of caller).
+    universal (same text → same provider vector regardless of caller).
     """
 
     __tablename__ = "query_embedding_cache"

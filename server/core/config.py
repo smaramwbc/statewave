@@ -30,13 +30,20 @@ class Settings(BaseSettings):
     compiler_type: str = "heuristic"
 
     # Embeddings
-    embedding_provider: str = "stub"  # "stub" | "openai" | "none"
+    embedding_provider: str = "stub"  # "stub" | "litellm" | "none"
     embedding_dimensions: int = 1536
-    openai_api_key: str | None = None  # backward compat; also set via OPENAI_API_KEY env
-    openai_embedding_model: str = "text-embedding-3-small"
 
-    # LLM compiler
-    llm_compiler_model: str = "gpt-4o-mini"  # any litellm model string
+    # LiteLLM — single provider abstraction. See server/services/llm.py for
+    # the provider-neutral env-var contract. LiteLLM dispatches to the
+    # underlying SDK (OpenAI, Anthropic, Azure, Bedrock, Ollama, …) by
+    # model identifier.
+    litellm_api_key: str | None = None
+    litellm_model: str = "gpt-4o-mini"  # any LiteLLM model identifier
+    litellm_embedding_model: str = "text-embedding-3-small"
+    litellm_api_base: str | None = None
+    litellm_timeout_seconds: float = 60.0
+    litellm_max_retries: int = 2
+    litellm_temperature: float = 0.1
 
     # Authentication (empty = disabled / open access)
     api_key: str | None = None

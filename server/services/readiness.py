@@ -85,28 +85,26 @@ async def _check_queue(conn: AsyncConnection) -> CheckResult:
 
 
 async def _check_llm() -> CheckResult:
-    """Verify LLM provider is reachable (lightweight completion call)."""
-    if not settings.openai_api_key:
+    """Verify LLM provider is reachable (lightweight completion call).
+
+    Routes through the central LLM adapter — see server.services.llm.
+    No direct litellm import here; the adapter owns the SDK choice.
+    """
+    if not settings.litellm_api_key:
         return CheckResult(name="llm", status="ok", detail="not configured (skip)")
 
     import time
 
+    from server.services import llm as llm_adapter
+
     start = time.perf_counter()
     try:
-        import litellm
-
-        # Use a minimal completion to verify connectivity without burning tokens
-        await asyncio.wait_for(
-            litellm.acompletion(
-                model=settings.llm_compiler_model or "gpt-3.5-turbo",
-                messages=[{"role": "user", "content": "ping"}],
-                max_tokens=1,
-            ),
-            timeout=10.0,
-        )
+        # aping issues a one-token completion through the adapter, which
+        # applies the configured timeout/retry/error-mapping uniformly.
+        await llm_adapter.aping(timeout=10.0)
         latency = (time.perf_counter() - start) * 1000
         return CheckResult(name="llm", status="ok", latency_ms=round(latency, 1))
-    except asyncio.TimeoutError:
+    except llm_adapter.LLMTimeoutError:
         latency = (time.perf_counter() - start) * 1000
         return CheckResult(
             name="llm", status="degraded", detail="timeout (>10s)", latency_ms=round(latency, 1)

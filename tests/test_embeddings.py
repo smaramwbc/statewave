@@ -118,15 +118,13 @@ def test_get_provider_returns_stub_by_default():
 
 
 # ---------------------------------------------------------------------------
-# _TTLCache (used by OpenAIEmbeddingProvider for query embedding cache)
+# _TTLCache (used by LiteLLMEmbeddingProvider for query embedding cache)
 # ---------------------------------------------------------------------------
 #
 # These tests pin the cache contract independently of the LiteLLM-bound
-# provider so they don't need network/API access. The OpenAI provider's
-# import of litellm is lazy (inside __init__) and we'd otherwise have to
-# guard the whole file with a litellm-availability skip.
+# provider so they don't need network/API access.
 
-from server.services.embeddings.openai import _TTLCache  # noqa: E402
+from server.services.embeddings.litellm import _TTLCache  # noqa: E402
 
 
 def test_ttl_cache_first_get_misses():
@@ -223,20 +221,20 @@ def test_ttl_cache_clear_resets_state():
 
 
 # ---------------------------------------------------------------------------
-# OpenAIEmbeddingProvider — query cache integration (mocked litellm)
+# LiteLLMEmbeddingProvider — query cache integration (mocked adapter)
 # ---------------------------------------------------------------------------
 #
 # These tests verify the cache wires correctly into embed_query without
-# hitting the real OpenAI API. We mock the provider's own embed_texts so
-# we can count calls and assert that cached repeats skip the network path.
+# hitting any real provider. We mock the provider's own embed_texts so we
+# can count calls and assert that cached repeats skip the network path.
 
 
 @pytest.mark.anyio
-async def test_openai_provider_embed_query_caches_repeat(monkeypatch):
+async def test_litellm_provider_embed_query_caches_repeat(monkeypatch):
     pytest.importorskip("litellm")
-    from server.services.embeddings.openai import OpenAIEmbeddingProvider
+    from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 
-    provider = OpenAIEmbeddingProvider(api_key="test-key", dimensions=4)
+    provider = LiteLLMEmbeddingProvider(dimensions=4)
 
     call_count = {"n": 0}
 
@@ -244,7 +242,7 @@ async def test_openai_provider_embed_query_caches_repeat(monkeypatch):
         call_count["n"] += 1
         return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
 
-    monkeypatch.setattr(OpenAIEmbeddingProvider, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(LiteLLMEmbeddingProvider, "embed_texts", fake_embed_texts)
 
     v1 = await provider.embed_query("How do I deploy on Fly.io?")
     v2 = await provider.embed_query("How do I deploy on Fly.io?")
@@ -259,11 +257,11 @@ async def test_openai_provider_embed_query_caches_repeat(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_openai_provider_embed_query_distinct_texts_each_miss(monkeypatch):
+async def test_litellm_provider_embed_query_distinct_texts_each_miss(monkeypatch):
     pytest.importorskip("litellm")
-    from server.services.embeddings.openai import OpenAIEmbeddingProvider
+    from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 
-    provider = OpenAIEmbeddingProvider(api_key="test-key", dimensions=4)
+    provider = LiteLLMEmbeddingProvider(dimensions=4)
 
     call_count = {"n": 0}
 
@@ -272,7 +270,7 @@ async def test_openai_provider_embed_query_distinct_texts_each_miss(monkeypatch)
         # Different vector per text so we can spot mix-ups
         return [[float(call_count["n"])] * 4 for _ in texts]
 
-    monkeypatch.setattr(OpenAIEmbeddingProvider, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(LiteLLMEmbeddingProvider, "embed_texts", fake_embed_texts)
 
     v_a = await provider.embed_query("question A")
     v_b = await provider.embed_query("question B")
@@ -283,19 +281,19 @@ async def test_openai_provider_embed_query_distinct_texts_each_miss(monkeypatch)
 
 
 @pytest.mark.anyio
-async def test_openai_provider_embed_query_does_not_cache_on_provider_error(monkeypatch):
-    """A failing OpenAI call must not poison the cache with a stale or
+async def test_litellm_provider_embed_query_does_not_cache_on_provider_error(monkeypatch):
+    """A failing provider call must not poison the cache with a stale or
     fallback value. The error propagates and the cache stays empty so the
     next call retries fresh."""
     pytest.importorskip("litellm")
-    from server.services.embeddings.openai import OpenAIEmbeddingProvider
+    from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 
-    provider = OpenAIEmbeddingProvider(api_key="test-key", dimensions=4)
+    provider = LiteLLMEmbeddingProvider(dimensions=4)
 
     async def fake_embed_texts(self, texts):  # noqa: ANN001
         raise RuntimeError("simulated upstream failure")
 
-    monkeypatch.setattr(OpenAIEmbeddingProvider, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(LiteLLMEmbeddingProvider, "embed_texts", fake_embed_texts)
 
     with pytest.raises(RuntimeError, match="simulated upstream failure"):
         await provider.embed_query("never cached")
@@ -304,12 +302,11 @@ async def test_openai_provider_embed_query_does_not_cache_on_provider_error(monk
 
 
 @pytest.mark.anyio
-async def test_openai_provider_embed_query_eviction_under_size_bound(monkeypatch):
+async def test_litellm_provider_embed_query_eviction_under_size_bound(monkeypatch):
     pytest.importorskip("litellm")
-    from server.services.embeddings.openai import OpenAIEmbeddingProvider
+    from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 
-    provider = OpenAIEmbeddingProvider(
-        api_key="test-key",
+    provider = LiteLLMEmbeddingProvider(
         dimensions=4,
         query_cache_max_size=2,
     )
@@ -319,7 +316,7 @@ async def test_openai_provider_embed_query_eviction_under_size_bound(monkeypatch
         call_count["n"] += 1
         return [[float(call_count["n"])] * 4 for _ in texts]
 
-    monkeypatch.setattr(OpenAIEmbeddingProvider, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(LiteLLMEmbeddingProvider, "embed_texts", fake_embed_texts)
 
     await provider.embed_query("a")
     await provider.embed_query("b")

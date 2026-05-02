@@ -16,7 +16,13 @@ primary_region = 'ord'
   force_https = true
   auto_stop_machines = "suspend"
   auto_start_machines = true
-  min_machines_running = 1
+  # Both machines stay warm. min_machines_running = 1 lets one auto-suspend,
+  # which forces Fly's LB to send all traffic to the surviving machine. Long
+  # /v1/context calls (semantic retrieval + OpenAI embed_query, can be 5–30s)
+  # then queue and easily blow past the Vercel edge / Vite proxy timeout
+  # → 504s in the support widget. Keeping both machines running spreads
+  # traffic and removes the cold-start spike on the second one.
+  min_machines_running = 2
   processes = ["app"]
 
 [[vm]]

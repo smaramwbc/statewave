@@ -13,7 +13,13 @@ from typing import Sequence
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectHealthCacheRow
+from server.db.tables import (
+    EpisodeRow,
+    MemoryRow,
+    QueryEmbeddingCacheRow,
+    ResolutionRow,
+    SubjectHealthCacheRow,
+)
 
 
 def _tenant_filter(stmt, column, tenant_id: str | None):
@@ -450,3 +456,83 @@ async def delete_health_cache_by_subject(
     """Delete health cache for a subject (used in subject deletion)."""
     stmt = delete(SubjectHealthCacheRow).where(SubjectHealthCacheRow.subject_id == subject_id)
     await session.execute(stmt)
+
+
+# ---------------------------------------------------------------------------
+# Query embedding cache (cross-machine L2)
+# ---------------------------------------------------------------------------
+
+
+async def query_cache_get(
+    session: AsyncSession,
+    text_key: str,
+    model: str,
+) -> list[float] | None:
+    """Return a cached query embedding if present and not expired, else None."""
+    from datetime import datetime, timezone
+
+    stmt = (
+        select(QueryEmbeddingCacheRow.embedding)
+        .where(QueryEmbeddingCacheRow.text_key == text_key)
+        .where(QueryEmbeddingCacheRow.model == model)
+        .where(QueryEmbeddingCacheRow.expires_at > datetime.now(timezone.utc))
+    )
+    result = await session.execute(stmt)
+    row = result.first()
+    if row is None:
+        return None
+    embedding = row[0]
+    # pgvector adapter returns numpy.ndarray; coerce to list[float] so the
+    # caller doesn't have to think about it.
+    return [float(x) for x in embedding] if embedding is not None else None
+
+
+async def query_cache_set(
+    session: AsyncSession,
+    text_key: str,
+    model: str,
+    embedding: list[float],
+    ttl_seconds: int,
+) -> None:
+    """Upsert an entry into the query embedding cache.
+
+    Also opportunistically prunes entries that have been expired for at
+    least 7 days, to bound table growth without needing a cron job.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=ttl_seconds)
+
+    # Upsert by (text_key, model). Refresh expires_at on hit so popular
+    # queries stay warm.
+    upsert = text(
+        """
+        INSERT INTO query_embedding_cache (text_key, model, embedding, expires_at, created_at)
+        VALUES (:text_key, :model, CAST(:embedding AS vector), :expires_at, :created_at)
+        ON CONFLICT (text_key, model) DO UPDATE SET
+            embedding = EXCLUDED.embedding,
+            expires_at = EXCLUDED.expires_at
+        """
+    )
+    # pgvector accepts the bracketed-list TEXT format on input.
+    embedding_str = "[" + ",".join(repr(float(x)) for x in embedding) + "]"
+    await session.execute(
+        upsert,
+        {
+            "text_key": text_key,
+            "model": model,
+            "embedding": embedding_str,
+            "expires_at": expires_at,
+            "created_at": now,
+        },
+    )
+
+    # Opportunistic cleanup — drop entries that have been expired for a
+    # week. Bounded work per call (DELETE ... WHERE indexed column < $),
+    # no cron required.
+    cleanup_threshold = now - timedelta(days=7)
+    cleanup_stmt = delete(QueryEmbeddingCacheRow).where(
+        QueryEmbeddingCacheRow.expires_at < cleanup_threshold
+    )
+    await session.execute(cleanup_stmt)

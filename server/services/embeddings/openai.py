@@ -134,6 +134,15 @@ class OpenAIEmbeddingProvider:
         return self._dimensions
 
     @property
+    def model(self) -> str:
+        """The embedding model identifier (e.g. 'text-embedding-3-small').
+
+        Exposed so cross-machine cache layers can key entries by (text, model)
+        — same query under a different model is a different entry.
+        """
+        return self._model
+
+    @property
     def provides_semantic_similarity(self) -> bool:
         # Real embedding API — vectors carry semantic meaning, callers may
         # safely use cosine distance as a relevance signal.

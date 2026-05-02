@@ -30,6 +30,7 @@ from server.schemas.responses import (
 )
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.embeddings import get_provider as get_embedding_provider
+from server.services.embeddings.query_cache import cached_embed_query
 
 logger = structlog.stdlib.get_logger()
 
@@ -140,7 +141,15 @@ async def assemble_context(
     semantic_results: list[tuple[Any, float]] = []
     if use_semantic_provider:
         try:
-            task_embedding = await provider.embed_query(task)
+            # Cross-machine query embedding cache: hits the Postgres-backed
+            # query_embedding_cache before the provider's in-process L1, so
+            # repeated demo queries asked across both Fly machines pay the
+            # OpenAI round-trip exactly once cluster-wide. Falls through to
+            # the provider transparently on miss / DB error.
+            from server.db.engine import get_session_factory
+            task_embedding = await cached_embed_query(
+                get_session_factory(), provider, task
+            )
             # Top 100 memories by cosine distance — this set is the SEMANTIC
             # contribution to the candidate pool below, in addition to being
             # used as a score lookup during ranking.

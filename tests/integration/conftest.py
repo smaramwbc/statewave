@@ -102,3 +102,10 @@ async def client():
 def subject_id() -> str:
     """Unique subject ID per test — guarantees isolation."""
     return f"test-{uuid.uuid4().hex[:12]}"
+
+
+@pytest.fixture
+def session_factory():
+    """Expose the test session factory so tests can open ad-hoc DB sessions
+    (used by the query embedding cache tests)."""
+    return _session_factory

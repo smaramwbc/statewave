@@ -243,7 +243,14 @@ async def search_memories(
             provider = get_embedding_provider()
             if provider:
                 try:
-                    query_embedding = await provider.embed_query(query)
+                    # Cross-machine query embedding cache — same path as
+                    # /v1/context. Repeated /v1/memories/search?semantic=
+                    # calls cluster-wide pay the OpenAI round-trip once.
+                    from server.db.engine import get_session_factory
+                    from server.services.embeddings.query_cache import cached_embed_query
+                    query_embedding = await cached_embed_query(
+                        get_session_factory(), provider, query
+                    )
                     results = await repo.search_memories_by_embedding(
                         session,
                         subject_id,

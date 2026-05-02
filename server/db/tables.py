@@ -195,3 +195,31 @@ class SubjectHealthCacheRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class QueryEmbeddingCacheRow(Base):
+    """Cross-machine cache of `embed_query(text)` results.
+
+    Eliminates duplicate OpenAI embedding round-trips when the same task
+    text is asked across multiple Fly machines (each of which has its own
+    in-process LRU cache). See migration 0014 for the table contract.
+
+    Composite PK on (text_key, model) — same text under a different
+    embedding model is a different cache entry, so model rotations don't
+    return stale embeddings. No tenant scoping: query embeddings are
+    universal (same text → same OpenAI vector regardless of caller).
+    """
+
+    __tablename__ = "query_embedding_cache"
+
+    text_key: Mapped[str] = mapped_column(Text, primary_key=True)
+    model: Mapped[str] = mapped_column(Text, primary_key=True)
+    embedding: Mapped[list[float]] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

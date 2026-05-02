@@ -190,9 +190,29 @@ class LLMCompiler:
                 if kind not in ("profile_fact", "episode_summary", "procedure"):
                     kind = "episode_summary"
 
-                content = mem.get("content", "")
+                # The contract says `content` is a string, but gpt-4o-mini
+                # occasionally returns a list (bullet array) — observed live
+                # against api/v1-contract.md procedural sections. Coerce
+                # defensively rather than crashing the compile call: a list of
+                # steps joins cleanly into a single readable memory body.
+                raw_content = mem.get("content", "")
+                if isinstance(raw_content, list):
+                    content = "\n".join(str(item) for item in raw_content)
+                elif isinstance(raw_content, str):
+                    content = raw_content
+                else:
+                    content = str(raw_content) if raw_content else ""
                 if not content:
                     continue
+
+                # Same defensive coercion for `summary` — same failure shape.
+                raw_summary = mem.get("summary", content[:200])
+                if isinstance(raw_summary, list):
+                    summary = " ".join(str(item) for item in raw_summary)[:200]
+                elif isinstance(raw_summary, str):
+                    summary = raw_summary
+                else:
+                    summary = str(raw_summary)[:200] if raw_summary else content[:200]
 
                 results.append(
                     MemoryRow(
@@ -200,7 +220,7 @@ class LLMCompiler:
                         subject_id=source_ep.subject_id,
                         kind=kind,
                         content=content,
-                        summary=mem.get("summary", content[:200]),
+                        summary=summary,
                         confidence=min(max(float(mem.get("confidence", 0.7)), 0.0), 1.0),
                         valid_from=source_ep.created_at or datetime.now(timezone.utc),
                         source_episode_ids=[source_ep.id],

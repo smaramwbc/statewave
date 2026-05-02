@@ -162,3 +162,63 @@ async def test_llm_compile_batches_multiple_episodes():
         assert len(memories) == 2
         assert memories[0].source_episode_ids == [ep0.id]
         assert memories[1].source_episode_ids == [ep1.id]
+
+
+# ---------------------------------------------------------------------------
+# Defensive coercion — gpt-4o-mini occasionally returns content/summary as
+# a list (bullet array) instead of a string. Live failure observed during a
+# docs-pack rebuild attempt: 'expected str, got list' from asyncpg on insert.
+# These tests pin the coercion contract.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compile_coerces_list_content_to_string():
+    compiler = _make_compiler()
+
+    raw = [
+        {
+            "kind": "procedure",
+            "content": [
+                "Step 1: Set STATEWAVE_DATABASE_URL",
+                "Step 2: Run alembic upgrade head",
+                "Step 3: Start uvicorn",
+            ],
+            "summary": "Deploy steps",
+            "confidence": 0.9,
+            "episode_index": 0,
+        },
+    ]
+    ep = _make_episode(payload={"text": "Deployment guide section."})
+
+    with patch.object(
+        compiler, "_call_llm_async", new_callable=AsyncMock, return_value=raw
+    ):
+        memories = await compiler.compile_async([ep])
+        assert len(memories) == 1
+        assert isinstance(memories[0].content, str)
+        assert "Step 1: Set STATEWAVE_DATABASE_URL" in memories[0].content
+        assert "Step 2: Run alembic upgrade head" in memories[0].content
+        assert "Step 3: Start uvicorn" in memories[0].content
+
+
+@pytest.mark.asyncio
+async def test_compile_coerces_list_summary_to_string():
+    compiler = _make_compiler()
+    raw = [
+        {
+            "kind": "procedure",
+            "content": "ok",
+            "summary": ["bullet 1", "bullet 2"],
+            "confidence": 0.9,
+            "episode_index": 0,
+        }
+    ]
+    ep = _make_episode(payload={"text": "x"})
+    with patch.object(
+        compiler, "_call_llm_async", new_callable=AsyncMock, return_value=raw
+    ):
+        memories = await compiler.compile_async([ep])
+        assert isinstance(memories[0].summary, str)
+        assert "bullet 1" in memories[0].summary
+        assert "bullet 2" in memories[0].summary

@@ -22,7 +22,6 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.docs_loader import (  # noqa: E402
     MANIFEST,
-    DocSection,
     chunk_markdown,
     load_docs,
 )

@@ -126,7 +126,7 @@ def test_get_provider_returns_stub_by_default():
 # import of litellm is lazy (inside __init__) and we'd otherwise have to
 # guard the whole file with a litellm-availability skip.
 
-from server.services.embeddings.openai import _TTLCache
+from server.services.embeddings.openai import _TTLCache  # noqa: E402
 
 
 def test_ttl_cache_first_get_misses():

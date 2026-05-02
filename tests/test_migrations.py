@@ -43,8 +43,10 @@ def test_get_all_revisions():
 
 
 @pytest.mark.asyncio
-async def test_check_migration_status_no_url():
-    """Should return error if no DATABASE_URL."""
+async def test_check_migration_status_no_url(monkeypatch):
+    """Should return error when no DB URL is supplied via arg or env."""
+    monkeypatch.delenv("STATEWAVE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     status = await check_migration_status(database_url="")
     assert status.error is not None
 

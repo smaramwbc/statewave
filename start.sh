@@ -73,5 +73,47 @@ PY
 echo "Running database migrations..."
 alembic upgrade head
 
+# ─── Auto-bootstrap: Statewave Support docs pack ────────────────────────
+#
+# Seeds the `statewave-support-docs` subject so the docs-grounded
+# "Statewave Support" persona answers from real content out of the box.
+# Triggers only when:
+#   1. STATEWAVE_BOOTSTRAP_DOCS_PACK is unset or true (default true), AND
+#   2. The docs corpus is reachable at STATEWAVE_DOCS_PATH (default /docs).
+#
+# Idempotent — the bootstrap script exits 2 when the subject already has
+# episodes, which we treat as "already seeded, nothing to do". Production
+# deploys (Fly) don't ship the corpus inside the image, so the path check
+# silently skips this. Operators who want to disable explicitly can set
+# STATEWAVE_BOOTSTRAP_DOCS_PACK=false.
+DOCS_PATH="${STATEWAVE_DOCS_PATH:-/docs}"
+BOOTSTRAP="${STATEWAVE_BOOTSTRAP_DOCS_PACK:-true}"
+if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
+    echo "Auto-bootstrap: docs pack will seed after API is ready (DOCS_PATH=$DOCS_PATH)"
+    (
+        # Wait up to 60s for /healthz before attempting the seed. Falls
+        # back silently if the API never comes up — the user-visible
+        # error will be the failed startup itself, not a confusing
+        # bootstrap-side log.
+        for i in $(seq 1 60); do
+            if curl -sS -m 2 -o /dev/null http://127.0.0.1:8100/healthz 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        STATEWAVE_DOCS_PATH="$DOCS_PATH" \
+        STATEWAVE_URL="http://127.0.0.1:8100" \
+            python -m scripts.bootstrap_docs_pack
+        rc=$?
+        case "$rc" in
+            0) echo "Auto-bootstrap: Statewave Support docs pack seeded." ;;
+            2) echo "Auto-bootstrap: docs pack already populated — skipped." ;;
+            *) echo "Auto-bootstrap: bootstrap exited with code $rc (server is still serving)." >&2 ;;
+        esac
+    ) &
+elif [ "$BOOTSTRAP" = "true" ]; then
+    echo "Auto-bootstrap: STATEWAVE_DOCS_PATH ($DOCS_PATH) not present in image — skipped. (Set STATEWAVE_BOOTSTRAP_DOCS_PACK=false to silence this notice.)"
+fi
+
 echo "Starting Statewave server..."
 exec uvicorn server.app:app --host 0.0.0.0 --port 8100

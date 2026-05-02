@@ -31,6 +31,18 @@ services:
       # inside the compose network, the database is reachable as `db`.
       STATEWAVE_DATABASE_URL: postgresql+asyncpg://statewave:statewave@db:5432/statewave
       STATEWAVE_DEBUG: "true"
+      # Auto-bootstrap the Statewave Support docs pack on first start so
+      # the docs-grounded persona in statewave-web answers from real
+      # content out of the box. Idempotent — re-runs are no-ops once the
+      # subject is populated. Set to "false" to skip.
+      STATEWAVE_BOOTSTRAP_DOCS_PACK: "true"
+      STATEWAVE_DOCS_PATH: /docs
+    volumes:
+      # Read-only mount of the sibling statewave-docs checkout. The
+      # bootstrap script reads the markdown corpus from here. If the
+      # sibling repo isn't checked out, this resolves to an empty dir
+      # and start.sh's bootstrap step silently skips.
+      - ../statewave-docs:/docs:ro
     depends_on:
       db:
         condition: service_healthy

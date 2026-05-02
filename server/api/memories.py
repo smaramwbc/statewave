@@ -196,17 +196,8 @@ async def get_compile_status(job_id: str):
 
 
 async def _generate_embeddings_background(memory_ids: list, texts: list[str]) -> None:
-    """Generate embeddings for memories in the background (non-blocking).
-
-    Writes go through the ORM so the pgvector SQLAlchemy adapter handles
-    list[float] → vector(1536) serialization. Previously this used raw SQL
-    with str(emb), which worked because pgvector parses JSON-array TEXT —
-    but the ORM path is type-safe and survives future column-type changes.
-    """
-    from sqlalchemy import update
-
+    """Generate embeddings for memories in the background (non-blocking)."""
     from server.db.engine import get_session_factory
-    from server.db.tables import MemoryRow
 
     provider = get_embedding_provider()
     if not provider or not texts:
@@ -217,9 +208,10 @@ async def _generate_embeddings_background(memory_ids: list, texts: list[str]) ->
         async with get_session_factory()() as session:
             for mid, emb in zip(memory_ids, embeddings):
                 await session.execute(
-                    update(MemoryRow)
-                    .where(MemoryRow.id == mid)
-                    .values(embedding=emb)
+                    __import__("sqlalchemy").text(
+                        "UPDATE memories SET embedding = :emb WHERE id = :id"
+                    ),
+                    {"emb": str(emb), "id": str(mid)},
                 )
             await session.commit()
         logger.info("embeddings_generated_background", count=len(embeddings))

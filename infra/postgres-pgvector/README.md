@@ -115,7 +115,7 @@ If something breaks, the migration is reversible:
 flyctl ssh console -a statewave-api -C "alembic downgrade 0012_add_health_cache"
 ```
 
-This casts the `vector` column back to `TEXT` and drops the HNSW index. The old code path (Python-side cosine compute) was already removed in this release — so for a full rollback you'd also need to deploy the previous `statewave-api` image (the one before commit XXXX).
+This casts the `vector` column back to `TEXT` and drops the HNSW index. The old code path (Python-side cosine compute) was already removed in this release — so for a full rollback you'd also need to deploy the previous `statewave-api` image (the one shipped before this migration).
 
 You can leave the pgvector-bundled Postgres image in place after a rollback — having pgvector available with no code using it is harmless.
 

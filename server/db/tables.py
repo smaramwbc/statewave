@@ -5,9 +5,16 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+# Embedding dimensionality must match `OpenAIEmbeddingProvider.dimensions`
+# and the `vector(N)` type in the schema. text-embedding-3-small at 1536
+# dims is the project default; bumping requires a migration that ALTERs
+# the column TYPE and rebuilds the HNSW index.
+EMBEDDING_DIMENSIONS = 1536
 
 
 class Base(DeclarativeBase):
@@ -55,7 +62,14 @@ class MemoryRow(Base):
     )
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
-    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stored as pgvector `vector(EMBEDDING_DIMENSIONS)` since migration 0013.
+    # Reads/writes happen as `list[float]` — the pgvector SQLAlchemy adapter
+    # serializes/deserializes transparently. Cosine search uses the SQL `<=>`
+    # operator via repositories.search_memories_by_embedding (no Python-side
+    # parsing or compute on the hot path).
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

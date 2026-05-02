@@ -88,7 +88,13 @@ async def export_subject(subject_id: str, *, tenant_id: str | None = None) -> di
             "source_episode_ids": [str(eid) for eid in (mem.source_episode_ids or [])],
             "metadata": mem.metadata_,
             "status": mem.status,
-            "embedding": mem.embedding,
+            # pgvector's SQLAlchemy adapter returns embeddings as numpy.ndarray
+            # of float32, neither of which is JSON-serializable. Coerce each
+            # element to Python float for the export — pgvector accepts both
+            # list[float] and numpy on import, so round-trip is preserved.
+            "embedding": (
+                [float(x) for x in mem.embedding] if mem.embedding is not None else None
+            ),
             "created_at": mem.created_at.isoformat(),
             "updated_at": mem.updated_at.isoformat(),
         }

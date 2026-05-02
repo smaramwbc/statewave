@@ -218,15 +218,20 @@ async def search_memories_by_embedding(
     kind: str | None = None,
     limit: int = 20,
 ) -> list[tuple[MemoryRow, float]]:
-    """Find memories by cosine similarity. Returns (row, distance) tuples.
+    """Find memories by cosine distance. Returns (row, distance) tuples.
 
-    Computes cosine similarity in Python over embeddings stored as text.
+    Uses pgvector's native `<=>` cosine-distance operator. The HNSW index
+    on `memories.embedding` (created in migration 0013) makes this an
+    indexed nearest-neighbor lookup — sub-millisecond at our corpus
+    sizes — instead of the previous fetch-all-and-cosine-in-Python path.
+
+    Distance is in [0, 2] where 0 is identical and 2 is opposite (cosine
+    distance, not similarity); callers convert to [0, 1] similarity if
+    they need it. Lower is better; the query orders ascending and limits.
     """
-    import ast
-    import math
-
+    distance_expr = MemoryRow.embedding.cosine_distance(query_embedding)
     stmt = (
-        select(MemoryRow)
+        select(MemoryRow, distance_expr.label("distance"))
         .where(MemoryRow.subject_id == subject_id)
         .where(MemoryRow.status == "active")
         .where(MemoryRow.embedding.isnot(None))
@@ -234,27 +239,9 @@ async def search_memories_by_embedding(
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     if kind:
         stmt = stmt.where(MemoryRow.kind == kind)
+    stmt = stmt.order_by(distance_expr).limit(limit)
     result = await session.execute(stmt)
-    rows = result.scalars().all()
-
-    if not rows:
-        return []
-
-    # Compute cosine distance for each memory
-    scored: list[tuple[MemoryRow, float]] = []
-    q_norm = math.sqrt(sum(x * x for x in query_embedding)) or 1.0
-    for row in rows:
-        try:
-            emb = ast.literal_eval(row.embedding)
-        except (ValueError, SyntaxError):
-            continue
-        dot = sum(a * b for a, b in zip(query_embedding, emb))
-        e_norm = math.sqrt(sum(x * x for x in emb)) or 1.0
-        distance = 1.0 - (dot / (q_norm * e_norm))
-        scored.append((row, distance))
-
-    scored.sort(key=lambda t: t[1])
-    return scored[:limit]
+    return [(row, float(distance)) for row, distance in result.all()]
 
 
 # ---------------------------------------------------------------------------

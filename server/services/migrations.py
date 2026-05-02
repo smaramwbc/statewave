@@ -48,9 +48,13 @@ def get_alembic_config() -> Config:
     import os
 
     cfg = Config(str(_ALEMBIC_INI))
-    # Allow DATABASE_URL override
-    if os.environ.get("DATABASE_URL"):
-        cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+    # STATEWAVE_DATABASE_URL is the first-class config name (matches the
+    # rest of the STATEWAVE_-prefixed env surface and the docker-compose
+    # `environment:` block); DATABASE_URL is kept as a generic fallback
+    # for hosts that prefer that convention.
+    db_url = os.environ.get("STATEWAVE_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if db_url:
+        cfg.set_main_option("sqlalchemy.url", db_url)
     return cfg
 
 
@@ -80,9 +84,13 @@ async def check_migration_status(database_url: str | None = None) -> MigrationSt
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    url = database_url or os.environ.get("DATABASE_URL", "")
+    url = (
+        database_url
+        or os.environ.get("STATEWAVE_DATABASE_URL")
+        or os.environ.get("DATABASE_URL", "")
+    )
     if not url:
-        return MigrationStatus(error="DATABASE_URL not set")
+        return MigrationStatus(error="STATEWAVE_DATABASE_URL / DATABASE_URL not set")
 
     status = MigrationStatus()
 

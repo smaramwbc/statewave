@@ -52,6 +52,9 @@ _TEMPORAL_VALID_BONUS = (
 _TEMPORAL_EXPIRED_PENALTY = -4.0  # Penalty for memories whose valid_to is in the past
 _SESSION_BOOST = 6.0  # Bonus for episodes belonging to the current active session
 _RESOLVED_SESSION_PENALTY = -5.0  # Penalty for episodes in already-resolved sessions
+_BREADCRUMB_MAX = 3.0  # Bonus for memories whose source-doc heading/breadcrumb
+# matches the query (docs-grounded subjects only — see _breadcrumb_overlap_bonus).
+# Capped well below KIND_PRIORITY (5–10) and SEMANTIC_MAX (8) so it nudges, not dominates.
 
 # Support-agent-specific scoring signals
 _OPEN_ISSUE_BOOST = 4.0  # Bonus for episodes in sessions with open/unresolved issues
@@ -166,6 +169,45 @@ async def assemble_context(
 
     scored: list[_ScoredItem] = []
     all_memory_rows = list(fact_rows) + list(procedure_rows) + list(summary_rows)
+
+    # -- Resolve source-episode breadcrumbs for docs-grounded ranking --------
+    # Memories from the docs pack carry source_episode_ids pointing at
+    # episodes whose payload includes a `breadcrumb` (e.g. "Compiler Modes
+    # › Heuristic Compilation"). Bringing that signal into ranking is what
+    # surfaces `architecture/compiler-modes.md` for a "heuristic vs LLM"
+    # query instead of letting `why-statewave.md` win on body-content
+    # overlap. We bulk-fetch the union of source episode ids in one query,
+    # build a memory_id → [breadcrumbs] map, then apply a small additive
+    # bonus during scoring. Memories with no breadcrumb-bearing source
+    # (i.e. visitor-memory subjects) get no bonus — the new behavior is
+    # auto-scoped to docs-pack data by the data shape itself.
+    memory_breadcrumbs: dict[uuid.UUID, list[str]] = {}
+    needed_episode_ids: set[uuid.UUID] = set()
+    for row in all_memory_rows:
+        for sid in row.source_episode_ids or []:
+            needed_episode_ids.add(sid)
+    if needed_episode_ids:
+        try:
+            src_episodes = await repo.get_episodes_by_ids(
+                session, list(needed_episode_ids)
+            )
+            ep_breadcrumb_by_id: dict[uuid.UUID, str] = {}
+            for ep in src_episodes:
+                payload = ep.payload or {}
+                bc = payload.get("breadcrumb") or payload.get("title")
+                if isinstance(bc, str) and bc:
+                    ep_breadcrumb_by_id[ep.id] = bc
+            for row in all_memory_rows:
+                bcs = [
+                    ep_breadcrumb_by_id[sid]
+                    for sid in (row.source_episode_ids or [])
+                    if sid in ep_breadcrumb_by_id
+                ]
+                if bcs:
+                    memory_breadcrumbs[row.id] = bcs
+        except Exception:
+            logger.warning("breadcrumb_lookup_failed", exc_info=True)
+
     if all_memory_rows:
         ts_range = _timestamp_range([r.created_at for r in all_memory_rows])
         for row in all_memory_rows:
@@ -175,11 +217,17 @@ async def assemble_context(
             else:
                 relevance = _relevance_score(row.content, task_tokens)
 
+            breadcrumb_bonus = _breadcrumb_overlap_bonus(
+                memory_breadcrumbs.get(row.id, []),
+                task_tokens,
+            )
+
             score = (
                 _KIND_PRIORITY.get(row.kind, 1.0)
                 + _recency_score(row.created_at, ts_range)
                 + relevance
                 + _temporal_score(row.valid_from, row.valid_to)
+                + breadcrumb_bonus
             )
             scored.append(
                 _ScoredItem(
@@ -470,6 +518,72 @@ def _relevance_score(content: str, task_tokens: set[str]) -> float:
     # Normalize by task token count
     ratio = overlap / len(task_tokens)
     return min(ratio * _RELEVANCE_MAX, _RELEVANCE_MAX)
+
+
+# Generic words that drag breadcrumb overlap toward noise without informing
+# topic match. Excluded so e.g. "Statewave Documentation" and the user's
+# "What is Statewave?" don't trivially co-overlap on "statewave".
+_BREADCRUMB_STOPWORDS = frozenset(
+    "statewave documentation guide overview the a an of for to on in with "
+    "is are be use using how what why which when where do does i my we "
+    "& > › -".split()
+)
+
+
+def _breadcrumb_overlap_bonus(
+    breadcrumbs: list[str],
+    task_tokens: set[str],
+) -> float:
+    """Lexical token overlap between query and a memory's source breadcrumbs.
+
+    Used only for memories whose source episode is a docs-pack section (the
+    only episodes that carry `payload.breadcrumb`); visitor-memory subjects
+    don't carry this shape so the bonus is automatically inert there. The
+    breadcrumb is short ("Compiler Modes › Heuristic Compilation"), so a
+    handful of token matches is a strong topical signal — this is the lever
+    that gets `architecture/compiler-modes.md` to surface for "heuristic
+    vs LLM" instead of `why-statewave.md` winning by general semantic match
+    on the body content.
+
+    Returns 0.0 when there are no breadcrumbs or no task tokens. Returns at
+    most _BREADCRUMB_MAX so this can never dominate KIND_PRIORITY or
+    SEMANTIC_MAX — it nudges, doesn't override.
+    """
+    if not breadcrumbs or not task_tokens:
+        return 0.0
+    # Strip punctuation that _tokenize_for_relevance leaves attached
+    # (e.g. "GPU?" → "gpu") so task tokens match cleanly against the
+    # breadcrumb tokens we compute below.
+    task_meaningful = {
+        t.strip("?.,:;()[]{}'\"")
+        for t in task_tokens
+    }
+    task_meaningful = {t for t in task_meaningful if t and t not in _BREADCRUMB_STOPWORDS}
+    if not task_meaningful:
+        return 0.0
+    best = 0.0
+    for bc in breadcrumbs:
+        if not bc:
+            continue
+        bc_tokens = {
+            t.lower().strip("?.,:;()[]{}'\"")
+            for t in bc.replace("›", " ").replace(">", " ").split()
+        }
+        bc_tokens -= _BREADCRUMB_STOPWORDS
+        bc_tokens.discard("")
+        if not bc_tokens:
+            continue
+        overlap = len(task_meaningful & bc_tokens)
+        if overlap == 0:
+            continue
+        # Normalize by min(task_meaningful, bc_tokens) so a short breadcrumb
+        # with a perfect 2/2 match scores as well as a long one with 2/4.
+        denom = min(len(task_meaningful), len(bc_tokens))
+        ratio = overlap / denom
+        score = ratio * _BREADCRUMB_MAX
+        if score > best:
+            best = score
+    return min(best, _BREADCRUMB_MAX)
 
 
 def _temporal_score(

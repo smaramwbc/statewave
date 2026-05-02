@@ -39,12 +39,12 @@ _MAX_TOKENS = 3000  # Response token limit per batch
 _SYSTEM_PROMPT = """\
 You are a memory extraction engine for an AI context system called Statewave.
 
-Given one or more raw episodes (recorded interactions), extract structured memories.
+Given one or more raw episodes (recorded interactions, documentation sections, or other content), extract structured memories.
 
 Each memory must be one of these kinds:
-- profile_fact: a concrete fact about the subject (name, role, location, preference, etc.)
-- episode_summary: a concise summary of what happened in this interaction
-- procedure: a step-by-step process, workflow, or instruction that was discussed
+- profile_fact: a concrete, generalizable fact about the subject or system (e.g. "Statewave requires PostgreSQL", "Alice prefers email"). Must be a STATEMENT that holds in general, not a transient value.
+- episode_summary: a concise summary of what happened in this interaction or what this section explains.
+- procedure: a step-by-step process, workflow, or instruction that was discussed.
 
 Return a JSON array of memory objects. Each object must have:
 - "kind": one of the kinds above
@@ -56,6 +56,9 @@ Return a JSON array of memory objects. Each object must have:
 Rules:
 - Extract ALL distinct facts; do not merge unrelated facts into one memory.
 - Be precise and factual — never invent information not in the episode.
+- DO NOT extract values from inside code blocks, JSON examples, sample API responses, or curl/bash command examples as profile_facts. Those are illustrations of *shape*, not facts about the subject. For example, in `{"subject_id": "user-42", "memories_created": 5}`, "subject_id user-42" is a placeholder — it is NOT a profile fact about anyone. Skip example identifiers, sample values, placeholder names, and inline literals from documentation snippets.
+- DO extract the surrounding *prose* explanation (e.g. "POST /v1/memories/compile returns memories_created and a memories array"). That is a generalizable fact.
+- If an episode is mostly code or example data with no generalizable claims, return episode_summary describing what the section is about, not profile_facts cataloguing the example values.
 - If an episode contains no extractable memories, skip it.
 - Return ONLY the JSON array, no markdown fences or extra text.
 """

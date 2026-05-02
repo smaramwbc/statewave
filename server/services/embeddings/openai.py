@@ -43,6 +43,12 @@ class OpenAIEmbeddingProvider:
     def dimensions(self) -> int:
         return self._dimensions
 
+    @property
+    def provides_semantic_similarity(self) -> bool:
+        # Real embedding API — vectors carry semantic meaning, callers may
+        # safely use cosine distance as a relevance signal.
+        return True
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []

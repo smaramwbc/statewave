@@ -25,6 +25,13 @@ class StubEmbeddingProvider:
     def dimensions(self) -> int:
         return self._dimensions
 
+    @property
+    def provides_semantic_similarity(self) -> bool:
+        # Hash-based vectors have no semantic meaning — see module docstring.
+        # Callers (context assembly, etc.) MUST NOT use stub cosine distance
+        # as a relevance signal: it will silently corrupt ranking.
+        return False
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []

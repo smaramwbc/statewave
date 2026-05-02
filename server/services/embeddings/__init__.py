@@ -17,6 +17,17 @@ class BaseEmbeddingProvider(Protocol):
         """The dimensionality of produced vectors."""
         ...
 
+    @property
+    def provides_semantic_similarity(self) -> bool:
+        """Whether the provider produces vectors with real semantic meaning.
+
+        True for real embedding APIs (OpenAI, etc.) where similar texts produce
+        similar vectors. False for the hash-based stub, whose vectors are
+        deterministic but semantically meaningless — callers should NOT use
+        stub-vector cosine similarity as a relevance signal during ranking.
+        """
+        ...
+
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings for a batch of texts.
 

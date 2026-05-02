@@ -120,9 +120,21 @@ async def assemble_context(
     )
 
     # -- Prepare semantic scoring -------------------------------------------
+    # Only treat the provider as a semantic relevance signal if it actually
+    # produces vectors with semantic meaning. The hash-based stub provider
+    # produces deterministic-but-meaningless vectors; using its scores as
+    # ranking input silently corrupts retrieval (verified against production
+    # statewave-support-docs: the same garbage scores were dominating
+    # KIND_PRIORITY + recency, producing repetitive citations across
+    # unrelated queries). When the active provider is the stub (or any
+    # provider that flags itself as not-really-semantic), we skip the
+    # semantic path entirely and fall back to query-aware word-overlap.
     semantic_scores: dict[uuid.UUID, float] = {}
     provider = get_embedding_provider()
-    if provider:
+    use_semantic_provider = bool(
+        provider and getattr(provider, "provides_semantic_similarity", True)
+    )
+    if use_semantic_provider:
         try:
             task_embedding = await provider.embed_query(task)
             # Get semantic scores for all memories in one query
@@ -141,6 +153,11 @@ async def assemble_context(
             logger.debug("semantic_scores_computed", count=len(semantic_scores))
         except Exception:
             logger.warning("semantic_scoring_failed_using_word_overlap", exc_info=True)
+    else:
+        logger.debug(
+            "semantic_scoring_skipped_non_semantic_provider",
+            provider=type(provider).__name__ if provider else None,
+        )
 
     use_semantic = len(semantic_scores) > 0
 

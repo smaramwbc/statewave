@@ -19,7 +19,16 @@ services:
     build: .
     ports:
       - "8100:8100"
+    # Load STATEWAVE_LITELLM_*, STATEWAVE_API_KEY, etc. from the host's .env.
+    # `.dockerignore` keeps .env OUT of the image — env_file injects values
+    # at runtime so the docker-compose `environment:` block below remains
+    # the single source of truth for connection-level wiring (DB URL, debug).
+    env_file:
+      - path: .env
+        required: false
     environment:
+      # Override anything from .env that would point at host networking —
+      # inside the compose network, the database is reachable as `db`.
       STATEWAVE_DATABASE_URL: postgresql+asyncpg://statewave:statewave@db:5432/statewave
       STATEWAVE_DEBUG: "true"
     depends_on:

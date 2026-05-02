@@ -1,0 +1,43 @@
+# Build context exclusions for `docker build` / `docker compose build`.
+# Keeps developer-local config and dev artifacts OUT of the image, so the
+# `environment:` block in docker-compose.yml is the single source of truth
+# for runtime config — no surprise overrides from a baked-in `.env`.
+
+# Local env files (Settings reads these and they would override compose env)
+.env
+.env.local
+.env.*.local
+
+# VCS + editor noise
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# Python build / dev artifacts
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+*.egg-info
+build
+dist
+.venv
+venv
+
+# Node (only present if a dev runs npm here for any reason)
+node_modules
+
+# NOTE: README.md is referenced by pyproject.toml (`readme = "README.md"`)
+# so hatchling needs it during `pip install`. Don't exclude it.
+# CHANGELOG and LICENSE are runtime-irrelevant but harmless to ship.
+
+# Local data
+*.db
+*.sqlite
+*.sqlite3

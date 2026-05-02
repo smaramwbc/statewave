@@ -36,18 +36,20 @@ For the legal/contractual overview of the commercial license, see
 
 ## Startup
 
-**Audience:** Early-stage companies under a defined revenue / funding
-threshold.
+**Audience:** Early-stage companies and builders who want to use
+Statewave in a proprietary product without AGPL obligations.
 
 **Cost:** Free or low-cost commercial license. Specific terms are
 confirmed in the signed agreement.
 
-**Indicative qualifying threshold:**
+**Indicative qualification range:**
 
-- Annual recurring revenue below approximately **$50k–$100k ARR**, **and**
-- Total funding raised below an agreed cap, **and**
-- The company is not in the business of offering hosted memory/state
-  infrastructure as a primary product.
+- Pre-revenue or early revenue.
+- Typically below **$50k–$100k ARR**.
+- Not operating a competing hosted Statewave service.
+
+Final eligibility is determined by a signed Statewave commercial
+agreement.
 
 **What you get:**
 
@@ -65,7 +67,8 @@ confirmed in the signed agreement.
 - May **not** offer Statewave (or a substantially similar derivative) as a
   competing hosted memory/state service.
 - Brand restrictions in [../TRADEMARKS.md](../TRADEMARKS.md) still apply.
-- License re-qualification required if you exceed the threshold.
+- License re-qualification required if your scale grows beyond the
+  indicative range.
 
 ---
 

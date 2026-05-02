@@ -45,39 +45,31 @@ Please run `ruff` and the test suite locally before opening a PR.
 6. **Describe the change** in the PR body: motivation, approach, and any
    tradeoffs considered.
 
-## Licensing of contributions (important)
+## Licensing of contributions
 
-Statewave is **dual-licensed** under AGPLv3 and a separate Statewave
-Commercial License (see [LICENSING.md](LICENSING.md)).
+Statewave is dual-licensed under AGPLv3 and the Statewave Commercial
+License (see [LICENSING.md](LICENSING.md)). By contributing — opening a
+pull request, sending a patch, or otherwise submitting work — you agree
+that your contribution may be distributed under that same dual-license
+model: AGPLv3 **and** the Statewave Commercial License. You retain
+copyright in your work; we just need the right to ship it under both
+license tracks so the dual-licensing model keeps working.
 
-To keep this dual-licensing model viable, **contributions must be
-compatible with both licenses**. By submitting a pull request, issue patch,
-or any other contribution, you agree that:
+To keep that arrangement on a clean footing, we use a lightweight CLA
+workflow for non-trivial contributions:
 
-1. You are the original author of the contribution, or you have the right
-   to submit it under the terms below.
-2. Your contribution may be distributed under the GNU Affero General Public
-   License v3.0.
-3. Your contribution may **also** be distributed under the Statewave
-   Commercial License (and other future commercial licenses offered by the
-   Statewave project) without additional notice or compensation.
-4. You retain copyright in your contribution; you grant the Statewave
-   project the rights described above to license and re-license it under
-   both the open-source and commercial tracks.
-
-### CLA / DCO
-
-For non-trivial contributions, we may ask you to:
-
-- Sign a **Contributor License Agreement (CLA)** confirming the terms
-  above; or
-- Use the Linux Foundation–style **Developer Certificate of Origin (DCO)**
-  by adding a `Signed-off-by:` trailer to your commits (`git commit -s`).
-
-If a CLA is required for your PR, a maintainer will provide the exact
-language and link before merge. Trivial contributions (typo fixes, small
-doc edits) generally do not require a CLA, but we may still ask for a DCO
-sign-off.
+- **Non-trivial contributions** — new features, refactors, behavioral
+  changes, anything beyond a small fix — may require a **signed
+  Contributor License Agreement (CLA)** before merge. A maintainer will
+  share the CLA text and link when relevant; it's a one-time step per
+  contributor.
+- **Trivial patches** — typo fixes, documentation corrections, small
+  patches — may be accepted without a full CLA at the maintainers'
+  discretion.
+- **DCO** (`git commit -s`, Developer Certificate of Origin) may be used
+  as a lightweight interim process if a CLA workflow is not yet in place
+  for your contribution. DCO is not a long-term substitute for the CLA
+  where commercial relicensing is involved.
 
 If your employer has rights to your work, please make sure they have
 authorized the contribution before submitting.

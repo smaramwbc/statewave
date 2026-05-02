@@ -1,7 +1,7 @@
 # Statewave
 
 [![CI](https://github.com/smaramwbc/statewave/workflows/CI/badge.svg)](https://github.com/smaramwbc/statewave/actions/workflows/ci.yml)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+[![License: AGPL-3.0 + Commercial](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Commercial-blue.svg)](LICENSING.md)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
 **Memory runtime for AI agents and AI-powered applications.**
@@ -204,6 +204,30 @@ See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.
 | [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
 | [statewave-admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
 
-## License
+## Licensing
 
-[AGPL-3.0](LICENSE)
+Statewave is **dual-licensed**:
+
+- **[AGPLv3](LICENSE)** — for open-source / community use.
+- **[Commercial license](COMMERCIAL-LICENSE.md)** — for proprietary, SaaS,
+  embedded, hosted, or enterprise use.
+
+This allows Statewave to stay open and community-driven while protecting
+the project from unmanaged commercial hosting or closed-source
+redistribution. If you want to use Statewave in a proprietary product,
+SaaS platform, managed service, or enterprise environment without AGPL
+obligations, contact us for a commercial license.
+
+A startup-friendly commercial tier is available for early-stage companies
+under a qualifying threshold.
+
+- **Quick decision guide:** [LICENSING.md](LICENSING.md)
+- **Commercial license overview:** [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
+- **Tiers (Community / Startup / Growth / Enterprise):** [docs/licensing.md](docs/licensing.md)
+- **Trademark policy:** [TRADEMARKS.md](TRADEMARKS.md)
+- **Contributing under dual licensing:** [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Contact:** [licensing@statewave.ai](mailto:licensing@statewave.ai)
+
+> This repository describes Statewave's licensing model and is not legal
+> advice. Consult qualified counsel before adopting Statewave in a
+> commercial product.

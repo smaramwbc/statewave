@@ -32,10 +32,36 @@ pytest tests/ -v
 
 Please run `ruff` and the test suite locally before opening a PR.
 
+## Discussing changes before opening a PR
+
+Use the lightest-weight venue that fits the change:
+
+- **Small, obvious fixes** — typos, doc tweaks, isolated bug fixes — go straight
+  to a PR. No discussion needed.
+- **Larger features, behavior changes, new endpoints** — start in
+  [GitHub Discussions](https://github.com/smaramwbc/statewave/discussions)
+  under **Ideas & Feature Requests** with the use case and proposed shape, so
+  we can align before you invest in code.
+- **Architecture changes, API shape changes, storage / security / integration
+  designs** — open an **RFC** in Discussions. The RFC template and process are
+  documented in [statewave-docs/community/discussions.md](https://github.com/smaramwbc/statewave-docs/blob/main/community/discussions.md)
+  and [discussion-templates.md](https://github.com/smaramwbc/statewave-docs/blob/main/community/discussion-templates.md).
+- **Confirmed bugs with clean reproduction** — open an
+  [issue](https://github.com/smaramwbc/statewave/issues), not a discussion.
+- **Security concerns** — never post publicly. Follow the coordinated
+  disclosure process in [SECURITY.md](SECURITY.md).
+- **Licensing questions** — general questions ("which license fits my use
+  case?") are welcome publicly in Discussions. Specific commercial terms,
+  contracts, or enterprise procurement go privately to
+  [licensing@statewave.ai](mailto:licensing@statewave.ai).
+
+Rule of thumb: if you can describe a clean reproduction or a concrete change,
+open an Issue or PR. Otherwise, start in Discussions.
+
 ## Pull request process
 
-1. **Open an issue first** for non-trivial changes so we can align on
-   approach before you invest in code.
+1. **Open an issue or discussion first** for non-trivial changes so we can
+   align on approach before you invest in code.
 2. **Branch from `main`**, keep PRs focused, and prefer small commits with
    clear messages.
 3. **Add tests** for new behavior. Statewave is infrastructure — coverage

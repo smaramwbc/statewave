@@ -192,6 +192,17 @@ Statewave is in active development (v0.6.1). Honest status:
 
 See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) for what's being fixed and when.
 
+## Community
+
+Statewave is built in the open. Where to post what:
+
+- **[GitHub Discussions](https://github.com/smaramwbc/statewave/discussions)** — questions, ideas, RFCs, integrations, roadmap input, what you're building
+- **[GitHub Issues](https://github.com/smaramwbc/statewave/issues)** — confirmed, reproducible bugs and concrete implementation tasks
+- **Security vulnerabilities** — email [security@statewave.ai](mailto:security@statewave.ai) (do not post publicly; see [SECURITY.md](SECURITY.md))
+- **Commercial / private licensing terms** — email [licensing@statewave.ai](mailto:licensing@statewave.ai) (general licensing *questions* are welcome in Discussions)
+
+The full community guide — categories, RFC process, moderation — lives in [statewave-docs/community/discussions.md](https://github.com/smaramwbc/statewave-docs/blob/main/community/discussions.md). Copy-paste templates for questions, feature requests, RFCs, and show-and-tell are in [discussion-templates.md](https://github.com/smaramwbc/statewave-docs/blob/main/community/discussion-templates.md).
+
 ## Ecosystem
 
 | Repo | Purpose |

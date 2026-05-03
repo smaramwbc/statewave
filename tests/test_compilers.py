@@ -33,7 +33,17 @@ def test_heuristic_compiler_satisfies_protocol():
     assert callable(compiler.compile)
 
 
-def test_get_compiler_returns_heuristic_by_default():
+def test_get_compiler_returns_heuristic_by_default(monkeypatch):
+    # Pin the compiler choice so a developer's local `.env` (which the
+    # docker-compose quickstart writes with compiler=llm) doesn't flip
+    # this test. The factory reads `settings.compiler_type` lazily, so
+    # patching the global Settings instance is enough.
+    import server.core.config as config_module
+    from server.core.config import Settings
+
+    monkeypatch.setattr(
+        config_module, "settings", Settings(_env_file=None, compiler_type="heuristic")
+    )
     compiler = get_compiler()
     assert isinstance(compiler, HeuristicCompiler)
 

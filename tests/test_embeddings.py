@@ -103,12 +103,16 @@ def test_get_provider_returns_stub_by_default():
     try:
         from server.core.config import Settings
 
-        # Force stub provider
+        # Force stub provider regardless of any STATEWAVE_EMBEDDING_PROVIDER
+        # in the env or in a .env file the developer may have on disk
+        # (the docker-compose quickstart writes .env with provider=litellm).
+        # Constructing Settings with `_env_file=None` skips .env loading;
+        # passing the field explicitly overrides any shell env value.
         import os
 
         os.environ.pop("STATEWAVE_EMBEDDING_PROVIDER", None)
         reset_provider()
-        server.core.config.settings = Settings()
+        server.core.config.settings = Settings(_env_file=None, embedding_provider="stub")
         provider = get_provider()
         assert provider is not None
         assert type(provider).__name__ == "StubEmbeddingProvider"

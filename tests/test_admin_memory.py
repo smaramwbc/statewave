@@ -55,11 +55,24 @@ def test_memory_endpoints_registered(path, methods):
     pytest.fail(f"{path} not registered on the app")
 
 
-def test_old_github_actions_endpoint_is_gone():
-    """The vendor-neutral rewrite removes the GitHub-Actions dispatch endpoint."""
+def test_docs_pack_reseed_alias_is_present_for_back_compat():
+    """`/admin/docs-pack/reseed` is preserved as a deprecated alias.
+
+    The old vendor-locked implementation (which dispatched a GitHub Actions
+    workflow) is gone. The path is kept as a backward-compatible alias that
+    delegates to the new vendor-neutral support reseed service so legacy
+    operator scripts keep working without GitHub tokens.
+    """
     app = create_app()
-    routes = [getattr(r, "path", None) for r in app.routes]
-    assert "/admin/docs-pack/reseed" not in routes
+    aliases = [r for r in app.routes if getattr(r, "path", None) == "/admin/docs-pack/reseed"]
+    assert aliases, "/admin/docs-pack/reseed alias must be registered"
+    route = aliases[0]
+    assert "POST" in route.methods
+    # FastAPI surfaces deprecated routes through the OpenAPI schema — assert
+    # the alias is flagged so generated clients / docs warn callers.
+    schema = app.openapi()
+    op = schema["paths"]["/admin/docs-pack/reseed"]["post"]
+    assert op.get("deprecated") is True
 
 
 # ─── Starter pack registry ──────────────────────────────────────────────────
@@ -384,6 +397,180 @@ async def test_http_export_rejects_empty_subject_list(client):
         json={"subject_ids": []},
     )
     assert resp.status_code == 400
+
+
+# ─── Backward-compatible /admin/docs-pack/reseed alias ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_http_docs_pack_reseed_alias_delegates_to_support_reseed(
+    client, monkeypatch
+):
+    """The legacy alias must call the new vendor-neutral service.
+
+    Pins three properties old operator scripts depend on:
+      * `/admin/docs-pack/reseed` is reachable (200, not 404)
+      * it dispatches to `reseed_support_subject` — the same code path the
+        new `/admin/memory/support/reseed` endpoint uses
+      * the legacy `reason` body field is forwarded so callers that already
+        emit it keep working
+    """
+    captured: dict[str, object] = {}
+
+    async def fake_reseed(*, reason=None):
+        captured["reason"] = reason
+        return {
+            "subject_id": settings.support_subject_id,
+            "pack_id": settings.support_starter_pack_id,
+            "pack_version": "1.0.0",
+            "imported_episodes": 4,
+            "imported_memories": 1,
+            "reseeded_at": "2026-05-03T10:00:00+00:00",
+            "reason": reason,
+        }
+
+    monkeypatch.setattr(mp, "reseed_support_subject", fake_reseed)
+
+    resp = await client.post(
+        "/admin/docs-pack/reseed",
+        json={"reason": "legacy operator script"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    # Service was actually invoked with the legacy `reason` field.
+    assert captured["reason"] == "legacy operator script"
+
+    # Response shape covers the fields old callers checked.
+    assert body["subject_id"] == settings.support_subject_id
+    assert body["imported_episodes"] == 4
+    assert body["imported_memories"] == 1
+    assert "reseeded_at" in body
+
+
+@pytest.mark.asyncio
+async def test_http_docs_pack_reseed_alias_works_without_body(client, monkeypatch):
+    """Old scripts sometimes POSTed with no body — must still 200."""
+    async def fake_reseed(*, reason=None):
+        return {
+            "subject_id": settings.support_subject_id,
+            "pack_id": settings.support_starter_pack_id,
+            "pack_version": "1.0.0",
+            "imported_episodes": 0,
+            "imported_memories": 0,
+            "reseeded_at": "2026-05-03T10:00:00+00:00",
+            "reason": None,
+        }
+
+    monkeypatch.setattr(mp, "reseed_support_subject", fake_reseed)
+
+    resp = await client.post("/admin/docs-pack/reseed")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_http_docs_pack_reseed_alias_does_not_require_github_config(
+    client, monkeypatch
+):
+    """Vendor-neutral guarantee: the alias must not touch any GitHub plumbing.
+
+    The pre-rewrite implementation dispatched a workflow via the GitHub API
+    and required `GITHUB_TOKEN` / `DOCS_REFRESH_*` settings. The new alias
+    must work with none of those configured. We assert two things:
+      * the request returns 200 even when no GitHub-related env exists
+      * the underlying service is the new vendor-neutral one (we observe
+        this by patching it and confirming the patched function ran)
+    """
+    # Strip every GitHub-shaped env var that could possibly be probed.
+    for var in [
+        "GITHUB_TOKEN",
+        "DOCS_REFRESH_GITHUB_TOKEN",
+        "DOCS_REFRESH_GITHUB_REPO",
+        "DOCS_REFRESH_GITHUB_WORKFLOW",
+    ]:
+        monkeypatch.delenv(var, raising=False)
+
+    called = {"n": 0}
+
+    async def fake_reseed(*, reason=None):
+        called["n"] += 1
+        return {
+            "subject_id": settings.support_subject_id,
+            "pack_id": settings.support_starter_pack_id,
+            "pack_version": "1.0.0",
+            "imported_episodes": 1,
+            "imported_memories": 0,
+            "reseeded_at": "2026-05-03T10:00:00+00:00",
+            "reason": reason,
+        }
+
+    monkeypatch.setattr(mp, "reseed_support_subject", fake_reseed)
+
+    resp = await client.post("/admin/docs-pack/reseed", json={})
+    assert resp.status_code == 200
+    assert called["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_http_docs_pack_reseed_alias_requires_admin_auth(monkeypatch):
+    """Alias must sit behind the same `X-API-Key` gate as every other admin route."""
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setattr(settings, "api_key", "test-admin-secret")
+
+    # Rebuild the app so the middleware picks up the configured key.
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        # No header → 401.
+        resp = await ac.post("/admin/docs-pack/reseed", json={})
+        assert resp.status_code == 401
+        # Wrong key → 403.
+        resp = await ac.post(
+            "/admin/docs-pack/reseed",
+            json={},
+            headers={"X-API-Key": "nope"},
+        )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_http_docs_pack_reseed_alias_targets_only_shared_subject(
+    client, monkeypatch
+):
+    """The alias targets `support_subject_id` only — never a visitor subject."""
+    seen: dict[str, str] = {}
+
+    async def fake_reseed(*, reason=None):
+        # Pin: the service does not accept a target arg from the request,
+        # so the alias cannot be pointed at a per-visitor subject by a
+        # client. Returning the configured shared id is the only path.
+        seen["target"] = settings.support_subject_id
+        return {
+            "subject_id": settings.support_subject_id,
+            "pack_id": settings.support_starter_pack_id,
+            "pack_version": "1.0.0",
+            "imported_episodes": 0,
+            "imported_memories": 0,
+            "reseeded_at": "2026-05-03T10:00:00+00:00",
+            "reason": reason,
+        }
+
+    monkeypatch.setattr(mp, "reseed_support_subject", fake_reseed)
+
+    # Client tries to redirect the reseed at a visitor subject — body ignored.
+    resp = await client.post(
+        "/admin/docs-pack/reseed",
+        json={
+            "subject_id": "demo_web_attacker__statewave-support",
+            "target_subject_id": "demo_web_attacker__statewave-support",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert seen["target"] == settings.support_subject_id
+    assert body["subject_id"] == settings.support_subject_id
+    assert not body["subject_id"].startswith("demo_web_")
 
 
 # ─── Versioned payload format constants ─────────────────────────────────────

@@ -19,6 +19,29 @@ Fly.io, Vercel, or any provider-specific runtime.
 | `POST /admin/memory/clone` | Clone a subject's episodes/memories into a new one |
 | `POST /admin/memory/export` | Return a versioned plaintext payload for one or more subjects |
 | `POST /admin/memory/import` | Ingest a previously exported payload |
+| `POST /admin/docs-pack/reseed` | **Deprecated alias** — backward-compatible shim for `/admin/memory/support/reseed` |
+
+### Backward compatibility — `POST /admin/docs-pack/reseed`
+
+Older operator scripts (and the pre-vendor-neutral admin UI) called
+`POST /admin/docs-pack/reseed`. That path used to dispatch a GitHub Actions
+workflow which ran the reseed CLI in CI and required a `GITHUB_TOKEN` plus
+provider-specific repo/workflow settings.
+
+**The vendor-locked implementation is gone.** The path is preserved as a
+deprecated alias that delegates straight to `reseed_support_subject` — the
+same in-process service the new `/admin/memory/support/reseed` endpoint
+calls. There is no GitHub token, no workflow dispatch, no CI dependency.
+
+| Property | Value |
+|---|---|
+| Auth | Same `X-API-Key` gate as every other `/admin/*` route |
+| Body | Same as the canonical endpoint: `{ "reason": "optional, ≤200 chars" }` (also accepts an empty body) |
+| Response | Same shape as `/admin/memory/support/reseed` — `subject_id`, `pack_id`, `pack_version`, `imported_episodes`, `imported_memories`, `reseeded_at`, `reason` |
+| Target | Always the configured `support_subject_id` (default `statewave-support-docs`); per-visitor `demo_web_*__statewave-support` subjects are never touched |
+
+Prefer `POST /admin/memory/support/reseed` in new code. The alias may be
+removed in a future major version.
 
 ## `POST /admin/memory/clone`
 

@@ -1935,6 +1935,33 @@ async def support_reseed_endpoint(req: SupportReseedRequest | None = None):
         raise HTTPException(status_code=e.status_code, detail=str(e))
 
 
+@router.post("/docs-pack/reseed", deprecated=True)
+async def docs_pack_reseed_alias(req: SupportReseedRequest | None = None):
+    """[Deprecated] Backward-compatible alias for `/admin/memory/support/reseed`.
+
+    Older operator scripts (and the pre-vendor-neutral admin UI) called
+    `/admin/docs-pack/reseed`, which used to dispatch a GitHub Actions
+    workflow that ran the reseed CLI in CI. That implementation is gone:
+    the new vendor-neutral path imports the bundled
+    `statewave-support-agent` starter pack directly inside the API process,
+    with no GitHub token, no workflow dispatch, and no CI dependency.
+
+    This route delegates straight to `reseed_support_subject` so old
+    callers keep working. Prefer `POST /admin/memory/support/reseed` in
+    new code; this alias may be removed in a future major version.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        reseed_support_subject,
+    )
+
+    reason = (req.reason if req and req.reason else "").strip()[:200] or None
+    try:
+        return await reseed_support_subject(reason=reason)
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
 @router.post("/memory/clone")
 async def clone_subject_endpoint(
     req: CloneSubjectRequest,

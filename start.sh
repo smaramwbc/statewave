@@ -91,6 +91,12 @@ BOOTSTRAP="${STATEWAVE_BOOTSTRAP_DOCS_PACK:-true}"
 if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
     echo "Auto-bootstrap: docs pack will seed after API is ready (DOCS_PATH=$DOCS_PATH)"
     (
+        # Disable errexit inside the subshell — the bootstrap script
+        # exits 2 to signal "subject already populated", which is a
+        # success outcome for us. Without `set +e`, the inherited
+        # `set -e` from the parent script would kill this subshell
+        # before the case statement below could log the outcome.
+        set +e
         # Wait up to 60s for /healthz before attempting the seed. Falls
         # back silently if the API never comes up — the user-visible
         # error will be the failed startup itself, not a confusing

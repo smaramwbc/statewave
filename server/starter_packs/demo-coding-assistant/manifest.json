@@ -1,0 +1,17 @@
+{
+  "format": "statewave-starter-pack",
+  "format_version": 1,
+  "pack_id": "demo-coding-assistant",
+  "display_name": "Coding Assistant",
+  "description": "Starter memories for a developer-facing assistant: code review heuristics and language preferences.",
+  "version": "1.0.0",
+  "created_at": "2026-05-03T11:28:06.257166+00:00",
+  "subject_id_suggestion": "demo-coding-assistant",
+  "episode_count": 2,
+  "memory_count": 2,
+  "source_count": 0,
+  "tags": [
+    "starter-pack",
+    "platform-bundled"
+  ]
+}

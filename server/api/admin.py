@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Literal, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from server.core.config import settings
@@ -1436,8 +1436,12 @@ async def webhook_event_status(event_id: uuid.UUID):
 class BulkDeleteFilter(BaseModel):
     """Selector for matching subjects to delete.
 
-    At least one filter MUST be set — refusing to operate on "all subjects"
-    is a deliberate footgun guard. To delete everything, scope by tenant.
+    At least one selector must be present so an empty body cannot become
+    "delete everything" by accident. The selectors are AND-ed together,
+    with one exception: `match_all=True` is a stand-alone explicit opt-in
+    that disables the empty-filter guard so an operator can wipe an entire
+    workspace on purpose. The frontend gates that behind a type-to-confirm
+    phrase.
     """
 
     subject_id_prefix: str | None = None
@@ -1448,6 +1452,10 @@ class BulkDeleteFilter(BaseModel):
 
     tenant_id: str | None = None
     """Restrict to a specific tenant. Combined with other filters via AND."""
+
+    match_all: bool = False
+    """Explicit opt-in to match every subject. Required when no other
+    selector is set; ignored otherwise (other selectors take precedence)."""
 
 
 class BulkDeleteSample(BaseModel):
@@ -1484,6 +1492,14 @@ class BulkDeleteResult(BaseModel):
 
 
 def _filter_is_empty(f: BulkDeleteFilter) -> bool:
+    """An empty filter is one with no selector AND no `match_all` opt-in.
+
+    `match_all` is the explicit "yes I want everything" escape hatch. When
+    set, the filter is no longer considered empty and the request proceeds
+    against the unscoped subject set.
+    """
+    if f.match_all:
+        return False
     return (
         not f.subject_id_prefix
         and f.older_than_days is None
@@ -1617,7 +1633,11 @@ async def preview_bulk_delete(filter: BulkDeleteFilter):
     if _filter_is_empty(filter):
         raise HTTPException(
             status_code=400,
-            detail="At least one filter must be set (subject_id_prefix, older_than_days, or tenant_id).",
+            detail=(
+                "At least one filter must be set (subject_id_prefix, "
+                "older_than_days, or tenant_id), or match_all=true to "
+                "explicitly target every subject."
+            ),
         )
     matches, total_eps, total_mems = await _matching_subjects(filter)
     return BulkDeletePreview(
@@ -1644,7 +1664,11 @@ async def commit_bulk_delete(req: BulkDeleteCommitRequest):
     if _filter_is_empty(req):
         raise HTTPException(
             status_code=400,
-            detail="At least one filter must be set (subject_id_prefix, older_than_days, or tenant_id).",
+            detail=(
+                "At least one filter must be set (subject_id_prefix, "
+                "older_than_days, or tenant_id), or match_all=true to "
+                "explicitly target every subject."
+            ),
         )
 
     # Recompute the match set against current state.
@@ -1793,3 +1817,207 @@ async def trigger_cleanup(
 
     count = await cleanup_ephemeral_subjects(prefix=prefix, max_age_hours=max_age_hours)
     return {"subjects_cleaned": count}
+
+
+
+# ─── Memory portability ───
+#
+# Vendor-neutral memory operations: starter-pack list/import, support reseed,
+# clone, export, import. All routed through `server/services/memory_packs.py`
+# so the same primitives back the admin UI, the marketing widget's docs
+# grounding, and any future CLI tooling.
+#
+# Auth: the existing `X-API-Key` middleware gates every `/admin/*` route — no
+# per-route check needed. No memory content is logged from any of these
+# handlers; only counts, subject ids, and pack ids appear in stdout.
+
+
+class StarterPackImportRequest(BaseModel):
+    pack_id: str
+    target_subject_id: Optional[str] = None
+    target_display_name: Optional[str] = None
+    target_tenant_id: Optional[str] = None
+    conflict_strategy: Literal["create_copy", "merge", "cancel"] = "create_copy"
+
+
+class SupportReseedRequest(BaseModel):
+    reason: Optional[str] = None
+
+
+class CloneSubjectRequest(BaseModel):
+    source_subject_id: str
+    target_subject_id: Optional[str] = None
+    target_display_name: Optional[str] = None
+    target_tenant_id: Optional[str] = None
+    clone_scope: Literal[
+        "episodes",
+        "memories",
+        "episodes_and_memories",
+        "episodes_memories_sources",
+    ] = "episodes_memories_sources"
+
+
+class ExportSubjectsRequest(BaseModel):
+    subject_ids: list[str]
+    tenant_id: Optional[str] = None
+    export_scope: Literal[
+        "episodes",
+        "memories",
+        "episodes_and_memories",
+        "episodes_memories_sources",
+    ] = "episodes_memories_sources"
+
+
+class ImportPayloadRequest(BaseModel):
+    payload: dict
+    target_tenant_id: Optional[str] = None
+    conflict_strategy: Literal["create_copy", "merge", "cancel"] = "create_copy"
+
+
+@router.get("/memory/starter-packs")
+async def list_starter_packs_endpoint():
+    """Return metadata for the platform-bundled starter packs.
+
+    Pack content lives in `server/starter_packs/`; this endpoint reads the
+    on-disk index. No memory content is returned here — only manifest data
+    so the admin UI can render selectable cards.
+    """
+    from server.services.memory_packs import list_starter_packs
+
+    return {"packs": list_starter_packs()}
+
+
+@router.post("/memory/starter-packs/import")
+async def import_starter_pack_endpoint(req: StarterPackImportRequest):
+    """Import a platform starter pack into a new tenant-owned subject.
+
+    Default behaviour creates a fresh subject with a unique id; `merge`
+    appends to an existing subject; `cancel` aborts if the target id
+    already has data. Provenance metadata
+    (`starter_pack_id`, `starter_pack_version`, `imported_at`) is written
+    onto every resulting episode/memory so the import is traceable.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        import_starter_pack,
+    )
+
+    try:
+        return await import_starter_pack(
+            pack_id=req.pack_id,
+            target_subject_id=req.target_subject_id,
+            target_display_name=req.target_display_name,
+            target_tenant_id=req.target_tenant_id,
+            conflict_strategy=req.conflict_strategy,
+        )
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/memory/support/reseed")
+async def support_reseed_endpoint(req: SupportReseedRequest | None = None):
+    """Rebuild the shared Statewave Support docs subject (vendor-neutral).
+
+    Imports the bundled `statewave-support-agent` starter pack into the
+    `statewave-support-docs` subject (purging prior content first so the
+    rebuild is idempotent). Per-visitor `demo_web_<uuid>__statewave-support`
+    subjects are not touched.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        reseed_support_subject,
+    )
+
+    reason = (req.reason if req and req.reason else "").strip()[:200] or None
+    try:
+        return await reseed_support_subject(reason=reason)
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/memory/clone")
+async def clone_subject_endpoint(
+    req: CloneSubjectRequest,
+    x_statewave_operator_email: str | None = Header(default=None),
+):
+    """Clone an existing subject into a new one.
+
+    Default scope copies episodes + compiled memories + sources (sources
+    are tracked but not yet first-class cloneable records — `source_count`
+    returns 0 today). Refuses to overwrite a target that already has data
+    — caller must choose a different target id. Provenance metadata
+    (`cloned_from_subject_id`, `cloned_at`, `cloned_by`,
+    `original_episode_id` / `original_memory_id`) is written onto every
+    copied record.
+
+    Error codes:
+      400 — invalid input (bad subject id, unsupported scope)
+      404 — source subject not found
+      409 — target subject already populated (caller picked an existing id)
+      500 — unexpected failure
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        clone_subject,
+    )
+
+    try:
+        return await clone_subject(
+            source_subject_id=req.source_subject_id,
+            target_subject_id=req.target_subject_id,
+            target_display_name=req.target_display_name,
+            target_tenant_id=req.target_tenant_id,
+            clone_scope=req.clone_scope,
+            cloned_by=x_statewave_operator_email,
+        )
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/memory/export")
+async def export_memory_endpoint(req: ExportSubjectsRequest):
+    """Build a versioned export payload for one or more subjects.
+
+    Returns plaintext JSON. The admin client encrypts this payload locally
+    (passphrase never reaches the server) before saving it as a `.swmem`
+    file. Refuses bodies that exceed configured size/count limits — see
+    `STATEWAVE_MEMORY_IMPORT_MAX_*` settings.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        export_memory_payload,
+    )
+
+    try:
+        return await export_memory_payload(
+            subject_ids=req.subject_ids,
+            tenant_id=req.tenant_id,
+            export_scope=req.export_scope,
+        )
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.post("/memory/import")
+async def import_memory_endpoint(req: ImportPayloadRequest):
+    """Ingest a previously exported memory payload.
+
+    The admin client has already decrypted the `.swmem` blob and validated
+    the manifest header — the payload arrives as plaintext JSON over
+    authenticated HTTPS. The server re-validates schema, enforces size and
+    record-count limits, generates fresh subject ids on conflict by
+    default, and refuses unknown top-level fields.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        import_memory_payload,
+    )
+
+    try:
+        return await import_memory_payload(
+            payload=req.payload,
+            target_tenant_id=req.target_tenant_id,
+            conflict_strategy=req.conflict_strategy,
+        )
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))

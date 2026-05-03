@@ -1,0 +1,2 @@
+{"kind": "preference", "content": "Frontend codebase uses TypeScript strict mode; avoid `any` and prefer explicit types in suggestions.", "summary": "Frontend codebase uses TypeScript strict mode; avoid `any` and prefer explicit types in suggestions.", "confidence": 0.9, "metadata": {}}
+{"kind": "procedure", "content": "Code review checklist: tests pass, no leftover console.log, no commented-out code.", "summary": "Code review checklist: tests pass, no leftover console.log, no commented-out code.", "confidence": 0.9, "metadata": {}}

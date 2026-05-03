@@ -1,0 +1,2 @@
+{"source": "crm-note", "type": "note", "payload": {"channel": "crm", "content": "Acme Corp signed for the team plan; renewal expected Q3. Decision-maker is Sarah Chen.", "priority": "normal"}, "metadata": {}, "provenance": {}}
+{"source": "sales-call", "type": "call_note", "payload": {"content": "Prospect at BetaTech wants SSO and SOC 2 docs before procurement signs off."}, "metadata": {}, "provenance": {}}

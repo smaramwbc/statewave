@@ -69,6 +69,20 @@ class Settings(BaseSettings):
     # Migration safety
     strict_schema: bool = False  # if True, refuse to start on schema mismatch
 
+    # Statewave Support shared docs subject. Rebuilt by the vendor-neutral
+    # `POST /admin/memory/support/reseed` endpoint, which imports the bundled
+    # `statewave-support-agent` starter pack from `server/starter_packs/`.
+    # No GitHub Actions / Fly / Vercel dependency.
+    support_subject_id: str = "statewave-support-docs"
+    support_starter_pack_id: str = "statewave-support-agent"
+
+    # Memory import/export hard limits — defence against pathological payloads.
+    # Apply uniformly across starter-pack imports, clone, and bulk import.
+    memory_import_max_bytes: int = 50 * 1024 * 1024  # 50 MiB
+    memory_import_max_episodes: int = 50_000
+    memory_import_max_memories: int = 50_000
+    memory_import_max_subjects: int = 100
+
     model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
 
 

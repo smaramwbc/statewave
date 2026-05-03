@@ -1,0 +1,2 @@
+{"kind": "procedure", "content": "When a user reports a stuck login, suggest clearing cookies and signing in again as the first step.", "summary": "When a user reports a stuck login, suggest clearing cookies and signing in again as the first step.", "confidence": 0.9, "metadata": {}}
+{"kind": "profile_fact", "content": "Invoices are accessible at Account > Billing > Invoices and offer PDF downloads.", "summary": "Invoices are accessible at Account > Billing > Invoices and offer PDF downloads.", "confidence": 0.9, "metadata": {}}

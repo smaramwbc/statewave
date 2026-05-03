@@ -1,0 +1,2 @@
+{"source": "ops-incident", "type": "incident", "payload": {"action": "post_mortem", "content": "March outage was caused by a connection pool exhaustion under traffic spike. Mitigation: PgBouncer in front of Postgres."}, "metadata": {}, "provenance": {}}
+{"source": "ops-runbook", "type": "runbook", "payload": {"action": "rollback_deploy", "content": "To roll back the API deploy, run `fly deploy --image-label <previous>` from the statewave repo. Verify with /healthz before declaring green."}, "metadata": {}, "provenance": {}}

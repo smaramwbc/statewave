@@ -1,0 +1,17 @@
+{
+  "format": "statewave-starter-pack",
+  "format_version": 1,
+  "pack_id": "statewave-support-agent",
+  "display_name": "Statewave Support",
+  "description": "Minimal docs-grounding starter for the Statewave Support persona. Replace with the full statewave-docs corpus once richer content is curated.",
+  "version": "1.0.0",
+  "created_at": "2026-05-03T11:28:06.257166+00:00",
+  "subject_id_suggestion": "statewave-support-docs",
+  "episode_count": 3,
+  "memory_count": 3,
+  "source_count": 0,
+  "tags": [
+    "starter-pack",
+    "platform-bundled"
+  ]
+}

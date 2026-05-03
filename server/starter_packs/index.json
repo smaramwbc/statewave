@@ -1,0 +1,36 @@
+{
+  "format": "statewave-starter-pack-index",
+  "format_version": 1,
+  "packs": [
+    {
+      "pack_id": "statewave-support-agent",
+      "kind": "support_docs",
+      "directory": "statewave-support-agent"
+    },
+    {
+      "pack_id": "demo-support-agent",
+      "kind": "demo_agent",
+      "directory": "demo-support-agent"
+    },
+    {
+      "pack_id": "demo-coding-assistant",
+      "kind": "demo_agent",
+      "directory": "demo-coding-assistant"
+    },
+    {
+      "pack_id": "demo-sales-copilot",
+      "kind": "demo_agent",
+      "directory": "demo-sales-copilot"
+    },
+    {
+      "pack_id": "demo-devops-agent",
+      "kind": "demo_agent",
+      "directory": "demo-devops-agent"
+    },
+    {
+      "pack_id": "demo-research-assistant",
+      "kind": "demo_agent",
+      "directory": "demo-research-assistant"
+    }
+  ]
+}

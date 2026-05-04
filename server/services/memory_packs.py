@@ -352,12 +352,28 @@ async def import_starter_pack(
     target_display_name: str | None,
     target_tenant_id: str | None,
     conflict_strategy: ConflictStrategy = "create_copy",
+    allow_reserved_target: bool = False,
 ) -> dict[str, Any]:
+    """Import a starter pack into a target subject.
+
+    `allow_reserved_target` opts the caller into landing the pack on a
+    subject inside a reserved namespace (currently `demo_web_*`). The
+    default `False` matches the operator-facing admin UI's policy: an
+    admin who clicks "Import" should never accidentally fork into the
+    marketing widget's per-visitor namespace. The marketing edge
+    function — which is the legitimate caller for `demo_web_*` targets,
+    seeding a visitor's subject from the bundled showcase pack — sets
+    this to `True` to skip the guard.
+    """
     directory, manifest = _starter_pack_dir(pack_id)
     suggested = manifest.get("subject_id_suggestion") or pack_id
 
     if target_subject_id:
-        target_subject_id = _validate_subject_id(target_subject_id, field="target_subject_id")
+        target_subject_id = _validate_subject_id(
+            target_subject_id,
+            field="target_subject_id",
+            allow_reserved=allow_reserved_target,
+        )
 
     final_subject_id = await _resolve_target_subject(
         explicit=target_subject_id,
@@ -448,27 +464,191 @@ async def _resolve_target_subject(
 # ─── Public: support reseed (vendor-neutral) ────────────────────────────────
 
 
-async def reseed_support_subject(*, reason: str | None = None) -> dict[str, Any]:
+async def get_support_subject_state() -> dict[str, Any]:
+    """Snapshot the support subject's reseed metadata for the admin drawer.
+
+    Returns the bundled manifest version and what the live subject reports
+    about its last reseed (version, timestamp, reason, episode + memory
+    counts). Distinguishes pack-owned rows from operator-added rows so the
+    UI can warn before any destructive action.
+
+    Owned-row detection: rows carry `metadata_.starter_pack_id == pack_id`
+    when imported via this code path. Older bootstrap_docs_pack runs (pre-
+    versioning) wrote `metadata.pack == "statewave-support-docs"` instead;
+    we recognise both so a long-lived deployment doesn't think its own
+    docs pack is operator data.
+    """
+    from sqlalchemy import func, or_, select
+
+    target = settings.support_subject_id
+    pack_id = settings.support_starter_pack_id
+
+    _, manifest = _starter_pack_dir(pack_id)
+    bundled_version = manifest.get("version")
+
+    owned_predicate_ep = or_(
+        EpisodeRow.metadata_["starter_pack_id"].astext == pack_id,
+        EpisodeRow.metadata_["pack"].astext == "statewave-support-docs",
+    )
+    owned_predicate_mem = or_(
+        MemoryRow.metadata_["starter_pack_id"].astext == pack_id,
+        MemoryRow.metadata_["pack"].astext == "statewave-support-docs",
+    )
+
+    async with engine_module.get_session_factory()() as session:
+        # Total rows on the subject (includes operator-added).
+        total_eps = await session.scalar(
+            select(func.count(EpisodeRow.id)).where(EpisodeRow.subject_id == target)
+        )
+        total_mems = await session.scalar(
+            select(func.count(MemoryRow.id)).where(MemoryRow.subject_id == target)
+        )
+        # Rows the auto-update path is allowed to touch.
+        owned_eps = await session.scalar(
+            select(func.count(EpisodeRow.id)).where(
+                EpisodeRow.subject_id == target, owned_predicate_ep
+            )
+        )
+        owned_mems = await session.scalar(
+            select(func.count(MemoryRow.id)).where(
+                MemoryRow.subject_id == target, owned_predicate_mem
+            )
+        )
+        # Most recent reseed identity. Memories tend to outnumber episodes,
+        # but they all carry the same metadata — query whichever has rows.
+        last_row = await session.execute(
+            select(
+                EpisodeRow.metadata_["starter_pack_version"].astext,
+                EpisodeRow.metadata_["imported_at"].astext,
+                EpisodeRow.metadata_["reseed_reason"].astext,
+            )
+            .where(EpisodeRow.subject_id == target, owned_predicate_ep)
+            .order_by(EpisodeRow.created_at.desc())
+            .limit(1)
+        )
+        last = last_row.first()
+
+    installed_version = last[0] if last else None
+    last_imported_at = last[1] if last else None
+    last_reseed_reason = last[2] if last else None
+
+    return {
+        "subject_id": target,
+        "pack_id": pack_id,
+        "bundled_version": bundled_version,
+        "installed_version": installed_version,
+        "is_up_to_date": (
+            installed_version is not None and installed_version == bundled_version
+        ),
+        "total_episode_count": total_eps or 0,
+        "total_memory_count": total_mems or 0,
+        "owned_episode_count": owned_eps or 0,
+        "owned_memory_count": owned_mems or 0,
+        "operator_episode_count": (total_eps or 0) - (owned_eps or 0),
+        "operator_memory_count": (total_mems or 0) - (owned_mems or 0),
+        "last_reseed": {
+            "imported_at": last_imported_at,
+            "reason": last_reseed_reason,
+            "version": installed_version,
+        },
+    }
+
+
+async def reseed_support_subject(
+    *,
+    reason: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
     """Rebuild the shared `statewave-support-docs` subject from the bundled pack.
 
-    Idempotent: every call deletes existing episodes/memories on the target
-    subject before re-importing. Per-visitor `demo_web_*__statewave-support`
-    subjects are not touched — this targets the configured shared subject id
-    (`settings.support_subject_id`) only.
+    Version-aware: skips when the live subject is already on the bundled
+    pack's version (no-op fast path for container-restart auto-update).
+    Pass `force=True` to reseed regardless of the version check — that's
+    what the drawer's "Restore" button does when an operator wants to
+    reset to the bundled state.
+
+    Selective purge: only rows whose metadata identifies them as belonging
+    to this pack are deleted before reimport. Rows added by an operator
+    alongside ours (no `starter_pack_id` metadata) survive untouched. Any
+    legacy rows from older `bootstrap_docs_pack` runs that wrote
+    `metadata.pack == "statewave-support-docs"` are also recognised as
+    owned, so a long-lived deployment can upgrade without losing its docs
+    pack to the operator-data exclusion.
+
+    Per-visitor `demo_web_*__statewave-support` subjects are never
+    touched — the strict subject-id match scopes everything to the
+    configured shared subject (`settings.support_subject_id`).
+
+    Always logs the structured outcome including the reason, so an
+    operator searching support-side telemetry can find why a particular
+    reseed happened.
     """
+    from sqlalchemy import or_
+
     target = settings.support_subject_id
     pack_id = settings.support_starter_pack_id
 
     directory, manifest = _starter_pack_dir(pack_id)
+    bundled_version = manifest.get("version")
+
+    state = await get_support_subject_state()
+    installed_version = state["installed_version"]
+
+    # Version-aware short-circuit: identical version + no force → no-op.
+    # We still write a log line so operator-triggered no-ops are visible
+    # in support telemetry.
+    if not force and state["is_up_to_date"]:
+        logger.info(
+            "support_reseed_skipped",
+            target_subject_id=target,
+            pack_id=pack_id,
+            installed_version=installed_version,
+            bundled_version=bundled_version,
+            reason=reason,
+            outcome="already_current",
+        )
+        return {
+            "subject_id": target,
+            "pack_id": pack_id,
+            "pack_version": bundled_version,
+            "installed_version": installed_version,
+            "imported_episodes": 0,
+            "imported_memories": 0,
+            "reseeded_at": None,
+            "reason": reason,
+            "updated": False,
+            "outcome": "already_current",
+        }
+
     episodes_data = _load_jsonl(directory / "episodes.jsonl")
     memories_data = _load_jsonl(directory / "memories.jsonl")
 
-    # Idempotent reseed: wipe the shared subject's existing rows. The strict
-    # subject-id match means per-visitor `demo_web_<uuid>__statewave-support`
-    # rows are not affected.
+    # Selective purge: only delete rows our pack owns. Operator-added
+    # episodes and memories on the same subject (rare but possible — e.g.
+    # an internal note appended for the support team) are preserved. The
+    # owned predicate matches both the modern `starter_pack_id` provenance
+    # and the legacy `pack="statewave-support-docs"` metadata so an upgrade
+    # from a pre-versioning install doesn't strand its own docs pack.
+    owned_predicate_ep = or_(
+        EpisodeRow.metadata_["starter_pack_id"].astext == pack_id,
+        EpisodeRow.metadata_["pack"].astext == "statewave-support-docs",
+    )
+    owned_predicate_mem = or_(
+        MemoryRow.metadata_["starter_pack_id"].astext == pack_id,
+        MemoryRow.metadata_["pack"].astext == "statewave-support-docs",
+    )
+
     async with engine_module.get_session_factory()() as session:
-        await session.execute(delete(EpisodeRow).where(EpisodeRow.subject_id == target))
-        await session.execute(delete(MemoryRow).where(MemoryRow.subject_id == target))
+        await session.execute(
+            delete(EpisodeRow).where(
+                EpisodeRow.subject_id == target, owned_predicate_ep
+            )
+        )
+        await session.execute(
+            delete(MemoryRow).where(
+                MemoryRow.subject_id == target, owned_predicate_mem
+            )
+        )
         await session.commit()
 
     counts = await _ingest_records_async(
@@ -479,28 +659,45 @@ async def reseed_support_subject(*, reason: str | None = None) -> dict[str, Any]
         extra_provenance={"starter_pack_id": pack_id, "support_reseed": True},
         extra_metadata={
             "starter_pack_id": pack_id,
-            "starter_pack_version": manifest.get("version"),
+            "starter_pack_version": bundled_version,
             "imported_at": _now_iso(),
             "reseed_reason": reason,
         },
     )
 
+    outcome = (
+        "force_reseeded"
+        if force
+        else ("seeded" if installed_version is None else "auto_updated")
+    )
     logger.info(
         "support_reseed_completed",
         target_subject_id=target,
         pack_id=pack_id,
+        installed_version_before=installed_version,
+        installed_version_after=bundled_version,
         episodes=counts["episodes"],
         memories=counts["memories"],
+        operator_episodes_preserved=state["operator_episode_count"],
+        operator_memories_preserved=state["operator_memory_count"],
+        reason=reason,
+        outcome=outcome,
     )
 
     return {
         "subject_id": target,
         "pack_id": pack_id,
-        "pack_version": manifest.get("version"),
+        "pack_version": bundled_version,
+        "installed_version": bundled_version,
+        "previous_version": installed_version,
         "imported_episodes": counts["episodes"],
         "imported_memories": counts["memories"],
+        "operator_episodes_preserved": state["operator_episode_count"],
+        "operator_memories_preserved": state["operator_memory_count"],
         "reseeded_at": _now_iso(),
         "reason": reason,
+        "updated": True,
+        "outcome": outcome,
     }
 
 

@@ -416,7 +416,7 @@ async def test_http_docs_pack_reseed_alias_delegates_to_support_reseed(
     """
     captured: dict[str, object] = {}
 
-    async def fake_reseed(*, reason=None):
+    async def fake_reseed(*, reason=None, force=False):
         captured["reason"] = reason
         return {
             "subject_id": settings.support_subject_id,
@@ -450,7 +450,7 @@ async def test_http_docs_pack_reseed_alias_delegates_to_support_reseed(
 @pytest.mark.asyncio
 async def test_http_docs_pack_reseed_alias_works_without_body(client, monkeypatch):
     """Old scripts sometimes POSTed with no body — must still 200."""
-    async def fake_reseed(*, reason=None):
+    async def fake_reseed(*, reason=None, force=False):
         return {
             "subject_id": settings.support_subject_id,
             "pack_id": settings.support_starter_pack_id,
@@ -491,7 +491,7 @@ async def test_http_docs_pack_reseed_alias_does_not_require_github_config(
 
     called = {"n": 0}
 
-    async def fake_reseed(*, reason=None):
+    async def fake_reseed(*, reason=None, force=False):
         called["n"] += 1
         return {
             "subject_id": settings.support_subject_id,
@@ -540,7 +540,7 @@ async def test_http_docs_pack_reseed_alias_targets_only_shared_subject(
     """The alias targets `support_subject_id` only — never a visitor subject."""
     seen: dict[str, str] = {}
 
-    async def fake_reseed(*, reason=None):
+    async def fake_reseed(*, reason=None, force=False):
         # Pin: the service does not accept a target arg from the request,
         # so the alias cannot be pointed at a per-visitor subject by a
         # client. Returning the configured shared id is the only path.

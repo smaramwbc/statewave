@@ -1838,10 +1838,21 @@ class StarterPackImportRequest(BaseModel):
     target_display_name: Optional[str] = None
     target_tenant_id: Optional[str] = None
     conflict_strategy: Literal["create_copy", "merge", "cancel"] = "create_copy"
+    # Off by default — operators using the admin UI should never accidentally
+    # import a pack into the marketing widget's per-visitor namespace
+    # (`demo_web_*`). The marketing edge function flips this on when seeding
+    # a visitor's subject from the bundled showcase pack — that's the
+    # legitimate `demo_web_*` write path.
+    allow_reserved_target: bool = False
 
 
 class SupportReseedRequest(BaseModel):
     reason: Optional[str] = None
+    # When false (default), skip work if the live subject already carries
+    # the bundled pack's version — that's the no-op fast path used by
+    # container-restart auto-update. When true, the drawer's manual
+    # "Restore" button forces a reseed regardless of version state.
+    force: bool = False
 
 
 class CloneSubjectRequest(BaseModel):
@@ -1909,6 +1920,7 @@ async def import_starter_pack_endpoint(req: StarterPackImportRequest):
             target_display_name=req.target_display_name,
             target_tenant_id=req.target_tenant_id,
             conflict_strategy=req.conflict_strategy,
+            allow_reserved_target=req.allow_reserved_target,
         )
     except StarterPackError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
@@ -1919,9 +1931,16 @@ async def support_reseed_endpoint(req: SupportReseedRequest | None = None):
     """Rebuild the shared Statewave Support docs subject (vendor-neutral).
 
     Imports the bundled `statewave-support-agent` starter pack into the
-    `statewave-support-docs` subject (purging prior content first so the
-    rebuild is idempotent). Per-visitor `demo_web_<uuid>__statewave-support`
-    subjects are not touched.
+    `statewave-support-docs` subject. Behaviour:
+
+      - Version-aware: when the live subject already carries the bundled
+        pack's version, the call is a no-op (returns `updated=false`).
+        Pass `force=true` to override and reseed unconditionally.
+      - Selective purge: only rows whose metadata identifies them as
+        belonging to the support pack are deleted before reimport. Rows
+        an operator added alongside ours survive untouched.
+      - Per-visitor `demo_web_<uuid>__statewave-support` subjects are not
+        touched.
     """
     from server.services.memory_packs import (
         StarterPackError,
@@ -1929,8 +1948,30 @@ async def support_reseed_endpoint(req: SupportReseedRequest | None = None):
     )
 
     reason = (req.reason if req and req.reason else "").strip()[:200] or None
+    force = bool(req.force) if req else False
     try:
-        return await reseed_support_subject(reason=reason)
+        return await reseed_support_subject(reason=reason, force=force)
+    except StarterPackError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@router.get("/memory/support/state")
+async def support_state_endpoint():
+    """Snapshot of the support subject's reseed state.
+
+    Returns the bundled pack version, the version currently installed in
+    the live subject (read from row metadata), and counts of pack-owned vs
+    operator-added rows. The drawer uses this to render the
+    "installed v{x} → available v{y}" banner and gate the destructive
+    Restore action.
+    """
+    from server.services.memory_packs import (
+        StarterPackError,
+        get_support_subject_state,
+    )
+
+    try:
+        return await get_support_subject_state()
     except StarterPackError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
 
@@ -1956,8 +1997,9 @@ async def docs_pack_reseed_alias(req: SupportReseedRequest | None = None):
     )
 
     reason = (req.reason if req and req.reason else "").strip()[:200] or None
+    force = bool(req.force) if req else False
     try:
-        return await reseed_support_subject(reason=reason)
+        return await reseed_support_subject(reason=reason, force=force)
     except StarterPackError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
 

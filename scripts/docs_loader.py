@@ -23,6 +23,7 @@ MANIFEST: tuple[str, ...] = (
     "README.md",
     "getting-started.md",
     "product.md",
+    "subject-design.md",
     "why-statewave.md",
     "SECURITY.md",
     "SUPPORT.md",

@@ -86,10 +86,19 @@ alembic upgrade head
 # deploys (Fly) don't ship the corpus inside the image, so the path check
 # silently skips this. Operators who want to disable explicitly can set
 # STATEWAVE_BOOTSTRAP_DOCS_PACK=false.
+#
+# NOTE: This live-docs path is now superseded by the bundled-pack
+# auto-update below. We keep the live-docs path for dev environments
+# that mount `/docs` (so a docs change on the host is picked up without
+# a build_support_pack regen + image rebuild). When neither
+# STATEWAVE_BOOTSTRAP_DOCS_PACK is true nor `/docs` is mounted, the
+# bundled-pack auto-update covers production.
 DOCS_PATH="${STATEWAVE_DOCS_PATH:-/docs}"
 BOOTSTRAP="${STATEWAVE_BOOTSTRAP_DOCS_PACK:-true}"
+DOCS_MOUNTED=0
 if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
-    echo "Auto-bootstrap: docs pack will seed after API is ready (DOCS_PATH=$DOCS_PATH)"
+    DOCS_MOUNTED=1
+    echo "Auto-bootstrap: docs pack will seed from /docs after API is ready (DOCS_PATH=$DOCS_PATH)"
     (
         # Disable errexit inside the subshell — the bootstrap script
         # exits 2 to signal "subject already populated", which is a
@@ -112,13 +121,70 @@ if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
             python -m scripts.bootstrap_docs_pack
         rc=$?
         case "$rc" in
-            0) echo "Auto-bootstrap: Statewave Support docs pack seeded." ;;
+            0) echo "Auto-bootstrap: Statewave Support docs pack seeded from /docs." ;;
             2) echo "Auto-bootstrap: docs pack already populated — skipped." ;;
             *) echo "Auto-bootstrap: bootstrap exited with code $rc (server is still serving)." >&2 ;;
         esac
     ) &
-elif [ "$BOOTSTRAP" = "true" ]; then
-    echo "Auto-bootstrap: STATEWAVE_DOCS_PATH ($DOCS_PATH) not present in image — skipped. (Set STATEWAVE_BOOTSTRAP_DOCS_PACK=false to silence this notice.)"
+fi
+
+# ─── Auto-update: support pack from bundled JSONL ────────────────────────
+#
+# Reseeds `statewave-support-docs` from the bundled
+# `statewave-support-agent` starter pack baked into the image. The reseed
+# endpoint is version-aware: if the live subject already carries the
+# bundled pack's version it returns a no-op without touching any rows.
+# Calling on every container restart is therefore idempotent — fresh
+# installs get seeded, image upgrades pick up the new pack, no-op when
+# already current. Selective purge means operator-added rows survive.
+#
+# Skipped when the live-docs path above ran (operator opted into refreshing
+# from the mounted /docs directly) — that path produces equivalent rows so
+# running both back-to-back would be redundant.
+#
+# Operators who want to disable can set
+# STATEWAVE_AUTO_UPDATE_SUPPORT_PACK=false. The drawer's manual "Restore"
+# button still works either way (it sets force=true).
+AUTO_UPDATE="${STATEWAVE_AUTO_UPDATE_SUPPORT_PACK:-true}"
+if [ "$AUTO_UPDATE" = "true" ] && [ "$DOCS_MOUNTED" = "0" ]; then
+    echo "Auto-update: support pack will reseed (or no-op) after API is ready."
+    (
+        set +e
+        for i in $(seq 1 60); do
+            if curl -sS -m 2 -o /dev/null http://127.0.0.1:8100/healthz 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        AUTH_HEADER=""
+        if [ -n "$STATEWAVE_API_KEY" ]; then
+            AUTH_HEADER="X-API-Key: $STATEWAVE_API_KEY"
+        fi
+        BODY='{"reason":"auto-update on container start"}'
+        RESP=$(curl -sS -m 900 -X POST \
+            -H "Content-Type: application/json" \
+            ${AUTH_HEADER:+-H "$AUTH_HEADER"} \
+            -d "$BODY" \
+            http://127.0.0.1:8100/admin/memory/support/reseed 2>&1)
+        rc=$?
+        if [ "$rc" = "0" ]; then
+            outcome=$(echo "$RESP" | grep -oE '"outcome":"[a-z_]+"' | head -1 | cut -d'"' -f4)
+            ver=$(echo "$RESP" | grep -oE '"installed_version":"[^"]*"' | head -1 | cut -d'"' -f4)
+            case "$outcome" in
+                already_current) echo "Auto-update: support pack already at v$ver — no-op." ;;
+                seeded)          echo "Auto-update: support pack freshly seeded at v$ver." ;;
+                auto_updated)    echo "Auto-update: support pack upgraded to v$ver." ;;
+                "")              echo "Auto-update: reseed call returned (could not parse outcome): $RESP" >&2 ;;
+                *)               echo "Auto-update: support pack reseeded ($outcome) at v$ver." ;;
+            esac
+        else
+            echo "Auto-update: reseed call failed (curl rc=$rc). Server still serving." >&2
+        fi
+    ) &
+elif [ "$AUTO_UPDATE" = "true" ]; then
+    echo "Auto-update: skipped (live-docs bootstrap is handling this restart)."
+else
+    echo "Auto-update: STATEWAVE_AUTO_UPDATE_SUPPORT_PACK=false — support pack will not auto-reseed."
 fi
 
 echo "Starting Statewave server..."

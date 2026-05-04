@@ -108,8 +108,16 @@ async def _ingest_batched(
 
 
 async def _compile(client: httpx.AsyncClient, url: str) -> dict:
+    # Compile is synchronous server-side: it walks every uncompiled episode
+    # under the subject and (in LLM mode) runs the compiler against each
+    # section. ~1-2s per section * 200+ sections puts the call well past the
+    # client default's 120s — bumped to 600s so a full pack rebuild completes
+    # even on the first run after a purge. The fly platform's request idle
+    # timeout sits comfortably above this.
     resp = await client.post(
-        f"{url}/v1/memories/compile", json={"subject_id": SUBJECT_ID}
+        f"{url}/v1/memories/compile",
+        json={"subject_id": SUBJECT_ID},
+        timeout=600.0,
     )
     if resp.status_code not in (200, 201):
         print(f"  ERROR compile: {resp.status_code} {resp.text}", file=sys.stderr)

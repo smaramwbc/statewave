@@ -26,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.engine import get_session_factory
@@ -312,3 +312,49 @@ async def list_events(
         ]
 
         return events, total
+
+
+# Statuses safe to delete on operator request — `pending` events may still
+# be in flight in the delivery loop, so they're excluded.
+TERMINAL_WEBHOOK_STATUSES = ("delivered", "dead_letter")
+
+
+async def purge_events(
+    status: str | None = None,
+    event_type: str | None = None,
+    tenant_id: str | None = None,
+) -> int:
+    """Operator-triggered delete for terminal webhook events.
+
+    At least one filter must be supplied (otherwise this would wipe every
+    delivered + dead-letter event in one call). Status, when given, must
+    be a terminal state. Returns the number of rows deleted.
+    """
+    if not (status or event_type or tenant_id):
+        raise ValueError("at least one filter is required")
+    if status and status not in TERMINAL_WEBHOOK_STATUSES:
+        raise ValueError(
+            f"status must be one of {TERMINAL_WEBHOOK_STATUSES}; got {status!r}"
+        )
+
+    async with get_session_factory()() as session:
+        stmt = delete(WebhookEventRow).where(
+            WebhookEventRow.status.in_(
+                [status] if status else list(TERMINAL_WEBHOOK_STATUSES)
+            )
+        )
+        if event_type:
+            stmt = stmt.where(WebhookEventRow.event == event_type)
+        if tenant_id:
+            stmt = stmt.where(WebhookEventRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        await session.commit()
+        count = result.rowcount or 0  # type: ignore[attr-defined]
+        logger.info(
+            "webhook_events_purged",
+            deleted=count,
+            status=status,
+            event_type=event_type,
+            tenant_id=tenant_id,
+        )
+        return count

@@ -1306,6 +1306,31 @@ async def list_compile_jobs(
     return {"jobs": jobs, "total": total, "limit": limit, "offset": offset}
 
 
+@router.delete("/jobs")
+async def purge_compile_jobs(
+    status: str | None = Query(
+        None, description="Filter by terminal status: completed or failed"
+    ),
+    subject_id: str | None = Query(None, description="Filter by subject"),
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Bulk-delete terminal compile jobs matching the given filter.
+
+    Refuses an empty filter (you must pass at least one of status, subject_id,
+    tenant_id) and refuses non-terminal statuses — `pending`/`running` jobs
+    may still be held by the worker.
+    """
+    from server.services.compile_jobs_durable import purge_jobs
+
+    try:
+        deleted = await purge_jobs(
+            status=status, subject_id=subject_id, tenant_id=tenant_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"deleted": deleted}
+
+
 # ─── Tenant Audit ───
 
 
@@ -1413,6 +1438,28 @@ async def list_webhook_events(
         status=status, event_type=event_type, tenant_id=tenant_id, limit=limit, offset=offset
     )
     return {"events": events, "total": total, "limit": limit, "offset": offset}
+
+
+@router.delete("/webhooks")
+async def purge_webhook_events(
+    status: str | None = Query(
+        None, description="Filter by terminal status: delivered or dead_letter"
+    ),
+    event_type: str | None = Query(None, description="Filter by event type"),
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Bulk-delete terminal webhook events matching the given filter.
+
+    Refuses an empty filter and refuses non-terminal statuses — `pending`
+    events may still be picked up by the delivery worker.
+    """
+    try:
+        deleted = await webhooks.purge_events(
+            status=status, event_type=event_type, tenant_id=tenant_id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"deleted": deleted}
 
 
 @router.get("/webhooks/stats")

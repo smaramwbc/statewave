@@ -17,6 +17,7 @@ from server.schemas.requests import CompileMemoriesRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
 from server.services.compilers import get_compiler
 from server.services.embeddings import get_provider as get_embedding_provider
+from server.services.embeddings.backfill import schedule_embedding_backfill
 from server.services.conflicts import resolve_conflicts
 from server.services import webhooks
 from server.services import compile_jobs
@@ -154,10 +155,13 @@ async def compile_memories(
         for row in new_rows:
             await session.refresh(row)
 
-        # Generate embeddings in background (don't block response)
-        memory_ids = [row.id for row in new_rows]
-        memory_texts = [row.content for row in new_rows]
-        asyncio.create_task(_generate_embeddings_background(memory_ids, memory_texts))
+        # Generate embeddings in background (don't block response). The
+        # shared scheduler also serves the starter-pack import path so
+        # both write paths populate embeddings consistently.
+        schedule_embedding_backfill(
+            [row.id for row in new_rows],
+            [row.content for row in new_rows],
+        )
 
         await webhooks.fire(
             "memories.compiled",
@@ -193,38 +197,6 @@ async def get_compile_status(job_id: str):
         response["error"] = job.error
 
     return JSONResponse(content=response)
-
-
-async def _generate_embeddings_background(memory_ids: list, texts: list[str]) -> None:
-    """Generate embeddings for memories in the background (non-blocking).
-
-    Writes go through the ORM so the pgvector SQLAlchemy adapter handles
-    list[float] → vector(1536) serialization. Previously this used raw SQL
-    with str(emb), which worked because pgvector parses JSON-array TEXT —
-    but the ORM path is type-safe and survives future column-type changes.
-    """
-    from sqlalchemy import update
-
-    from server.db.engine import get_session_factory
-    from server.db.tables import MemoryRow
-
-    provider = get_embedding_provider()
-    if not provider or not texts:
-        return
-
-    try:
-        embeddings = await provider.embed_texts(texts)
-        async with get_session_factory()() as session:
-            for mid, emb in zip(memory_ids, embeddings):
-                await session.execute(
-                    update(MemoryRow)
-                    .where(MemoryRow.id == mid)
-                    .values(embedding=emb)
-                )
-            await session.commit()
-        logger.info("embeddings_generated_background", count=len(embeddings))
-    except Exception:
-        logger.warning("background_embedding_failed", exc_info=True)
 
 
 @router.get("/search", response_model=SearchMemoriesResponse, summary="Search memories")

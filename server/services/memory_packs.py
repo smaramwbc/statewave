@@ -284,6 +284,14 @@ async def _ingest_records_async(
             )
             session.add(row)
 
+        # Track memories that arrived without an embedding so we can
+        # schedule background embedding generation after the commit.
+        # Bundled starter packs and most operator-supplied .swmem archives
+        # ship without embeddings; without this step the import path
+        # would silently leave every imported memory with `embedding IS
+        # NULL`, breaking vector retrieval until a manual backfill.
+        memories_needing_embedding: list[tuple[uuid.UUID, str]] = []
+
         for mem in mems:
             new_id = uuid.uuid4()
             source_eps: list[uuid.UUID] = []
@@ -296,26 +304,42 @@ async def _ingest_records_async(
                     continue
             metadata = dict(mem.get("metadata") or {})
             metadata.update(extra_metadata)
+            content = mem.get("content") or ""
+            embedding = mem.get("embedding")
             row = MemoryRow(
                 id=new_id,
                 subject_id=target_subject_id,
                 tenant_id=target_tenant_id,
                 kind=mem.get("kind") or "fact",
-                content=mem.get("content") or "",
-                summary=mem.get("summary") or mem.get("content") or "",
+                content=content,
+                summary=mem.get("summary") or content,
                 confidence=float(mem.get("confidence", 0.9)),
                 valid_from=_parse_iso_or_now(mem.get("valid_from")),
                 valid_to=_parse_iso_or_none(mem.get("valid_to")),
                 source_episode_ids=source_eps,
                 metadata_=dict(metadata),
                 status=mem.get("status") or "active",
-                embedding=mem.get("embedding"),
+                embedding=embedding,
                 created_at=_parse_iso_or_now(mem.get("created_at")),
                 updated_at=_parse_iso_or_now(mem.get("updated_at")),
             )
             session.add(row)
+            if embedding is None and content:
+                memories_needing_embedding.append((new_id, content))
 
         await session.commit()
+
+    if memories_needing_embedding:
+        # Fire-and-forget: must not block the import response. The shared
+        # scheduler is the same one the compile path uses, so both write
+        # paths produce embedded memories with the same guarantees.
+        from server.services.embeddings.backfill import (
+            schedule_embedding_backfill,
+        )
+
+        ids = [m[0] for m in memories_needing_embedding]
+        texts = [m[1] for m in memories_needing_embedding]
+        schedule_embedding_backfill(ids, texts)
 
     return {"episodes": len(eps), "memories": len(mems)}
 

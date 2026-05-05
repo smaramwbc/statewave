@@ -231,3 +231,51 @@ async def cleanup_old_jobs(retention_hours: int = 168) -> int:
     except Exception:
         logger.warning("compile_jobs_cleanup_failed", exc_info=True)
         return 0
+
+
+# Statuses that are safe to delete on operator request — never wipe a job
+# that the worker may still be holding (pending/running) or another caller
+# is racing to mark.
+TERMINAL_JOB_STATUSES = ("completed", "failed")
+
+
+async def purge_jobs(
+    status: str | None = None,
+    subject_id: str | None = None,
+    tenant_id: str | None = None,
+) -> int:
+    """Operator-triggered delete for terminal jobs matching the given filter.
+
+    At least one filter (status, subject_id, tenant_id) must be supplied —
+    an empty filter would wipe the entire history of completed/failed jobs
+    in a single click. Status, when given, must be a terminal state.
+    Returns the number of rows deleted.
+    """
+    if not (status or subject_id or tenant_id):
+        raise ValueError("at least one filter is required")
+    if status and status not in TERMINAL_JOB_STATUSES:
+        raise ValueError(
+            f"status must be one of {TERMINAL_JOB_STATUSES}; got {status!r}"
+        )
+
+    async with get_session_factory()() as session:
+        stmt = delete(CompileJobRow).where(
+            CompileJobRow.status.in_(
+                [status] if status else list(TERMINAL_JOB_STATUSES)
+            )
+        )
+        if subject_id:
+            stmt = stmt.where(CompileJobRow.subject_id == subject_id)
+        if tenant_id:
+            stmt = stmt.where(CompileJobRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        await session.commit()
+        count = result.rowcount or 0  # type: ignore[attr-defined]
+        logger.info(
+            "compile_jobs_purged",
+            deleted=count,
+            status=status,
+            subject_id=subject_id,
+            tenant_id=tenant_id,
+        )
+        return count

@@ -21,6 +21,7 @@ factory; these unit tests focus on the validation/dispatch contract.
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -580,3 +581,136 @@ def test_payload_format_constants_pinned():
     assert mp.PAYLOAD_FORMAT == "statewave-memory-payload"
     assert mp.PAYLOAD_FORMAT_VERSION == 1
     assert mp.STARTER_PACK_FORMAT == "statewave-starter-pack"
+
+
+# ─── Embedding scheduler in _ingest_records_async ─────────────────────────
+#
+# Regression guards for the import path's embedding behaviour. Before the
+# patch that added a post-commit `schedule_embedding_backfill` call, a
+# fresh starter-pack import or operator `.swmem` import would land all
+# memories with `embedding=NULL` (the bundled JSONL ships without
+# embeddings) and silently break vector retrieval. These tests pin the
+# fix without needing a real Postgres — the DB session is fully mocked.
+
+
+def _make_fake_session_factory():
+    """Build a session_factory() callable that hands out an awaitable-async-ctx
+    session whose .add / .execute / .commit are no-ops. The mock is shaped to
+    satisfy `async with engine_module.get_session_factory()() as session:`.
+    """
+    fake_session = AsyncMock()
+    fake_session.add = MagicMock()
+    fake_session.execute = AsyncMock()
+    fake_session.commit = AsyncMock()
+    fake_session_ctx = MagicMock()
+    fake_session_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session_ctx.__aexit__ = AsyncMock(return_value=None)
+    return MagicMock(return_value=fake_session_ctx)
+
+
+@pytest.mark.asyncio
+async def test_ingest_schedules_embedding_for_memories_without_embeddings(monkeypatch):
+    """Bundled starter packs ship without embeddings — they must be
+    auto-scheduled for embedding generation after insert. This is the
+    behaviour that was missing before the core patch and that broke
+    vector retrieval on every clean reseed."""
+    monkeypatch.setattr(
+        "server.db.engine.get_session_factory", _make_fake_session_factory
+    )
+    captured: list[tuple[list, list]] = []
+
+    def fake_scheduler(ids, texts):
+        captured.append((list(ids), list(texts)))
+        return None
+
+    monkeypatch.setattr(
+        "server.services.embeddings.backfill.schedule_embedding_backfill",
+        fake_scheduler,
+    )
+
+    await mp._ingest_records_async(
+        target_subject_id="test-subject",
+        target_tenant_id=None,
+        episodes_data=[],
+        memories_data=[
+            {"kind": "fact", "content": "Statewave uses PostgreSQL with pgvector."},
+            {"kind": "procedure", "content": "Run docker compose up -d to start."},
+        ],
+        extra_provenance={},
+        extra_metadata={},
+    )
+
+    assert len(captured) == 1, "scheduler should fire exactly once after commit"
+    ids, texts = captured[0]
+    assert len(ids) == 2
+    assert sorted(texts) == [
+        "Run docker compose up -d to start.",
+        "Statewave uses PostgreSQL with pgvector.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ingest_skips_scheduling_when_embedding_already_present(monkeypatch):
+    """`.swmem` archives can carry pre-computed embeddings — re-embedding
+    them would burn provider tokens for no benefit. Only memories
+    arriving with `embedding=None` should be scheduled."""
+    monkeypatch.setattr(
+        "server.db.engine.get_session_factory", _make_fake_session_factory
+    )
+    captured_texts: list[str] = []
+
+    def fake_scheduler(ids, texts):
+        captured_texts.extend(texts)
+        return None
+
+    monkeypatch.setattr(
+        "server.services.embeddings.backfill.schedule_embedding_backfill",
+        fake_scheduler,
+    )
+
+    pre_embedded = [0.1] * 4  # length doesn't matter for this test
+    await mp._ingest_records_async(
+        target_subject_id="test-subject",
+        target_tenant_id=None,
+        episodes_data=[],
+        memories_data=[
+            {"kind": "fact", "content": "Already embedded.", "embedding": pre_embedded},
+            {"kind": "fact", "content": "Needs an embedding."},
+        ],
+        extra_provenance={},
+        extra_metadata={},
+    )
+
+    assert captured_texts == ["Needs an embedding."]
+
+
+@pytest.mark.asyncio
+async def test_ingest_does_not_schedule_when_no_memories(monkeypatch):
+    """Episode-only imports must not schedule embedding work."""
+    monkeypatch.setattr(
+        "server.db.engine.get_session_factory", _make_fake_session_factory
+    )
+    called = False
+
+    def fake_scheduler(ids, texts):
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(
+        "server.services.embeddings.backfill.schedule_embedding_backfill",
+        fake_scheduler,
+    )
+
+    await mp._ingest_records_async(
+        target_subject_id="test-subject",
+        target_tenant_id=None,
+        episodes_data=[
+            {"id": "00000000-0000-4000-8000-000000000001", "source": "test", "type": "imported", "payload": {"text": "x"}}
+        ],
+        memories_data=[],
+        extra_provenance={},
+        extra_metadata={},
+    )
+
+    assert called is False

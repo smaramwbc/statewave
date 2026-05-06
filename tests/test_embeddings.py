@@ -121,6 +121,41 @@ def test_get_provider_returns_stub_by_default():
         reset_provider()
 
 
+def test_stub_provider_logs_loud_warning_at_first_use(caplog):
+    """Operators must SEE that semantic search is degraded under the stub.
+
+    Selecting the stub as the active provider emits a WARNING with
+    actionable advice (set STATEWAVE_EMBEDDING_PROVIDER=litellm). This
+    is the single moment where the cost of the convenient default is
+    surfaced — without it, an unconfigured deploy looks healthy until
+    someone notices semantic-search results are pseudo-random.
+    """
+    import logging
+    from server.services.embeddings import get_provider, reset_provider
+    import server.core.config
+
+    original_settings = server.core.config.settings
+    try:
+        from server.core.config import Settings
+        import os
+
+        os.environ.pop("STATEWAVE_EMBEDDING_PROVIDER", None)
+        reset_provider()
+        server.core.config.settings = Settings(_env_file=None, embedding_provider="stub")
+
+        with caplog.at_level(logging.WARNING):
+            provider = get_provider()
+
+        assert provider is not None
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("embedding_provider_stub_active" in m for m in warning_messages), (
+            f"expected stub-active warning, got: {warning_messages}"
+        )
+    finally:
+        server.core.config.settings = original_settings
+        reset_provider()
+
+
 # ---------------------------------------------------------------------------
 # _TTLCache (used by LiteLLMEmbeddingProvider for query embedding cache)
 # ---------------------------------------------------------------------------

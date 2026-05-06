@@ -29,7 +29,14 @@ class Settings(BaseSettings):
     # Compiler
     compiler_type: str = "heuristic"
 
-    # Embeddings
+    # Embeddings.
+    #
+    # The default `stub` produces deterministic hash vectors so a fresh
+    # boot works without LLM credentials, BUT stub vectors are not
+    # semantic — semantic search will not work usefully under the stub.
+    # Set STATEWAVE_EMBEDDING_PROVIDER=litellm + STATEWAVE_LITELLM_API_KEY +
+    # STATEWAVE_LITELLM_EMBEDDING_MODEL for real semantic similarity.
+    # `none` disables embeddings entirely (no vector column writes).
     embedding_provider: str = "stub"  # "stub" | "litellm" | "none"
     embedding_dimensions: int = 1536
 

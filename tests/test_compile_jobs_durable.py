@@ -105,8 +105,16 @@ class TestDurableJobs:
         assert job.id in _jobs
 
     @pytest.mark.anyio
-    async def test_submit_job_durable_falls_back_on_db_error(self):
-        """If durable persist fails, falls back to in-memory only."""
+    async def test_submit_job_durable_propagates_db_error(self):
+        """A DB failure surfaces to the caller — no silent in-memory fallback.
+
+        The previous behaviour swallowed the exception and returned an
+        in-memory-only job. That made a Postgres outage look like a
+        successful submit while the row was never persisted; a
+        follow-up `get_job_durable` from any other process saw nothing.
+        Compile requests now return 5xx during a DB outage so the
+        operator sees + fixes the deploy.
+        """
         def mock_factory():
             raise RuntimeError("DB down")
 
@@ -114,11 +122,13 @@ class TestDurableJobs:
             "server.services.compile_jobs_durable.get_session_factory",
             return_value=mock_factory,
         ):
-            job = await submit_job_durable("test-subject")
+            with pytest.raises(RuntimeError, match="DB down"):
+                await submit_job_durable("test-subject")
 
-        # Should still work (in-memory fallback)
-        assert job.subject_id == "test-subject"
-        assert job.id in _jobs
+        # The cache must NOT be seeded by a failed submit — otherwise a
+        # follow-up get_job_durable in this same process would return a
+        # job that no other process can see.
+        assert _jobs == {}
 
     @pytest.mark.anyio
     async def test_get_job_durable_checks_memory_first(self):
@@ -242,6 +252,84 @@ class TestDurableJobs:
 
         assert job.status == JobStatus.failed
         assert job.error == "timeout"
+
+
+class TestDurableNoSilentFallback:
+    """Pin the no-silent-fallback contract for the durable wrappers.
+
+    A DB outage must surface as an exception to the caller — never a
+    success-shaped return — so a misconfigured deploy fails loudly
+    instead of running with a half-disabled job tracker.
+    """
+
+    @pytest.mark.anyio
+    async def test_get_job_durable_propagates_db_error(self):
+        """A DB outage during get must NOT look like 'job not found'."""
+        def mock_factory():
+            raise RuntimeError("DB down")
+
+        with patch(
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
+        ):
+            with pytest.raises(RuntimeError, match="DB down"):
+                # Use an id that isn't in the in-memory cache so we
+                # actually hit the DB layer.
+                await get_job_durable("not-in-cache")
+
+    @pytest.mark.anyio
+    async def test_mark_running_durable_propagates_db_error(self):
+        """A DB outage during mark_running must NOT silently flip the cache."""
+        job = submit_job("sub")
+        original_status = job.status
+
+        def mock_factory():
+            raise RuntimeError("DB down")
+
+        with patch(
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
+        ):
+            with pytest.raises(RuntimeError, match="DB down"):
+                await mark_running_durable(job.id)
+
+        # Cache stayed pristine — we don't want a job that looks
+        # 'running' in this process while the persisted row stays pending.
+        assert job.status == original_status
+
+    @pytest.mark.anyio
+    async def test_mark_completed_durable_propagates_db_error(self):
+        job = submit_job("sub")
+
+        def mock_factory():
+            raise RuntimeError("DB down")
+
+        with patch(
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
+        ):
+            with pytest.raises(RuntimeError, match="DB down"):
+                await mark_completed_durable(job.id, 5, [])
+
+        assert job.status == JobStatus.pending
+        assert job.memories_created == 0
+
+    @pytest.mark.anyio
+    async def test_mark_failed_durable_propagates_db_error(self):
+        job = submit_job("sub")
+
+        def mock_factory():
+            raise RuntimeError("DB down")
+
+        with patch(
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
+        ):
+            with pytest.raises(RuntimeError, match="DB down"):
+                await mark_failed_durable(job.id, "boom")
+
+        assert job.status == JobStatus.pending
+        assert job.error is None
 
 
 # ---------------------------------------------------------------------------

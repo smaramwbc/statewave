@@ -1,13 +1,23 @@
 """Background compilation job manager.
 
-Provides async compilation with job tracking:
-- submit_job(): start compilation in background, return job_id
-- get_job(): check job status and results
-- cleanup_old_jobs(): prune stale entries
+Two layers, one source of truth:
 
-v0.5: Durable mode (Postgres-backed) via compile_jobs_durable.
-Falls back to in-memory when DB is not available.
-Jobs survive restarts in durable mode.
+  * `compile_jobs_durable` is the source of truth — every job is a row
+    in Postgres, and DB errors propagate. Jobs survive process restarts
+    and are visible to other replicas.
+  * The `_jobs` dict in this module is a process-local cache so that a
+    `get_job_durable(id)` from the same process that submitted the job
+    skips the DB round-trip. It is NOT a fallback for a missing or
+    unhealthy database — if Postgres is down the operator sees a 5xx,
+    not a "submitted" job that no other process can see.
+
+Public API used by the app: `submit_job_durable`, `get_job_durable`,
+`mark_running_durable`, `mark_completed_durable`, `mark_failed_durable`.
+
+The sync, in-memory primitives at the bottom of this file (`submit_job`,
+`get_job`, `mark_running`, `mark_completed`, `mark_failed`) are kept
+only because unit tests use them to drive the `_jobs` cache without
+mocking SQLAlchemy. They are NOT used anywhere on the request path.
 """
 
 from __future__ import annotations
@@ -42,7 +52,10 @@ class CompileJob:
     completed_at: float | None = None
 
 
-# In-memory fallback store
+# Process-local cache of jobs submitted from this process — speeds up
+# `get_job_durable` polling without a DB round-trip per call. NOT a
+# fallback store: a missing entry here is just a cache miss, never a
+# substitute for the durable row.
 _jobs: dict[str, CompileJob] = {}
 _JOB_TTL_SECONDS = 300
 
@@ -50,73 +63,77 @@ _JOB_TTL_SECONDS = 300
 # ---------------------------------------------------------------------------
 # Durable (Postgres-backed) interface — async
 # These are the primary interface used by the async compile path.
+# A DB failure raises; the caller (memories.py) renders the error to
+# the client instead of returning a job that nothing else will ever see.
 # ---------------------------------------------------------------------------
 
 
 async def submit_job_durable(subject_id: str, tenant_id: str | None = None) -> CompileJob:
-    """Submit job with Postgres durability."""
-    try:
-        from server.services.compile_jobs_durable import submit_job as _durable_submit
+    """Submit a Postgres-durable compile job.
 
-        job = await _durable_submit(subject_id, tenant_id)
-        # Also track in memory for fast access during this process lifetime
-        _jobs[job.id] = job
-        return job
-    except Exception:
-        logger.warning("durable_submit_fallback_to_memory", exc_info=True)
-        return submit_job(subject_id)
+    Persists the row first; only seeds the process-local cache after the
+    DB write succeeds, so a half-submitted job never appears as "found"
+    to a follow-up `get_job_durable` in the same process.
+    """
+    from server.services.compile_jobs_durable import submit_job as _durable_submit
+
+    job = await _durable_submit(subject_id, tenant_id)
+    _jobs[job.id] = job
+    _cleanup_old_jobs()
+    return job
 
 
 async def get_job_durable(job_id: str) -> CompileJob | None:
-    """Get job from Postgres (falls back to in-memory)."""
-    # Check in-memory first (fast path for same-process)
+    """Get a job by id. Process-local cache first, then Postgres.
+
+    Cache hits skip the DB round-trip; cache misses fall through to
+    Postgres. DB errors propagate so a transient outage isn't reported
+    as "job not found".
+    """
     if job_id in _jobs:
         return _jobs[job_id]
-    try:
-        from server.services.compile_jobs_durable import get_job as _durable_get
+    from server.services.compile_jobs_durable import get_job as _durable_get
 
-        return await _durable_get(job_id)
-    except Exception:
-        return None
+    return await _durable_get(job_id)
 
 
 async def mark_running_durable(job_id: str) -> None:
-    """Mark running in both stores."""
-    mark_running(job_id)
-    try:
-        from server.services.compile_jobs_durable import mark_running as _durable_mark
+    """Mark the job running in Postgres + the process-local cache.
 
-        await _durable_mark(job_id)
-    except Exception:
-        pass
+    The DB write happens first: if it fails, we don't quietly mark the
+    cache as running while the persisted row stays pending. Subsequent
+    cache mutation only happens on a successful commit.
+    """
+    from server.services.compile_jobs_durable import mark_running as _durable_mark
+
+    await _durable_mark(job_id)
+    mark_running(job_id)
 
 
 async def mark_completed_durable(
     job_id: str, memories_created: int, memories: list[dict[str, Any]]
 ) -> None:
-    """Mark completed in both stores."""
-    mark_completed(job_id, memories_created, memories)
-    try:
-        from server.services.compile_jobs_durable import mark_completed as _durable_mark
+    """Mark the job completed in Postgres + the process-local cache."""
+    from server.services.compile_jobs_durable import mark_completed as _durable_mark
 
-        await _durable_mark(job_id, memories_created, memories)
-    except Exception:
-        pass
+    await _durable_mark(job_id, memories_created, memories)
+    mark_completed(job_id, memories_created, memories)
 
 
 async def mark_failed_durable(job_id: str, error: str) -> None:
-    """Mark failed in both stores."""
-    mark_failed(job_id, error)
-    try:
-        from server.services.compile_jobs_durable import mark_failed as _durable_mark
+    """Mark the job failed in Postgres + the process-local cache."""
+    from server.services.compile_jobs_durable import mark_failed as _durable_mark
 
-        await _durable_mark(job_id, error)
-    except Exception:
-        pass
+    await _durable_mark(job_id, error)
+    mark_failed(job_id, error)
 
 
 # ---------------------------------------------------------------------------
-# In-memory interface (legacy, still used as fast cache)
+# In-memory primitives
+#
+# Drive the `_jobs` cache directly. Used by tests to construct fixtures
+# without mocking SQLAlchemy, and by the durable wrappers above to keep
+# the cache in sync after a successful DB write. Not on any request path.
 # ---------------------------------------------------------------------------
 
 

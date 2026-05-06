@@ -1,7 +1,10 @@
 """Heuristic memory compiler — regex/pattern-based extraction.
 
 Extracts profile facts and episode summaries from chat-like episode payloads.
-No external dependencies. Suitable for local dev and as the default fallback.
+No external dependencies. Used by the default deploy
+(STATEWAVE_COMPILER_TYPE=heuristic) and by tests that don't want to mock
+an LLM. For higher-quality memories on real workloads, set
+STATEWAVE_COMPILER_TYPE=llm with a configured LiteLLM model.
 """
 
 from __future__ import annotations

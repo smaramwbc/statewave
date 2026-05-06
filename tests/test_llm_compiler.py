@@ -222,3 +222,19 @@ async def test_compile_coerces_list_summary_to_string():
         assert isinstance(memories[0].summary, str)
         assert "bullet 1" in memories[0].summary
         assert "bullet 2" in memories[0].summary
+
+
+def test_sync_compile_raises_instead_of_silent_heuristic_delegation():
+    """LLMCompiler.compile() must NOT silently delegate to HeuristicCompiler.
+
+    The previous behaviour returned heuristic-extracted memories under
+    STATEWAVE_COMPILER_TYPE=llm, which produced lower-quality results
+    that looked like LLM output. Operators couldn't tell from the
+    response shape that the LLM compiler had been bypassed. Now sync
+    callers see a `NotImplementedError` and a clear pointer to
+    `compile_async`.
+    """
+    compiler = _make_compiler()
+    ep = _make_episode(payload={"text": "anything"})
+    with pytest.raises(NotImplementedError, match="compile_async"):
+        compiler.compile([ep])

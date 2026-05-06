@@ -8,7 +8,10 @@ adapter owns provider selection, timeout, retries, and error mapping.
 Optimized for speed:
 - Batches small episodes into a single LLM call
 - Runs multiple batches in parallel with concurrency control
-- Falls back gracefully on parse errors or API failures
+- Per-batch errors are logged at WARNING and contribute zero memories
+  to the final result. (The previous "Falls back gracefully" wording
+  obscured this — partial failures still log loudly so they can be
+  investigated.)
 
 Requires:
 - STATEWAVE_COMPILER_TYPE=llm
@@ -77,11 +80,24 @@ class LLMCompiler:
         self._model = model
 
     def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
-        """Sync fallback — uses heuristic compiler."""
-        from server.services.compilers.heuristic import HeuristicCompiler
+        """Sync entry point — not supported for the LLM compiler.
 
-        logger.warning("llm_compiler_sync_fallback")
-        return HeuristicCompiler().compile(episodes)
+        LLM extraction is fundamentally async (network round-trips,
+        per-batch concurrency). The previous behaviour silently
+        delegated to the regex-based `HeuristicCompiler`, which produced
+        plausible-looking but lower-quality memories under
+        STATEWAVE_COMPILER_TYPE=llm — exactly the silent-fallback
+        pattern this module no longer carries.
+
+        Callers must use `compile_async`; the `/v1/memories/compile`
+        path already does (see server/api/memories.py: it calls
+        `compile_async` whenever the active compiler defines it).
+        """
+        raise NotImplementedError(
+            "LLMCompiler is async-only — use `compile_async`. The sync "
+            "`compile()` no longer silently delegates to the heuristic "
+            "compiler. See server/api/memories.py for the dispatch logic."
+        )
 
     async def compile_async(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
         """Async compile — batches episodes and processes in parallel."""

@@ -1,9 +1,15 @@
 """Durable compile job manager — Postgres-backed.
 
-Jobs survive server restarts. Replaces the in-memory store from v0.4.
-Falls back gracefully: if DB write fails, job still runs (just untracked).
+Jobs survive server restarts. The store is the source of truth for job
+status; callers that need a same-process fast path use the wrapper in
+`compile_jobs.py` (`get_job_durable` consults a small process-local
+cache before this module).
 
-Public API unchanged:
+Database errors propagate. If Postgres is unhealthy a compile request
+returns 5xx — not "submitted but invisible to the next process". The
+operator sees the failure and fixes the deploy instead of running blind.
+
+Public API:
 - submit_job(subject_id) → CompileJob
 - get_job(job_id) → CompileJob | None
 - mark_running(job_id)
@@ -61,92 +67,83 @@ def _row_to_job(row: CompileJobRow) -> CompileJob:
 
 
 async def submit_job(subject_id: str, tenant_id: str | None = None) -> CompileJob:
-    """Create a durable compile job and persist to Postgres."""
+    """Create a durable compile job and persist to Postgres.
+
+    Raises whatever SQLAlchemy raises on DB failure — we no longer
+    return a "submitted" job that was never persisted. Callers must
+    surface DB outages to the operator.
+    """
     job_id = str(uuid.uuid4())[:8]
     now = datetime.now(timezone.utc)
-
-    try:
-        async with get_session_factory()() as session:
-            row = CompileJobRow(
-                id=job_id,
-                subject_id=subject_id,
-                tenant_id=tenant_id,
-                status="pending",
-                memories_created=0,
-                created_at=now,
-            )
-            session.add(row)
-            await session.commit()
-    except Exception:
-        logger.warning("compile_job_persist_failed", job_id=job_id, exc_info=True)
-
+    async with get_session_factory()() as session:
+        row = CompileJobRow(
+            id=job_id,
+            subject_id=subject_id,
+            tenant_id=tenant_id,
+            status="pending",
+            memories_created=0,
+            created_at=now,
+        )
+        session.add(row)
+        await session.commit()
     return CompileJob(id=job_id, subject_id=subject_id, created_at=now.timestamp())
 
 
 async def get_job(job_id: str) -> CompileJob | None:
-    """Retrieve a job by ID from Postgres."""
-    try:
-        async with get_session_factory()() as session:
-            result = await session.execute(select(CompileJobRow).where(CompileJobRow.id == job_id))
-            row = result.scalar_one_or_none()
-            if row is None:
-                return None
-            return _row_to_job(row)
-    except Exception:
-        logger.warning("compile_job_get_failed", job_id=job_id, exc_info=True)
-        return None
+    """Retrieve a job by ID from Postgres.
+
+    Returns None only when the job genuinely does not exist. DB errors
+    propagate so a transient outage doesn't masquerade as "not found".
+    """
+    async with get_session_factory()() as session:
+        result = await session.execute(select(CompileJobRow).where(CompileJobRow.id == job_id))
+        row = result.scalar_one_or_none()
+        if row is None:
+            return None
+        return _row_to_job(row)
 
 
 async def mark_running(job_id: str) -> None:
-    """Mark job as running."""
-    try:
-        async with get_session_factory()() as session:
-            await session.execute(
-                update(CompileJobRow)
-                .where(CompileJobRow.id == job_id)
-                .values(status="running", started_at=datetime.now(timezone.utc))
-            )
-            await session.commit()
-    except Exception:
-        logger.warning("compile_job_mark_running_failed", job_id=job_id, exc_info=True)
+    """Mark job as running. Raises on DB failure."""
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.id == job_id)
+            .values(status="running", started_at=datetime.now(timezone.utc))
+        )
+        await session.commit()
 
 
 async def mark_completed(
     job_id: str, memories_created: int, memories: list[dict[str, Any]]
 ) -> None:
-    """Mark job as completed with result count."""
-    try:
-        async with get_session_factory()() as session:
-            await session.execute(
-                update(CompileJobRow)
-                .where(CompileJobRow.id == job_id)
-                .values(
-                    status="completed",
-                    memories_created=memories_created,
-                    completed_at=datetime.now(timezone.utc),
-                )
+    """Mark job as completed with result count. Raises on DB failure."""
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.id == job_id)
+            .values(
+                status="completed",
+                memories_created=memories_created,
+                completed_at=datetime.now(timezone.utc),
             )
-            await session.commit()
-    except Exception:
-        logger.warning("compile_job_mark_completed_failed", job_id=job_id, exc_info=True)
+        )
+        await session.commit()
 
 
 async def mark_failed(job_id: str, error: str) -> None:
-    """Mark job as failed with error message."""
-    try:
-        async with get_session_factory()() as session:
-            await session.execute(
-                update(CompileJobRow)
-                .where(CompileJobRow.id == job_id)
-                .values(
-                    status="failed",
-                    error=error,
-                    completed_at=datetime.now(timezone.utc),
-                )
+    """Mark job as failed with error message. Raises on DB failure."""
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.id == job_id)
+            .values(
+                status="failed",
+                error=error,
+                completed_at=datetime.now(timezone.utc),
             )
-            await session.commit()
-    except Exception:
-        logger.warning("compile_job_mark_failed_failed", job_id=job_id, exc_info=True)
+        )
+        await session.commit()
 
 
 async def list_jobs(
@@ -160,58 +157,58 @@ async def list_jobs(
 
     Returns (jobs_list, total_count) tuple.
     """
-    try:
-        async with get_session_factory()() as session:
-            from sqlalchemy import func
+    async with get_session_factory()() as session:
+        from sqlalchemy import func
 
-            # Build base filter conditions
-            conditions = []
-            if status:
-                conditions.append(CompileJobRow.status == status)
-            if subject_id:
-                conditions.append(CompileJobRow.subject_id == subject_id)
-            if tenant_id is not None:
-                conditions.append(CompileJobRow.tenant_id == tenant_id)
+        # Build base filter conditions
+        conditions = []
+        if status:
+            conditions.append(CompileJobRow.status == status)
+        if subject_id:
+            conditions.append(CompileJobRow.subject_id == subject_id)
+        if tenant_id is not None:
+            conditions.append(CompileJobRow.tenant_id == tenant_id)
 
-            # Get total count
-            count_stmt = select(func.count()).select_from(CompileJobRow)
-            for cond in conditions:
-                count_stmt = count_stmt.where(cond)
-            total = await session.scalar(count_stmt) or 0
+        # Get total count
+        count_stmt = select(func.count()).select_from(CompileJobRow)
+        for cond in conditions:
+            count_stmt = count_stmt.where(cond)
+        total = await session.scalar(count_stmt) or 0
 
-            # Get paginated results
-            stmt = select(CompileJobRow).order_by(CompileJobRow.created_at.desc())
-            for cond in conditions:
-                stmt = stmt.where(cond)
-            stmt = stmt.offset(offset).limit(limit)
+        # Get paginated results
+        stmt = select(CompileJobRow).order_by(CompileJobRow.created_at.desc())
+        for cond in conditions:
+            stmt = stmt.where(cond)
+        stmt = stmt.offset(offset).limit(limit)
 
-            result = await session.execute(stmt)
-            rows = result.scalars().all()
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
 
-            jobs = [
-                {
-                    "job_id": row.id,
-                    "subject_id": row.subject_id,
-                    "tenant_id": row.tenant_id,
-                    "status": row.status,
-                    "memories_created": row.memories_created,
-                    "error": row.error,
-                    "created_at": row.created_at.isoformat() if row.created_at else None,
-                    "started_at": row.started_at.isoformat() if row.started_at else None,
-                    "completed_at": row.completed_at.isoformat() if row.completed_at else None,
-                }
-                for row in rows
-            ]
-            return jobs, total
-    except Exception:
-        logger.warning("compile_jobs_list_failed", exc_info=True)
-        return [], 0
+        jobs = [
+            {
+                "job_id": row.id,
+                "subject_id": row.subject_id,
+                "tenant_id": row.tenant_id,
+                "status": row.status,
+                "memories_created": row.memories_created,
+                "error": row.error,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "started_at": row.started_at.isoformat() if row.started_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in rows
+        ]
+        return jobs, total
 
 
 async def cleanup_old_jobs(retention_hours: int = 168) -> int:
     """Delete completed/failed jobs older than retention window.
 
     Default: 7 days (168 hours). Returns count of deleted rows.
+
+    Runs from a long-lived background loop on app startup; we swallow +
+    log here because a transient DB blip should not crash the lifespan
+    task. Errors surface as ERROR-level logs that the operator can find.
     """
     from datetime import timedelta
 
@@ -229,7 +226,7 @@ async def cleanup_old_jobs(retention_hours: int = 168) -> int:
                 logger.info("compile_jobs_cleaned", deleted=count)
             return count
     except Exception:
-        logger.warning("compile_jobs_cleanup_failed", exc_info=True)
+        logger.error("compile_jobs_cleanup_failed", exc_info=True)
         return 0
 
 

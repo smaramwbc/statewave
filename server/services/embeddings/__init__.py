@@ -2,11 +2,21 @@
 
 All embedding providers implement the BaseEmbeddingProvider protocol.
 The get_provider() factory returns the active provider based on config.
+
+The default provider is `stub` so a fresh `docker compose up` can boot
+without any LLM credentials, but stub vectors are deterministic hash
+output, NOT semantic. The factory logs a loud WARNING the first time
+the stub is selected so an operator can see at a glance that semantic
+search is degraded.
 """
 
 from __future__ import annotations
 
+import structlog
+
 from typing import Protocol
+
+logger = structlog.stdlib.get_logger()
 
 
 class BaseEmbeddingProvider(Protocol):
@@ -72,6 +82,21 @@ def get_provider() -> BaseEmbeddingProvider | None:
         from server.services.embeddings.stub import StubEmbeddingProvider
 
         _provider_instance = StubEmbeddingProvider(dimensions=settings.embedding_dimensions)
+        # One-shot loud warning per process. The stub produces
+        # deterministic but semantically meaningless vectors — semantic
+        # search ranks pseudo-randomly with the stub. Operators reading
+        # logs see this immediately instead of debugging "why is search
+        # ranking weird" against a hash function.
+        logger.warning(
+            "embedding_provider_stub_active",
+            advice=(
+                "Statewave is using the hash-based embedding stub. Vectors are "
+                "deterministic but NOT semantic — /v1/memories/search?semantic=true "
+                "and /v1/context relevance ranking will not work usefully. "
+                "Set STATEWAVE_EMBEDDING_PROVIDER=litellm and a "
+                "STATEWAVE_LITELLM_EMBEDDING_MODEL to enable real semantic search."
+            ),
+        )
     elif settings.embedding_provider == "litellm":
         from server.services.embeddings.litellm import LiteLLMEmbeddingProvider
 

@@ -103,8 +103,7 @@ curl -sf -X POST -H \"X-API-Key: \$STATEWAVE_API_KEY\" \\
   https://statewave-api.fly.dev/v1/context | jq .token_estimate
 
 # 3. Run the docs eval — doc_match_rate should hold or improve
-cd statewave-examples/eval-docs-support
-STATEWAVE_URL=https://statewave-api.fly.dev STATEWAVE_API_KEY=... python eval_docs_support.py
+STATEWAVE_URL=https://statewave-api.fly.dev STATEWAVE_API_KEY=... python scripts/eval/eval_docs_support.py
 ```
 
 ## Rollback

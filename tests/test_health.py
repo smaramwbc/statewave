@@ -146,6 +146,55 @@ async def test_repeated_issues_worsen_health():
 
 
 @pytest.mark.asyncio
+async def test_repeated_issues_detected_through_punctuation():
+    """Punctuation attached to words should not break overlap detection.
+
+    Regression: prior tokenizer used .split() which treated 'payments' and
+    'payments.' as different tokens. Realistic conversation text always has
+    attached punctuation, so the signal silently failed to fire on real data.
+    """
+    resolutions = [
+        _make_resolution("sess-A", "resolved", resolved_at=_NOW - timedelta(days=2)),
+        _make_resolution("sess-B", "resolved", resolved_at=_NOW - timedelta(days=1)),
+        _make_resolution("sess-C", "open"),
+    ]
+    episodes = [
+        _make_episode(
+            "sess-A",
+            "Our billing gateway is timing out when processing payments. "
+            "Let me restart the payment processing service.",
+            days_ago=2,
+        ),
+        _make_episode("sess-B", "Need to reset my admin password.", days_ago=1),
+        _make_episode(
+            "sess-C",
+            "The billing gateway is timing out AGAIN. This is urgent — "
+            "invoices due today and payments are failing.",
+            days_ago=0,
+        ),
+    ]
+
+    with (
+        patch(
+            "server.services.health.repo.list_resolutions",
+            new_callable=AsyncMock,
+            return_value=resolutions,
+        ),
+        patch(
+            "server.services.health.repo.list_episodes_by_subject",
+            new_callable=AsyncMock,
+            return_value=episodes,
+        ),
+    ):
+        result = await compute_health(AsyncMock(), "user-1")
+
+    signals = [f.signal for f in result.factors]
+    assert "repeated_issues" in signals
+    assert result.state in ("watch", "at_risk")
+    assert result.score < 70
+
+
+@pytest.mark.asyncio
 async def test_recently_resolved_accounts_score_better():
     """Account with recent resolution should score better than one with unresolved recurring issues."""
     # Good account: all resolved recently

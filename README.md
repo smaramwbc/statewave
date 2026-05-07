@@ -34,7 +34,7 @@ Everything is organised around **subjects** — a user, account, agent, repo, or
 
 Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
 
-> **Status:** v0.6.1 — actively developed. Full support-agent intelligence stack: session-aware context, resolution tracking, handoff packs, health scoring, SLA tracking, proactive alerts. See [current limitations](#current-limitations) below.
+> **Status:** v0.7.1 — actively developed. Full support-agent intelligence stack: session-aware context, resolution tracking, handoff packs, health scoring, SLA tracking, proactive alerts. See [current limitations](#current-limitations) below.
 
 ## 🎯 Try it
 
@@ -182,7 +182,7 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active development (v0.6.1). Honest status:
+Statewave is in active development (v0.7.1). Honest status:
 
 - **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
 - **Multi-tenant is app-layer** — real query-scoped isolation (v0.5), no Postgres RLS yet

@@ -86,7 +86,7 @@ body:
       label: Environment
       description: Provide your environment details
       placeholder: |
-        - Statewave version: [e.g., 0.5.0]
+        - Statewave version: [e.g., 0.7.1]
         - Docker version: [if applicable]
         - Database: [PostgreSQL version]
         - Cloud region: [if applicable]

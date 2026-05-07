@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 
 import structlog
 from fastapi import FastAPI
@@ -20,6 +21,14 @@ from server.core.tenant import TenantMiddleware
 from server.core.tracing import setup_tracing
 
 logger = structlog.stdlib.get_logger()
+
+
+def get_app_version() -> str:
+    """Return the installed package version, or a dev sentinel when not installed."""
+    try:
+        return version("statewave")
+    except PackageNotFoundError:
+        return "0.0.0-dev"
 
 
 async def _cleanup_loop():
@@ -91,7 +100,7 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("schema_check_skipped", reason=str(exc)[:200])
 
-    logger.info("app_startup", version="0.7.1", debug=settings.debug)
+    logger.info("app_startup", version=get_app_version(), debug=settings.debug)
     yield
     if cleanup_task:
         cleanup_task.cancel()
@@ -113,7 +122,7 @@ def create_app() -> FastAPI:
             "compile durable typed memories, retrieve ranked context within "
             "token budgets, and govern data by subject."
         ),
-        version="0.7.1",
+        version=get_app_version(),
         docs_url="/docs",
         redoc_url="/redoc",
         lifespan=lifespan,

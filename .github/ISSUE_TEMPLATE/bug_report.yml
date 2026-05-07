@@ -90,7 +90,7 @@ body:
         - OS: [e.g., macOS 14.0, Ubuntu 22.04]
         - Python version: [e.g., 3.11.4]
         - Node.js version: [if applicable]
-        - Statewave version: [e.g., 0.5.0]
+        - Statewave version: [e.g., 0.7.1]
         - SDK version: [if using SDK]
         - Deployment: [local, Docker, Fly.io, etc.]
     validations:

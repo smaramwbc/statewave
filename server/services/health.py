@@ -13,6 +13,7 @@ Design principles:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -136,24 +137,26 @@ async def compute_health(
         )
 
     # --- Signal 2: Repeated issue patterns ---
-    # Detect if multiple sessions exist with same issue keywords
+    # Detect if any open session resembles a *specific* prior resolved session.
+    # We compare each (open, resolved) pair individually rather than blob-vs-blob,
+    # so unrelated resolved sessions can't dilute the overlap.
     resolved_sessions = [r for r in resolutions if r.status == "resolved"]
     open_session_ids = {r.session_id for r in open_sessions}
 
-    # Check if any open session shares keywords with a prior resolved session
-    # (indicates a recurring problem)
     if open_sessions and resolved_sessions:
         open_texts = _collect_session_texts(episodes, open_session_ids)
-        resolved_texts = _collect_session_texts(episodes, {r.session_id for r in resolved_sessions})
-        if open_texts and resolved_texts and _has_keyword_overlap(open_texts, resolved_texts):
-            score -= _REPEATED_ISSUE_PENALTY
-            factors.append(
-                HealthFactor(
-                    signal="repeated_issues",
-                    impact=-_REPEATED_ISSUE_PENALTY,
-                    detail="Open issues resemble previously resolved ones",
+        for r in resolved_sessions:
+            resolved_text = _collect_session_texts(episodes, {r.session_id})
+            if open_texts and resolved_text and _has_keyword_overlap(open_texts, resolved_text):
+                score -= _REPEATED_ISSUE_PENALTY
+                factors.append(
+                    HealthFactor(
+                        signal="repeated_issues",
+                        impact=-_REPEATED_ISSUE_PENALTY,
+                        detail=f"Open issue resembles previously resolved session {r.session_id}",
+                    )
                 )
-            )
+                break  # Only penalize once
 
     # --- Signal 3: Escalation / urgency markers ---
     escalation_count = sum(1 for ep in episodes if _ep_has_urgency(ep))
@@ -349,8 +352,8 @@ def _has_keyword_overlap(text_a: str, text_b: str) -> bool:
         "that",
         "with",
     }
-    words_a = {w for w in text_a.lower().split() if len(w) > 2 and w not in stopwords}
-    words_b = {w for w in text_b.lower().split() if len(w) > 2 and w not in stopwords}
+    words_a = {w for w in re.findall(r"[a-z]+", text_a.lower()) if len(w) > 2 and w not in stopwords}
+    words_b = {w for w in re.findall(r"[a-z]+", text_b.lower()) if len(w) > 2 and w not in stopwords}
     if not words_a or not words_b:
         return False
     smaller = min(len(words_a), len(words_b))

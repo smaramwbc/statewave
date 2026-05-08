@@ -58,7 +58,8 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 | [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
 | [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
 | [Python SDK](https://github.com/smaramwbc/statewave-py) | Sync + async client, Pydantic models |
-| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | Fetch-based client, full type definitions |
+| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | `npm install @statewavedev/sdk` — fetch-based client, full type definitions (renamed from `statewave-ts` on npm in v0.7.0) |
+| [Connectors](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/index.md) | Feed real-world events (GitHub, Markdown/ADRs, MCP, …) into Statewave as episodes — see [Connectors](#connectors) below |
 | [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstart, support agent, coding agent |
 | [Context quality eval](https://github.com/smaramwbc/statewave-examples/tree/main/eval-support-agent) | Automated assertions on context correctness |
 | [Benchmark](https://github.com/smaramwbc/statewave-examples/tree/main/benchmark-support-agent) | Statewave vs history stuffing vs RAG |
@@ -137,6 +138,55 @@ See the full [getting started guide](https://github.com/smaramwbc/statewave-docs
 
 Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md).
 
+## Connectors
+
+Statewave is not limited to live chat transcripts. **Connectors** feed real-world events into Statewave as episodes, so your agents can build memory from repos, communities, docs, support tools, email, and workflows — without you hand-writing an ingest path for each source.
+
+| Source | Memory shape |
+|---|---|
+| MCP | Copilot / Claude / Cursor / agent memory |
+| GitHub | Repo memory from issues, pull requests, reviews, and releases |
+| Slack / Discord | Community and team support memory |
+| Markdown / Notion | Docs, ADRs, RFCs, and decision memory |
+| Zendesk / Intercom / Freshdesk | Customer support memory |
+| Gmail / email | Relationship and inbox memory |
+| n8n / Zapier | Workflow memory |
+
+Connectors live in their own repository so this core stays focused on the runtime. They are **modular** — install only what you need:
+
+```bash
+# Planned package names — coming soon
+npm install @statewavedev/connectors-github
+npm install @statewavedev/connectors-markdown
+npm install @statewavedev/mcp-server
+```
+
+A convenience meta-package `@statewavedev/connectors` re-exports the official connectors for the rare case where you want them all at once. **It is not required** for normal usage.
+
+Quick examples (dry-run-first — nothing is ingested without your say-so):
+
+```bash
+statewave-connectors sync github \
+  --repo smaramwbc/statewave \
+  --subject repo:smaramwbc/statewave \
+  --dry-run
+
+statewave-connectors sync markdown \
+  --path ./docs \
+  --subject repo:smaramwbc/statewave \
+  --dry-run
+
+statewave-connectors mcp start
+```
+
+**Where to go next:**
+
+- Connector ecosystem repo: [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) *(Phase-1 packages — core, CLI, MCP server, GitHub, Markdown — landing soon; npm publication is a follow-up)*
+- Connector docs: [statewave-docs/connectors](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/index.md)
+- SDKs (custom ingestion paths): [Python](https://github.com/smaramwbc/statewave-py) · [TypeScript](https://github.com/smaramwbc/statewave-ts)
+
+> **No connector code lives in this repo.** Connectors talk to Statewave through the same public HTTP API documented above. If you don't need any of them, you don't install any of them.
+
 ## Configuration
 
 All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to get started.
@@ -210,6 +260,7 @@ The full community guide — categories, RFC process, moderation — lives in [s
 | **statewave** (this repo) | Core server — API, domain model, DB, services |
 | [statewave-py](https://github.com/smaramwbc/statewave-py) | Python SDK (sync + async) |
 | [statewave-ts](https://github.com/smaramwbc/statewave-ts) | TypeScript SDK |
+| [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) | Connector ecosystem — GitHub, Markdown/docs, MCP server, and more (modular packages, install only what you need) |
 | [statewave-docs](https://github.com/smaramwbc/statewave-docs) | Architecture, API contracts, ADRs |
 | [statewave-examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
 | [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |

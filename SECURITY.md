@@ -68,8 +68,8 @@ We believe in responsible disclosure and will:
 This policy applies to all Statewave repositories:
 
 - `statewave` - Core backend
-- `statewave-py` - Python SDK
-- `statewave-ts` - TypeScript SDK
+- Python SDK (`pip install statewave`, source: github.com/smaramwbc/statewave-py)
+- TypeScript SDK (`npm install @statewavedev/sdk`, source: github.com/smaramwbc/statewave-ts)
 - `statewave-docs` - Documentation
 - `statewave-examples` - Examples
 - `statewave-web` - Marketing site + embedded demo

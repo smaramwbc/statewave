@@ -20,8 +20,8 @@ body:
       label: SDK / Tool
       description: Which SDK or tool is affected?
       options:
-        - Python SDK (statewave-py)
-        - TypeScript SDK (statewave-ts)
+        - Python SDK (`statewave`)
+        - TypeScript SDK (`@statewavedev/sdk`)
         - Both SDKs
         - CLI (if applicable)
         - Examples

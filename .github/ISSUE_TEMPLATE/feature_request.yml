@@ -19,8 +19,8 @@ body:
       description: Which part of Statewave would this affect?
       options:
         - Backend API / Server
-        - Python SDK (statewave-py)
-        - TypeScript SDK (statewave-ts)
+        - Python SDK (`statewave`)
+        - TypeScript SDK (`@statewavedev/sdk`)
         - Documentation
         - Examples
         - Demo Site

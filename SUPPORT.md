@@ -51,8 +51,8 @@ See our [Security Policy](./SECURITY.md) for details.
 | Topic | Repository |
 |-------|------------|
 | Backend API, server, core | [statewave](https://github.com/smaramwbc/statewave) |
-| Python SDK | [statewave-py](https://github.com/smaramwbc/statewave-py) |
-| TypeScript SDK | [statewave-ts](https://github.com/smaramwbc/statewave-ts) |
+| Python SDK | `pip install statewave` · [source](https://github.com/smaramwbc/statewave-py) |
+| TypeScript SDK | `npm install @statewavedev/sdk` · [source](https://github.com/smaramwbc/statewave-ts) |
 | Connectors (GitHub, Markdown/docs, MCP, …) | [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) |
 | Documentation | [statewave-docs](https://github.com/smaramwbc/statewave-docs) |
 | Examples | [statewave-examples](https://github.com/smaramwbc/statewave-examples) |

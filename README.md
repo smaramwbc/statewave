@@ -57,8 +57,8 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 | [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
 | [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
 | [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
-| [Python SDK](https://github.com/smaramwbc/statewave-py) | Sync + async client, Pydantic models |
-| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | `npm install @statewavedev/sdk` — fetch-based client, full type definitions (renamed from `statewave-ts` on npm in v0.7.0) |
+| [Python SDK](https://github.com/smaramwbc/statewave-py) | `pip install statewave` — sync + async client, Pydantic models |
+| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | `npm install @statewavedev/sdk` — fetch-based client, full type definitions |
 | [Connectors](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/index.md) | Feed real-world events (GitHub, Markdown/ADRs, MCP, …) into Statewave as episodes — see [Connectors](#connectors) below |
 | [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstart, support agent, coding agent |
 | [Context quality eval](https://github.com/smaramwbc/statewave-examples/tree/main/eval-support-agent) | Automated assertions on context correctness |
@@ -255,16 +255,16 @@ The full community guide — categories, RFC process, moderation — lives in [s
 
 ## Ecosystem
 
-| Repo | Purpose |
-|------|---------|
-| **statewave** (this repo) | Core server — API, domain model, DB, services |
-| [statewave-py](https://github.com/smaramwbc/statewave-py) | Python SDK (sync + async) |
-| [statewave-ts](https://github.com/smaramwbc/statewave-ts) | TypeScript SDK |
-| [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) | Connector ecosystem — GitHub, Markdown/docs, MCP server, and more (modular packages, install only what you need) |
-| [statewave-docs](https://github.com/smaramwbc/statewave-docs) | Architecture, API contracts, ADRs |
-| [statewave-examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
-| [statewave-web](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
-| [statewave-admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
+| Project | Description |
+|---|---|
+| **Server** (this repo) | Core server — API, domain model, DB, services |
+| [Python SDK](https://github.com/smaramwbc/statewave-py) | `pip install statewave` — sync + async client |
+| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | `npm install @statewavedev/sdk` — fetch-based client |
+| [Connectors](https://github.com/smaramwbc/statewave-connectors) | `@statewavedev/connectors-*` — GitHub, Markdown/docs, MCP server, modular packages |
+| [Docs](https://github.com/smaramwbc/statewave-docs) | Architecture, API contracts, ADRs |
+| [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
+| [Website + demo](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
+| [Admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
 
 ## Licensing
 

@@ -72,6 +72,21 @@ services:
       # accepts any X-API-Key value. Replace with a real key in production.
       STATEWAVE_API_KEY: dev-local-placeholder
       NODE_ENV: production
+      # Operator-console auth. The admin requires either a configured password
+      # OR an explicit auth-disabled flag. We default to disabled here for the
+      # same reason the api defaults to STATEWAVE_DEBUG=true: a fresh
+      # `docker compose up -d` should work without you having to invent a
+      # password first.
+      #
+      # Production: override by setting ADMIN_AUTH_DISABLED= (empty) AND
+      # supplying ADMIN_PASSWORD + ADMIN_SESSION_SECRET via your env or .env
+      # file. The two operator-console-side variables flow through unchanged
+      # — there is no fallback if both are absent and ADMIN_AUTH_DISABLED is
+      # also empty, which is what surfaces the "Admin is not configured"
+      # screen.
+      ADMIN_AUTH_DISABLED: ${ADMIN_AUTH_DISABLED:-true}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
     depends_on:
       api:
         condition: service_started

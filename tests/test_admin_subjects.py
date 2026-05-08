@@ -77,7 +77,7 @@ async def test_list_subjects_search(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "searchable_user",
+            "subject_id": "test_searchable_user",
             "source": "test",
             "type": "message",
             "payload": {"text": "hello"},
@@ -86,7 +86,7 @@ async def test_list_subjects_search(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "other_user",
+            "subject_id": "test_other_user",
             "source": "test",
             "type": "message",
             "payload": {"text": "hello"},
@@ -108,7 +108,7 @@ async def test_list_subjects_pagination(client: AsyncClient):
         await client.post(
             "/v1/episodes",
             json={
-                "subject_id": f"paginate_user_{i}",
+                "subject_id": f"test_paginate_user_{i}",
                 "source": "test",
                 "type": "message",
                 "payload": {"text": f"msg {i}"},
@@ -131,7 +131,7 @@ async def test_get_subject_detail(client: AsyncClient):
         await client.post(
             "/v1/episodes",
             json={
-                "subject_id": "detail_user",
+                "subject_id": "test_detail_user",
                 "source": "test",
                 "type": "message",
                 "payload": {"text": f"message {i}"},
@@ -139,17 +139,17 @@ async def test_get_subject_detail(client: AsyncClient):
         )
 
     # Get detail
-    resp = await client.get("/admin/subjects/detail_user")
+    resp = await client.get("/admin/subjects/test_detail_user")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["subject_id"] == "detail_user"
+    assert data["subject_id"] == "test_detail_user"
     assert data["summary"]["episode_count"] >= 3
     assert data["summary"]["memory_count"] >= 0
 
 
 async def test_get_subject_detail_not_found(client: AsyncClient):
     """Return 404 for nonexistent subject."""
-    resp = await client.get("/admin/subjects/nonexistent_subject_xyz")
+    resp = await client.get("/admin/subjects/test_nonexistent_subject_xyz")
     assert resp.status_code == 404
 
 
@@ -159,16 +159,16 @@ async def test_list_subject_memories(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "memory_user",
+            "subject_id": "test_memory_user",
             "source": "test",
             "type": "message",
             "payload": {"text": "I prefer dark mode"},
         },
     )
-    await client.post("/v1/memories/compile", json={"subject_id": "memory_user"})
+    await client.post("/v1/memories/compile", json={"subject_id": "test_memory_user"})
 
     # List memories
-    resp = await client.get("/admin/subjects/memory_user/memories")
+    resp = await client.get("/admin/subjects/test_memory_user/memories")
     assert resp.status_code == 200
     data = resp.json()
     assert "memories" in data
@@ -182,7 +182,7 @@ async def test_list_subject_episodes(client: AsyncClient):
         await client.post(
             "/v1/episodes",
             json={
-                "subject_id": "episode_list_user",
+                "subject_id": "test_episode_list_user",
                 "source": "test",
                 "type": "message",
                 "payload": {"text": f"message {i}"},
@@ -190,7 +190,7 @@ async def test_list_subject_episodes(client: AsyncClient):
         )
 
     # List episodes
-    resp = await client.get("/admin/subjects/episode_list_user/episodes")
+    resp = await client.get("/admin/subjects/test_episode_list_user/episodes")
     assert resp.status_code == 200
     data = resp.json()
     assert len(data["episodes"]) >= 3
@@ -203,7 +203,7 @@ async def test_memory_related_not_found(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "evolution_test_user",
+            "subject_id": "test_evolution_user_404",
             "source": "test",
             "type": "message",
             "payload": {"text": "hello"},
@@ -211,7 +211,7 @@ async def test_memory_related_not_found(client: AsyncClient):
     )
 
     resp = await client.get(
-        "/admin/subjects/evolution_test_user/memories/00000000-0000-0000-0000-000000000000/related"
+        "/admin/subjects/test_evolution_user_404/memories/00000000-0000-0000-0000-000000000000/related"
     )
     assert resp.status_code == 404
 
@@ -228,16 +228,16 @@ async def test_memory_related_basic(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "evolution_user_basic",
+            "subject_id": "test_evolution_user_basic",
             "source": "test",
             "type": "message",
             "payload": {"text": "User prefers dark mode for all applications"},
         },
     )
-    await client.post("/v1/memories/compile", json={"subject_id": "evolution_user_basic"})
+    await client.post("/v1/memories/compile", json={"subject_id": "test_evolution_user_basic"})
 
     # Get the memory
-    mem_resp = await client.get("/admin/subjects/evolution_user_basic/memories")
+    mem_resp = await client.get("/admin/subjects/test_evolution_user_basic/memories")
     assert mem_resp.status_code == 200
     memories = mem_resp.json()["memories"]
 
@@ -247,7 +247,7 @@ async def test_memory_related_basic(client: AsyncClient):
     memory_id = memories[0]["id"]
 
     # Get related memories
-    resp = await client.get(f"/admin/subjects/evolution_user_basic/memories/{memory_id}/related")
+    resp = await client.get(f"/admin/subjects/test_evolution_user_basic/memories/{memory_id}/related")
     assert resp.status_code == 200
     data = resp.json()
 
@@ -270,7 +270,7 @@ async def test_admin_delete_subject_single(client: AsyncClient):
         ep = await client.post(
             "/v1/episodes",
             json={
-                "subject_id": "to_delete_user",
+                "subject_id": "test_to_delete_user",
                 "source": "test",
                 "type": "message",
                 "payload": {"text": f"hello {i}"},
@@ -278,20 +278,20 @@ async def test_admin_delete_subject_single(client: AsyncClient):
         )
         assert ep.status_code == 201
 
-    resp = await client.delete("/admin/subjects/to_delete_user")
+    resp = await client.delete("/admin/subjects/test_to_delete_user")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["subject_id"] == "to_delete_user"
+    assert body["subject_id"] == "test_to_delete_user"
     assert body["episodes_deleted"] >= 3
 
     # Subsequent fetches should 404 (no data)
-    detail = await client.get("/admin/subjects/to_delete_user")
+    detail = await client.get("/admin/subjects/test_to_delete_user")
     assert detail.status_code == 404
 
 
 async def test_admin_delete_subject_not_found(client: AsyncClient):
     """DELETE /admin/subjects/{id} returns 404 when nothing exists for that id."""
-    resp = await client.delete("/admin/subjects/nope_does_not_exist_xyz")
+    resp = await client.delete("/admin/subjects/test_nope_does_not_exist_xyz")
     assert resp.status_code == 404
 
 
@@ -304,21 +304,21 @@ async def test_admin_preview_delete_rejects_empty_filter(client: AsyncClient):
 
 async def test_admin_preview_delete_by_prefix(client: AsyncClient):
     """Prefix filter returns the matching subject set + counts + a sample."""
-    for sid in ["bulkpfx_a", "bulkpfx_b", "bulkpfx_c", "other_unrelated"]:
+    for sid in ["test_bulkpfx_a", "test_bulkpfx_b", "test_bulkpfx_c", "test_other_unrelated"]:
         await client.post(
             "/v1/episodes",
             json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
         )
 
     resp = await client.post(
-        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkpfx_"}
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "test_bulkpfx_"}
     )
     assert resp.status_code == 200
     data = resp.json()
     assert data["matched"] == 3
     assert data["total_episodes"] >= 3
     sample_ids = {s["subject_id"] for s in data["sample"]}
-    assert sample_ids == {"bulkpfx_a", "bulkpfx_b", "bulkpfx_c"}
+    assert sample_ids == {"test_bulkpfx_a", "test_bulkpfx_b", "test_bulkpfx_c"}
 
 
 async def test_admin_bulk_delete_requires_confirm(client: AsyncClient):
@@ -326,7 +326,7 @@ async def test_admin_bulk_delete_requires_confirm(client: AsyncClient):
     await client.post(
         "/v1/episodes",
         json={
-            "subject_id": "bulkconfirm_a",
+            "subject_id": "test_bulkconfirm_a",
             "source": "test",
             "type": "message",
             "payload": {"text": "x"},
@@ -334,14 +334,14 @@ async def test_admin_bulk_delete_requires_confirm(client: AsyncClient):
     )
     resp = await client.post(
         "/admin/subjects/bulk-delete",
-        json={"subject_id_prefix": "bulkconfirm_", "expected_count": 1, "confirm": False},
+        json={"subject_id_prefix": "test_bulkconfirm_", "expected_count": 1, "confirm": False},
     )
     assert resp.status_code == 400
 
 
 async def test_admin_bulk_delete_count_mismatch(client: AsyncClient):
     """Refuses with 409 when the live match count differs from expected."""
-    for sid in ["bulkmm_a", "bulkmm_b"]:
+    for sid in ["test_bulkmm_a", "test_bulkmm_b"]:
         await client.post(
             "/v1/episodes",
             json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
@@ -350,14 +350,14 @@ async def test_admin_bulk_delete_count_mismatch(client: AsyncClient):
     # Operator previewed and saw 1, but there are actually 2 — must refuse.
     resp = await client.post(
         "/admin/subjects/bulk-delete",
-        json={"subject_id_prefix": "bulkmm_", "expected_count": 1, "confirm": True},
+        json={"subject_id_prefix": "test_bulkmm_", "expected_count": 1, "confirm": True},
     )
     assert resp.status_code == 409
 
 
 async def test_admin_bulk_delete_commits(client: AsyncClient):
     """Happy path: preview, then commit, then verify the subjects are gone."""
-    for sid in ["bulkok_a", "bulkok_b", "bulkok_c"]:
+    for sid in ["test_bulkok_a", "test_bulkok_b", "test_bulkok_c"]:
         await client.post(
             "/v1/episodes",
             json={"subject_id": sid, "source": "test", "type": "message", "payload": {"text": "x"}},
@@ -365,7 +365,7 @@ async def test_admin_bulk_delete_commits(client: AsyncClient):
 
     # Preview to learn the count
     pv = await client.post(
-        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkok_"}
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "test_bulkok_"}
     )
     assert pv.status_code == 200
     matched = pv.json()["matched"]
@@ -374,7 +374,7 @@ async def test_admin_bulk_delete_commits(client: AsyncClient):
     # Commit
     resp = await client.post(
         "/admin/subjects/bulk-delete",
-        json={"subject_id_prefix": "bulkok_", "expected_count": matched, "confirm": True},
+        json={"subject_id_prefix": "test_bulkok_", "expected_count": matched, "confirm": True},
     )
     assert resp.status_code == 200
     body = resp.json()
@@ -384,6 +384,6 @@ async def test_admin_bulk_delete_commits(client: AsyncClient):
 
     # Verify gone
     pv2 = await client.post(
-        "/admin/subjects/preview-delete", json={"subject_id_prefix": "bulkok_"}
+        "/admin/subjects/preview-delete", json={"subject_id_prefix": "test_bulkok_"}
     )
     assert pv2.json()["matched"] == 0

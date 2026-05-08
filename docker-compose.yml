@@ -52,5 +52,29 @@ services:
       db:
         condition: service_healthy
 
+  admin:
+    # Statewave admin console — operator UI for browsing subjects, episodes,
+    # memories, starter packs. `docker compose up -d` brings it up alongside
+    # the API; reach it at http://localhost:8080.
+    #
+    # Optional: a contributor who doesn't want the admin running locally can
+    # start just the core stack with `docker compose up -d api db`.
+    image: statewavedev/statewave-admin:${STATEWAVE_ADMIN_VERSION:-latest}
+    ports:
+      - "8080:8080"
+    environment:
+      # Talks to the api over the compose network — both containers see each
+      # other by service name. The browser hits the admin's own server, which
+      # proxies API calls server-side, so this URL never leaves the compose
+      # network.
+      STATEWAVE_API_URL: http://api:8100
+      # Local dev placeholder — the api runs in STATEWAVE_DEBUG=true and
+      # accepts any X-API-Key value. Replace with a real key in production.
+      STATEWAVE_API_KEY: dev-local-placeholder
+      NODE_ENV: production
+    depends_on:
+      api:
+        condition: service_started
+
 volumes:
   pgdata:

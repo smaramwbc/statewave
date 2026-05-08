@@ -103,10 +103,14 @@ jobs:
           push-to-registry: true
 
       # Sync DOCKER.md to the Docker Hub repo description on every default-branch
-      # build. Idempotent — re-running with unchanged content is a no-op. Only
-      # runs on push events so workflow_dispatch / tag builds don't churn it.
+      # build. Tolerates failure (continue-on-error) — newer-style Docker Hub
+      # PATs only authorize image push, not repo metadata writes, so this step
+      # 403s unless DOCKERHUB_TOKEN is replaced with an Organization Access
+      # Token with `Repo Admin` scope. The image publish above must not be
+      # gated on the description sync succeeding.
       - name: Update Docker Hub description
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}

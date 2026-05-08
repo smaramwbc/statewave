@@ -16,6 +16,11 @@ services:
       retries: 10
 
   api:
+    # Default to the published multi-arch image — `docker compose up -d` works
+    # without a local checkout. Pin a version with STATEWAVE_VERSION=0.7.0.
+    # Contributors who want to rebuild locally: `docker compose build api`
+    # rebuilds from the Dockerfile in this repo and tags the same name.
+    image: statewavedev/statewave:${STATEWAVE_VERSION:-latest}
     build: .
     ports:
       - "8100:8100"

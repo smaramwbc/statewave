@@ -43,6 +43,18 @@ MANIFEST: tuple[str, ...] = (
     "deployment/troubleshooting.md",
     "deployment/migrations.md",
     "dev/backup-restore.md",
+    # Connectors section — added 2026-05-08. The chat widget needs to be
+    # able to answer "what connectors are available" / "how do I sync
+    # Slack into Statewave" with first-party content, not LLM hallucination.
+    "connectors/index.md",
+    "connectors/quickstart.md",
+    "connectors/concepts.md",
+    "connectors/subject-strategy.md",
+    "connectors/privacy-redaction.md",
+    "connectors/mcp.md",
+    "connectors/github.md",
+    "connectors/markdown.md",
+    "connectors/roadmap.md",
 )
 
 SUBJECT_ID = "statewave-support-docs"

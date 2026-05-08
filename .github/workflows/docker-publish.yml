@@ -101,3 +101,16 @@ jobs:
           subject-name: ghcr.io/smaramwbc/statewave
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+      # Sync DOCKER.md to the Docker Hub repo description on every default-branch
+      # build. Idempotent — re-running with unchanged content is a no-op. Only
+      # runs on push events so workflow_dispatch / tag builds don't churn it.
+      - name: Update Docker Hub description
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: statewavedev/statewave
+          short-description: "Memory + intelligence stack for AI agents"
+          readme-filepath: ./DOCKER.md

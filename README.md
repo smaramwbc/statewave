@@ -142,22 +142,28 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 Statewave is not limited to live chat transcripts. **Connectors** feed real-world events into Statewave as episodes, so your agents can build memory from repos, communities, docs, support tools, email, and workflows — without you hand-writing an ingest path for each source.
 
-| Source | Memory shape |
-|---|---|
-| MCP | Copilot / Claude / Cursor / agent memory |
-| GitHub | Repo memory from issues, pull requests, reviews, and releases |
-| Slack / Discord | Community and team support memory |
-| Markdown / Notion | Docs, ADRs, RFCs, and decision memory |
-| Zendesk / Intercom / Freshdesk | Customer support memory |
-| Gmail / email | Relationship and inbox memory |
-| n8n / Zapier | Workflow memory |
+| Source | Memory shape | Status |
+|---|---|---|
+| MCP server | Copilot / Claude / Cursor / agent memory | ✅ shipped |
+| GitHub | Issues, pull requests, reviews, releases → repo memory | ✅ shipped |
+| Markdown | Local docs, ADRs, RFCs → decision memory | ✅ shipped |
+| Slack | Channel + thread history → team memory | ✅ shipped |
+| n8n | Workflow runs, failures, per-node errors → workflow memory | ✅ shipped |
+| Zapier | "Webhooks by Zapier" → push-mode helper for any zap | ✅ shipped |
+| Discord | Community and team support memory | _planned_ |
+| Notion | Decision docs, architecture pages | _planned_ |
+| Zendesk / Intercom / Freshdesk | Customer support memory | _planned_ |
+| Gmail / email | Relationship and inbox memory | _planned_ |
 
 Connectors live in their own repository so this core stays focused on the runtime. They are **modular** — install only what you need:
 
 ```bash
-# Planned package names — coming soon
+# Pick what you need — every package is independent
 npm install @statewavedev/connectors-github
 npm install @statewavedev/connectors-markdown
+npm install @statewavedev/connectors-slack
+npm install @statewavedev/connectors-n8n
+npm install @statewavedev/connectors-zapier
 npm install @statewavedev/mcp-server
 ```
 

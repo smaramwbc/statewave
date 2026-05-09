@@ -1,11 +1,12 @@
 """Tests for the bootstrap script's retry-on-transient-failure behavior.
 
-Pinned because the failure mode the retry recovers from — a Fly rolling
-deploy landing on an in-flight HTTP call to the live API — is hard to
-exercise by accident in CI but causes silent data loss in prod (the
-support-docs subject ends up empty until the next refresh). The unit
-tests below exercise the retry helper directly with a mocked httpx
-call, covering the three failure shapes a deploy actually produces.
+Pinned because the failure mode the retry recovers from — a transient
+HTTP failure (5xx from the platform's reverse proxy, or a mid-stream
+connection drop) landing on an in-flight call during a rolling
+deployment — is hard to exercise by accident in CI but causes silent
+data loss in prod (the support-docs subject ends up empty until the
+next refresh). The unit tests below exercise the retry helper with a
+mocked httpx call covering each transient-failure shape.
 """
 
 from __future__ import annotations

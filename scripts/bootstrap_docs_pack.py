@@ -46,13 +46,12 @@ BATCH_SIZE = 50
 SOURCE = "statewave-docs"
 EPISODE_TYPE = "doc_section"
 
-# HTTP statuses that warrant retry. These are the failure shapes a Fly
-# rolling deploy produces when it lands on an in-flight request: 502
-# (bad gateway while the upstream machine is being replaced), 503 (no
-# machines accepting), 504 (request idle timeout while a machine is
-# being replaced). 500 is included because compile failures sometimes
-# surface as 500 from transient DB connection drops during deploy. 429
-# covers rate-limit spikes.
+# HTTP statuses that warrant retry. Standard transient-failure shapes
+# emitted by any reverse proxy / load balancer in front of an HTTP
+# service — 502 (upstream unavailable, e.g. during a rolling restart),
+# 503 (no backends accepting), 504 (idle timeout). 500 is included
+# because compile occasionally surfaces transient DB connection drops
+# as a 500. 429 covers rate-limit spikes from upstream model providers.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 _RETRYABLE_NETWORK_EXCEPTIONS = (
     httpx.NetworkError,
@@ -71,12 +70,14 @@ async def _request_with_retry(
 ) -> httpx.Response:
     """Run an httpx call with exponential backoff on transient failures.
 
-    Catches the failure shape produced by a Fly rolling deploy that
-    lands on an in-flight request: connection drops mid-stream
-    (RemoteProtocolError), 502/503/504 from the platform, or a hung
-    socket that times out. Without retry, the docs refresh silently
-    leaves the support pack empty whenever a deploy collides — the pack
-    only refreshes again on the next docs-repo push or manual rerun.
+    Catches the standard transient-failure shapes any reverse proxy
+    produces when an upstream is briefly unavailable: connection drops
+    mid-stream (RemoteProtocolError), 502/503/504 from the proxy, or a
+    hung socket that times out. The most common trigger is a rolling
+    server deployment landing on the in-flight request, but the same
+    handling covers any transient network blip — without retry, the
+    docs refresh sys.exits on the first hiccup and silently leaves the
+    support pack in a broken half-state until manual rerun.
 
     Idempotency assumptions for the call sites that use this helper:
       - DELETE /v1/subjects/{id} is idempotent (404-on-missing accepted
@@ -90,8 +91,10 @@ async def _request_with_retry(
         off without re-doing work.
 
     Backoff: 2 → 4 → 8 → 16 → 30 → 30 seconds across 5 retries (~90s
-    total wall-clock), which covers a typical Fly rolling deploy cycle
-    (~30-60s per machine, two machines).
+    total wall-clock). Tuned to comfortably cover a typical rolling
+    deployment cycle on any platform (Fly, Render, Railway, k8s, ECS,
+    etc. — usually 30–90s for a single machine to be replaced and the
+    new one to start serving).
     """
     delay = initial_delay_s
     for attempt in range(1, attempts + 1):

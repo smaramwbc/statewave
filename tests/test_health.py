@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from server.services.health import compute_health
+from server.services.health import _has_keyword_overlap, compute_health
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +192,107 @@ async def test_repeated_issues_detected_through_punctuation():
     assert "repeated_issues" in signals
     assert result.state in ("watch", "at_risk")
     assert result.score < 70
+
+
+# ---------------------------------------------------------------------------
+# Unicode-aware keyword tokenization (issue #38)
+# ---------------------------------------------------------------------------
+#
+# The prior `[a-z]+` regex silently dropped or truncated non-ASCII
+# words: `café` → `caf`, `naïve` → `na` + `ve`, `straße` → `stra` + `e`.
+# Overlap detection therefore undercounted recurring issues for any
+# multilingual support traffic. These tests pin the contract that
+# accented Latin text and other Unicode-letter scripts survive
+# tokenization while the existing punctuation-handling fix from #35
+# is preserved.
+
+
+def test_keyword_overlap_preserves_accented_latin_words():
+    text = "Notre passerelle de paiement échoue à nouveau pour les clients européens"
+    # Same content phrased as a recurrence of the same issue
+    other = "La passerelle de paiement échoue encore pour les clients européens"
+    assert _has_keyword_overlap(text, other)
+
+
+def test_keyword_overlap_preserves_german_eszett_and_umlaut():
+    """`straße`, `prüfen`, `größer` etc. must survive intact."""
+    text_a = "Die Zahlungsstraße schlägt für größere Beträge fehl"
+    text_b = "Bitte Zahlungsstraße prüfen — größere Transaktionen schlagen fehl"
+    assert _has_keyword_overlap(text_a, text_b)
+
+
+def test_keyword_overlap_works_for_non_latin_scripts():
+    """Cyrillic / Greek / CJK letters all match `[^\\W\\d_]+` under the
+    Unicode default in Python 3's re module."""
+    text_a = "Платёжный шлюз снова не работает для европейских клиентов"
+    text_b = "Платёжный шлюз опять падает у европейских клиентов"
+    assert _has_keyword_overlap(text_a, text_b)
+
+
+def test_keyword_overlap_still_handles_attached_punctuation():
+    """Regression guard for the original #35 fix — the Unicode change
+    must not regress the punctuation-stripping behavior."""
+    text_a = "Our billing gateway is timing out when processing payments."
+    text_b = "The billing gateway is timing out AGAIN — payments are failing."
+    assert _has_keyword_overlap(text_a, text_b)
+
+
+def test_keyword_overlap_is_false_for_unrelated_text():
+    """Sanity check: unrelated text in either ASCII or Unicode should
+    NOT register as overlapping."""
+    assert not _has_keyword_overlap(
+        "Need to reset my admin password",
+        "Quiero cambiar el color de mi avatar",
+    )
+
+
+@pytest.mark.asyncio
+async def test_recurring_issue_detected_in_french_support_text():
+    """End-to-end: the recurring-issue signal fires for non-English
+    support text describing the same problem twice."""
+    resolutions = [
+        _make_resolution("sess-A", "resolved", resolved_at=_NOW - timedelta(days=2)),
+        _make_resolution("sess-B", "resolved", resolved_at=_NOW - timedelta(days=1)),
+        _make_resolution("sess-C", "open"),
+    ]
+    episodes = [
+        _make_episode(
+            "sess-A",
+            "La passerelle de paiement expire au moment du règlement. "
+            "Pouvez-vous redémarrer le service de paiement ?",
+            days_ago=2,
+        ),
+        _make_episode(
+            "sess-B",
+            "Besoin de réinitialiser mon mot de passe administrateur.",
+            days_ago=1,
+        ),
+        _make_episode(
+            "sess-C",
+            "La passerelle de paiement expire de nouveau — c'est urgent, "
+            "les factures doivent être réglées aujourd'hui.",
+            days_ago=0,
+        ),
+    ]
+
+    with (
+        patch(
+            "server.services.health.repo.list_resolutions",
+            new_callable=AsyncMock,
+            return_value=resolutions,
+        ),
+        patch(
+            "server.services.health.repo.list_episodes_by_subject",
+            new_callable=AsyncMock,
+            return_value=episodes,
+        ),
+    ):
+        result = await compute_health(AsyncMock(), "user-1")
+
+    signals = [f.signal for f in result.factors]
+    assert "repeated_issues" in signals, (
+        f"recurring-issue signal must fire on multilingual text; got {signals}"
+    )
 
 
 @pytest.mark.asyncio

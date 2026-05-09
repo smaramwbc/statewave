@@ -352,8 +352,20 @@ def _has_keyword_overlap(text_a: str, text_b: str) -> bool:
         "that",
         "with",
     }
-    words_a = {w for w in re.findall(r"[a-z]+", text_a.lower()) if len(w) > 2 and w not in stopwords}
-    words_b = {w for w in re.findall(r"[a-z]+", text_b.lower()) if len(w) > 2 and w not in stopwords}
+    # `[^\W\d_]+` is the stdlib `re` idiom for "letters from any script,
+    # no digits or underscores" — equivalent to `\p{L}+` in the third-party
+    # `regex` package without the extra dep. Replaces a prior `[a-z]+`
+    # that silently dropped or truncated non-ASCII words (`café` → `caf`,
+    # `naïve` → `na`, `ve`), which made overlap detection undercount
+    # recurring issues in multilingual support traffic.
+    words_a = {
+        w for w in re.findall(r"[^\W\d_]+", text_a.lower())
+        if len(w) > 2 and w not in stopwords
+    }
+    words_b = {
+        w for w in re.findall(r"[^\W\d_]+", text_b.lower())
+        if len(w) > 2 and w not in stopwords
+    }
     if not words_a or not words_b:
         return False
     smaller = min(len(words_a), len(words_b))

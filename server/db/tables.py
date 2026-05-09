@@ -36,11 +36,22 @@ class EpisodeRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # When the source event actually happened. Distinct from `created_at`
+    # (= ingest time) so backfilled connectors (Slack history, GitHub
+    # issues from 2024, Zendesk imports, …) can preserve their real
+    # timeline. Server-defaults to now() so legacy clients that don't
+    # supply the field keep working unchanged.
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
     last_compiled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
     )
 
-    __table_args__ = (Index("ix_episodes_subject_created", "subject_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_episodes_subject_created", "subject_id", "created_at"),
+        Index("ix_episodes_subject_occurred", "subject_id", "occurred_at"),
+    )
 
 
 class MemoryRow(Base):

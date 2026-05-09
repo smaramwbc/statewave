@@ -47,10 +47,14 @@ async def list_episodes_by_subject(
     tenant_id: str | None = None,
     limit: int = 100,
 ) -> Sequence[EpisodeRow]:
+    # Order by `occurred_at` (the source-event time) so backfilled episodes
+    # land in their real chronological position. `created_at` is the
+    # tiebreak so simultaneous events from a single ingest batch retain
+    # their insertion order in the response.
     stmt = (
         select(EpisodeRow)
         .where(EpisodeRow.subject_id == subject_id)
-        .order_by(EpisodeRow.created_at.asc())
+        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc())
         .limit(limit)
     )
     stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)

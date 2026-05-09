@@ -272,6 +272,9 @@ async def restore_snapshot(
             ep_created = ep.created_at
             if ep_created.tzinfo is None:
                 ep_created = ep_created.replace(tzinfo=timezone.utc)
+            ep_occurred = ep.occurred_at
+            if ep_occurred.tzinfo is None:
+                ep_occurred = ep_occurred.replace(tzinfo=timezone.utc)
 
             session.add(
                 EpisodeRow(
@@ -287,6 +290,10 @@ async def restore_snapshot(
                         "restored_from_snapshot": str(snapshot_id),
                         "original_episode_id": str(ep.id),
                     },
+                    # Apply the same time_shift to occurred_at as created_at so
+                    # the relative chronology is preserved when a snapshot is
+                    # restored at a later point in time.
+                    occurred_at=ep_occurred + time_shift,
                     created_at=ep_created + time_shift,
                     last_compiled_at=(ep_created + time_shift) if ep.last_compiled_at else None,
                 )

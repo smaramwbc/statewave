@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -15,6 +16,12 @@ class CreateEpisodeRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     provenance: dict[str, Any] = Field(default_factory=dict)
     session_id: str | None = Field(None, max_length=256)
+    # When the source event actually happened. Optional — when absent, the
+    # database server-defaults to now() (= ingest time), which is the right
+    # answer for live-chat ingest. Connectors that backfill historical data
+    # (Slack history, GitHub issues, Zendesk imports) should always set
+    # this so timeline-style queries see the real ordering.
+    occurred_at: datetime | None = None
 
 
 class BatchCreateEpisodesRequest(BaseModel):

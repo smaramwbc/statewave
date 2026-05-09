@@ -767,6 +767,7 @@ def _episode_response(row: Any) -> EpisodeResponse:
         payload=row.payload,
         metadata=row.metadata_,
         provenance=row.provenance,
+        occurred_at=row.occurred_at,
         created_at=row.created_at,
         session_id=getattr(row, "session_id", None),
     )

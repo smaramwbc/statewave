@@ -270,6 +270,13 @@ async def _ingest_records_async(
             metadata.update(extra_metadata)
             provenance = dict(ep.get("provenance") or {})
             provenance.update(extra_provenance)
+            ep_created_dt = _parse_iso_or_now(ep.get("created_at"))
+            # Packs created before migration 0015 don't carry occurred_at;
+            # fall back to created_at so restored episodes still land in a
+            # sensible chronological position.
+            ep_occurred_dt = (
+                _parse_iso_or_now(ep["occurred_at"]) if ep.get("occurred_at") else ep_created_dt
+            )
             row = EpisodeRow(
                 id=new_id,
                 subject_id=target_subject_id,
@@ -279,7 +286,8 @@ async def _ingest_records_async(
                 payload=ep.get("payload") or {},
                 metadata_=metadata,
                 provenance=provenance,
-                created_at=_parse_iso_or_now(ep.get("created_at")),
+                occurred_at=ep_occurred_dt,
+                created_at=ep_created_dt,
                 last_compiled_at=_parse_iso_or_none(ep.get("last_compiled_at")),
             )
             session.add(row)
@@ -942,6 +950,10 @@ async def export_memory_payload(
                         "payload": ep.get("payload"),
                         "metadata": ep.get("metadata") or {},
                         "provenance": ep.get("provenance") or {},
+                        # `occurred_at` is forward-compatible: packs created
+                        # before migration 0015 won't have it, in which case
+                        # the import path below falls back to `created_at`.
+                        "occurred_at": ep.get("occurred_at"),
                         "created_at": ep.get("created_at"),
                         "last_compiled_at": ep.get("last_compiled_at"),
                     }

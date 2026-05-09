@@ -20,6 +20,7 @@ class EpisodeResponse(BaseModel):
     metadata: dict[str, Any]
     provenance: dict[str, Any]
     session_id: str | None = None
+    occurred_at: datetime
     created_at: datetime
 
 

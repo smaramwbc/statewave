@@ -24,7 +24,10 @@ async def create_episode(
     tenant_id: str | None = Depends(get_tenant_id),
 ):
     """Record a raw interaction episode. Episodes are append-only and immutable."""
-    row = EpisodeRow(
+    # `occurred_at` is optional in the request: when None, the database column
+    # server-defaults to now() (= ingest time), which matches the legacy behaviour.
+    # Connectors that backfill historical data set this explicitly.
+    row_kwargs: dict = dict(
         subject_id=body.subject_id,
         tenant_id=tenant_id,
         session_id=body.session_id,
@@ -34,6 +37,9 @@ async def create_episode(
         metadata_=body.metadata,
         provenance=body.provenance,
     )
+    if body.occurred_at is not None:
+        row_kwargs["occurred_at"] = body.occurred_at
+    row = EpisodeRow(**row_kwargs)
     await repo.insert_episode(session, row)
     await session.commit()
     await session.refresh(row)
@@ -47,6 +53,7 @@ async def create_episode(
         metadata=row.metadata_,
         provenance=row.provenance,
         session_id=row.session_id,
+        occurred_at=row.occurred_at,
         created_at=row.created_at,
     )
 
@@ -66,7 +73,7 @@ async def create_episodes_batch(
     with span("create_episodes_batch", {"count": len(body.episodes)}):
         rows: list[EpisodeRow] = []
         for ep in body.episodes:
-            row = EpisodeRow(
+            row_kwargs: dict = dict(
                 subject_id=ep.subject_id,
                 tenant_id=tenant_id,
                 session_id=ep.session_id,
@@ -76,6 +83,9 @@ async def create_episodes_batch(
                 metadata_=ep.metadata,
                 provenance=ep.provenance,
             )
+            if ep.occurred_at is not None:
+                row_kwargs["occurred_at"] = ep.occurred_at
+            row = EpisodeRow(**row_kwargs)
             await repo.insert_episode(session, row)
             rows.append(row)
         await session.commit()
@@ -100,6 +110,7 @@ async def create_episodes_batch(
                     metadata=r.metadata_,
                     provenance=r.provenance,
                     session_id=r.session_id,
+                    occurred_at=r.occurred_at,
                     created_at=r.created_at,
                 )
                 for r in rows

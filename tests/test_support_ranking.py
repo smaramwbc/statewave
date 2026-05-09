@@ -35,6 +35,7 @@ def _make_episode_row(
 ):
     # Use a fixed base time to avoid microsecond timing issues in tests
     base = datetime(2026, 4, 29, 12, 0, 0, tzinfo=timezone.utc)
+    when = base - timedelta(minutes=minutes_ago)
     return SimpleNamespace(
         id=uuid.uuid4(),
         subject_id="user-1",
@@ -44,7 +45,10 @@ def _make_episode_row(
         metadata_={},
         provenance={},
         session_id=session_id,
-        created_at=base - timedelta(minutes=minutes_ago),
+        # Match the new ORM shape — occurred_at defaults to created_at when
+        # no explicit source-event time is supplied.
+        occurred_at=when,
+        created_at=when,
     )
 
 

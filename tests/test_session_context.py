@@ -31,6 +31,7 @@ def _make_episode_row(
     minutes_ago: int = 0,
 ):
     """Create a fake episode row matching the ORM shape."""
+    when = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
     return SimpleNamespace(
         id=uuid.uuid4(),
         subject_id="user-1",
@@ -40,7 +41,10 @@ def _make_episode_row(
         metadata_={},
         provenance={},
         session_id=session_id,
-        created_at=datetime.now(timezone.utc) - timedelta(minutes=minutes_ago),
+        # Match the new ORM shape — occurred_at defaults to created_at when
+        # no explicit source-event time is supplied.
+        occurred_at=when,
+        created_at=when,
     )
 
 

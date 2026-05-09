@@ -1,0 +1,316 @@
+# Default values for the Statewave API chart.
+#
+# This chart deploys the Statewave API ONLY. It does not deploy:
+#   - Postgres (you bring a pgvector-capable Postgres — managed or in-cluster)
+#   - The Statewave admin console (separate chart / overlay)
+#   - Any LLM or embedding model server
+#
+# Every non-trivial knob is documented inline. Required fields are marked
+# REQUIRED at the top of their block.
+
+# ──────────────────────────────────────────────────
+# Image
+# ──────────────────────────────────────────────────
+image:
+  repository: statewavedev/statewave
+  # If empty, falls back to .Chart.AppVersion. Pin a digest in production.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+# - name: regcred
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ──────────────────────────────────────────────────
+# Replica count
+# ──────────────────────────────────────────────────
+# Statewave is stateless and horizontally scales correctly against a
+# shared Postgres (compile queue, webhook DLQ, rate limit, and the L2
+# query embedding cache all coordinate via Postgres). Mind the
+# connection-budget math when raising this:
+#
+#   replicas × (DB pool_size + max_overflow) + headroom < db.max_connections
+#
+# Defaults are pool_size=5, max_overflow=10 → 15 connections per replica
+# under burst. See the Horizontal Scaling Guide for the full runbook:
+# https://github.com/smaramwbc/statewave-docs/blob/main/deployment/horizontal-scaling.md
+replicaCount: 1
+
+# ──────────────────────────────────────────────────
+# Database — REQUIRED
+# ──────────────────────────────────────────────────
+# Statewave needs a Postgres instance with the pgvector extension.
+# This chart does NOT deploy Postgres.
+#
+# Supply the connection URL via ONE of:
+#
+#   1. database.url  (inline value)              ── easy for dev clusters
+#   2. database.existingSecret + database.existingSecretKey
+#                                                ── recommended for prod
+#
+# Format (SQLAlchemy + asyncpg):
+#   postgresql+asyncpg://USER:PASS@HOST:5432/statewave
+database:
+  url: ""
+
+  existingSecret: ""
+  existingSecretKey: "STATEWAVE_DATABASE_URL"
+
+# ──────────────────────────────────────────────────
+# Compiler + LLM provider
+# ──────────────────────────────────────────────────
+# - "heuristic": regex-based, no provider needed. Demo-grade quality.
+# - "llm":       LiteLLM-driven extraction. Set llm.* below.
+compiler:
+  type: llm
+
+# Embedding provider:
+# - "stub":     hash-based; no semantic search. Demo only.
+# - "litellm":  routes through LiteLLM (recommended).
+embedding:
+  provider: litellm
+  dimensions: 1536
+
+# LiteLLM configuration. Required when compiler.type=llm or
+# embedding.provider=litellm. See https://docs.litellm.ai/docs/providers
+# for the model identifier syntax.
+llm:
+  # Model identifier. Examples:
+  #   gpt-4o-mini                              (OpenAI)
+  #   anthropic/claude-3-haiku-20240307        (Anthropic)
+  #   ollama/llama3                            (Ollama, requires apiBase)
+  model: gpt-4o-mini
+  embeddingModel: text-embedding-3-small
+
+  # Optional: override the LiteLLM endpoint (e.g. self-hosted Ollama).
+  apiBase: ""
+
+  timeoutSeconds: 60
+  maxRetries: 2
+  temperature: 0.1
+
+  # API key for the provider. Supply via ONE of:
+  #   1. llm.apiKey            (inline; written to a chart-managed Secret)
+  #   2. llm.existingSecret + llm.existingSecretKey (recommended for prod)
+  apiKey: ""
+  existingSecret: ""
+  existingSecretKey: "STATEWAVE_LITELLM_API_KEY"
+
+# ──────────────────────────────────────────────────
+# API authentication
+# ──────────────────────────────────────────────────
+# When set, every request must carry X-API-Key: <value>.
+# Leave empty for an open API (do this only in trusted networks).
+auth:
+  apiKey: ""
+  existingSecret: ""
+  existingSecretKey: "STATEWAVE_API_KEY"
+
+# ──────────────────────────────────────────────────
+# Rate limiting (per-IP, sliding-window, Postgres-backed)
+# ──────────────────────────────────────────────────
+# 0 = disabled. Postgres-backed rate limit is correct across replicas.
+rateLimit:
+  rpm: 0
+
+# ──────────────────────────────────────────────────
+# CORS
+# ──────────────────────────────────────────────────
+# JSON-array string of allowed origins. ["*"] for development only.
+cors:
+  origins: '["*"]'
+
+# ──────────────────────────────────────────────────
+# Webhooks (optional)
+# ──────────────────────────────────────────────────
+webhooks:
+  url: ""
+  timeoutSeconds: 5.0
+
+# ──────────────────────────────────────────────────
+# Multi-tenant (experimental)
+# ──────────────────────────────────────────────────
+multiTenant:
+  enabled: false
+  header: X-Tenant-ID
+  required: false
+
+# ──────────────────────────────────────────────────
+# Support-pack auto-bootstrap
+# ──────────────────────────────────────────────────
+# Statewave's Docker image bundles a "Statewave Support" docs pack used
+# by statewave.ai. For self-hosted deployments this is OFF by default —
+# operators don't usually want surprise content seeded into their DB.
+# Set to true to enable; the API will reseed (or no-op) on each pod start.
+supportPack:
+  autoUpdate: false
+  bootstrapFromMountedDocs: false
+
+# ──────────────────────────────────────────────────
+# Extra environment variables
+# ──────────────────────────────────────────────────
+# Anything not covered above. Use for STATEWAVE_* knobs we haven't
+# surfaced as first-class values.
+extraEnv: []
+# - name: STATEWAVE_DEBUG
+#   value: "false"
+
+# Mount additional env-vars from existing Secrets / ConfigMaps.
+extraEnvFrom: []
+# - secretRef:
+#     name: statewave-extra-env
+
+# ──────────────────────────────────────────────────
+# Service
+# ──────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8100
+  annotations: {}
+
+# ──────────────────────────────────────────────────
+# Ingress (off by default)
+# ──────────────────────────────────────────────────
+# Long-running /v1/context calls (cold-start semantic search + embedding
+# RTT) can run 5–30s. If you enable an Ingress, raise the proxy/read
+# timeouts accordingly — see the per-controller annotations below.
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # NGINX example:
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+  hosts:
+    - host: statewave.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: statewave-tls
+  #    hosts:
+  #      - statewave.example.com
+
+# ──────────────────────────────────────────────────
+# Resources
+# ──────────────────────────────────────────────────
+# Statewave is a small FastAPI process. CPU and RAM are modest; Postgres
+# is what gets bigger. See the Sizing Guide for tier-by-tier advice:
+# https://github.com/smaramwbc/statewave-docs/blob/main/deployment/sizing.md
+resources:
+  requests:
+    cpu: 200m
+    memory: 256Mi
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+
+# ──────────────────────────────────────────────────
+# Probes
+# ──────────────────────────────────────────────────
+# /healthz — liveness (process up).
+# /readyz  — readiness (DB reachable, queue healthy, optional LLM check).
+#
+# /readyz can transiently flap during DB restarts; the failureThreshold
+# is set so that one flap doesn't cycle the pod.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+
+# ──────────────────────────────────────────────────
+# Migrations
+# ──────────────────────────────────────────────────
+# Schema migrations run as a Helm pre-install + pre-upgrade Job that
+# executes `alembic upgrade head` against the configured database URL.
+# The Job blocks the install/upgrade until migrations succeed; the
+# Deployment never serves traffic against an out-of-date schema.
+#
+# Disable only if you run migrations out-of-band (e.g. a CI step).
+migrationJob:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 300
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  podAnnotations: {}
+  podLabels: {}
+
+# ──────────────────────────────────────────────────
+# Pod-level configuration
+# ──────────────────────────────────────────────────
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false  # uvicorn + pip occasionally write tmp files
+
+# ──────────────────────────────────────────────────
+# ServiceAccount
+# ──────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# ──────────────────────────────────────────────────
+# Autoscaling
+# ──────────────────────────────────────────────────
+# Off by default. When enabling, remember the connection-budget math —
+# every additional replica adds ~15 Postgres connections under burst.
+# At higher replica counts add a transaction-mode PgBouncer in front of
+# Postgres rather than raising max_connections indefinitely.
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: ~
+
+# ──────────────────────────────────────────────────
+# PodDisruptionBudget
+# ──────────────────────────────────────────────────
+# Off by default — only meaningful with replicaCount > 1.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+  # maxUnavailable: 1
+
+# ──────────────────────────────────────────────────
+# Scheduling
+# ──────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []

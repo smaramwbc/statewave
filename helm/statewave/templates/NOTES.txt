@@ -1,0 +1,71 @@
+Statewave API has been deployed.
+
+Release:    {{ .Release.Name }}
+Namespace:  {{ .Release.Namespace }}
+Chart:      {{ .Chart.Name }}-{{ .Chart.Version }}
+App image:  {{ include "statewave.image" . }}
+
+──────────────────────────────────────────────────
+1. Check that the API is healthy:
+
+  kubectl --namespace {{ .Release.Namespace }} rollout status deployment/{{ include "statewave.fullname" . }}
+
+2. Get the in-cluster service URL:
+
+  http://{{ include "statewave.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+3. Port-forward for a one-off check from your laptop:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "statewave.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -fsS http://127.0.0.1:{{ .Values.service.port }}/healthz
+  curl -fsS http://127.0.0.1:{{ .Values.service.port }}/readyz
+
+{{- if .Values.ingress.enabled }}
+
+4. Ingress is enabled at:
+  {{- range .Values.ingress.hosts }}
+    {{- $host := .host }}
+    {{- range .paths }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host }}{{ .path }}
+    {{- end }}
+  {{- end }}
+
+  Reminder: /v1/context can run 5–30s on cold-start (semantic search +
+  embedding RTT). Make sure your Ingress controller's read/send timeouts
+  are at least 60s. NGINX example:
+
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+{{- end }}
+
+──────────────────────────────────────────────────
+Database
+
+This chart does NOT deploy Postgres. Statewave needs a pgvector-capable
+Postgres reachable at the URL configured in
+{{- if .Values.database.existingSecret }}
+secret/{{ .Values.database.existingSecret }}.{{ .Values.database.existingSecretKey }}.
+{{- else }}
+secret/{{ include "statewave.inlineSecretName" . }}.STATEWAVE_DATABASE_URL.
+{{- end }}
+
+If /readyz returns 503 with a database error, the most common causes are:
+  - Wrong URL or credentials
+  - Postgres image without the pgvector extension installed
+  - Network policy blocking pod → Postgres traffic
+  - Postgres max_connections too low for `replicas × (pool_size + max_overflow)`
+
+──────────────────────────────────────────────────
+{{- if gt (int .Values.replicaCount) 1 }}
+
+Multi-instance deploy detected (replicas={{ .Values.replicaCount }}).
+
+Statewave coordinates correctly across replicas via Postgres (compile
+queue, webhook DLQ, rate limit, L2 query embedding cache). Mind the
+connection-budget math — see the Horizontal Scaling Guide:
+  https://github.com/smaramwbc/statewave-docs/blob/main/deployment/horizontal-scaling.md
+
+{{- end }}
+
+Docs:        https://github.com/smaramwbc/statewave-docs
+Issues:      https://github.com/smaramwbc/statewave/issues

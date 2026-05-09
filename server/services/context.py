@@ -56,6 +56,16 @@ _RESOLVED_SESSION_PENALTY = -5.0  # Penalty for episodes in already-resolved ses
 _BREADCRUMB_MAX = 3.0  # Bonus for memories whose source-doc heading/breadcrumb
 # matches the query (docs-grounded subjects only — see _breadcrumb_overlap_bonus).
 # Capped well below KIND_PRIORITY (5–10) and SEMANTIC_MAX (8) so it nudges, not dominates.
+_LEXICAL_BONUS_MAX = 4.0  # Additive bonus when query terms appear verbatim in
+# memory content, applied on top of the semantic score. Without this, a narrow
+# factual query like "how do I install with npm" can match the right procedure
+# at semantic rank 1 yet sit at /v1/context rank ~127 because cosine spread for
+# the candidate pool is ~3 points while KIND_PRIORITY (procedure 8 vs
+# profile_fact 10) plus full recency (5) easily exceeds that spread. The
+# lexical bonus contributes the missing tiebreaker: when both semantic AND
+# literal keyword evidence agree, the memory clears the kind/recency noise
+# floor. Capped at 4.0 so it can't override a clearly dominant kind signal —
+# only break ties between similarly-ranked candidates.
 
 # Support-agent-specific scoring signals
 _OPEN_ISSUE_BOOST = 4.0  # Bonus for episodes in sessions with open/unresolved issues
@@ -273,11 +283,19 @@ async def assemble_context(
     if all_memory_rows:
         ts_range = _timestamp_range([r.created_at for r in all_memory_rows])
         for row in all_memory_rows:
-            # Use semantic score when available, else word-overlap
+            # Use semantic score when available, else word-overlap. When
+            # semantic is in play, also add a lexical-overlap bonus so a
+            # memory that BOTH embeds close to the query AND literally
+            # contains the query keywords clears the kind/recency noise
+            # floor. The fallback word-overlap path already factors in
+            # literal matches, so the lexical bonus is only applied on
+            # top of the semantic path to avoid double-counting.
             if use_semantic and row.id in semantic_scores:
                 relevance = semantic_scores[row.id]
+                lexical_bonus = _lexical_overlap_bonus(row.content, task_tokens)
             else:
                 relevance = _relevance_score(row.content, task_tokens)
+                lexical_bonus = 0.0
 
             breadcrumb_bonus = _breadcrumb_overlap_bonus(
                 memory_breadcrumbs.get(row.id, []),
@@ -288,6 +306,7 @@ async def assemble_context(
                 _KIND_PRIORITY.get(row.kind, 1.0)
                 + _recency_score(row.created_at, ts_range)
                 + relevance
+                + lexical_bonus
                 + _temporal_score(row.valid_from, row.valid_to)
                 + breadcrumb_bonus
             )
@@ -560,9 +579,22 @@ def _session_keyword_overlap(current_keywords: set[str], prior_keywords: set[str
     return overlap / len(current_keywords)
 
 
+_RELEVANCE_PUNCT = "?.,:;()[]{}'\"!"
+
+
 def _tokenize_for_relevance(text: str) -> set[str]:
-    """Lowercase word tokens for relevance scoring."""
-    return set(text.lower().split())
+    """Lowercase word tokens for relevance scoring, with surrounding
+    punctuation stripped. Without stripping, content fragments like
+    `'npm install'` (literal quotes from a markdown code-snippet docs
+    pack) tokenize as `'npm` and won't intersect a query token of `npm`,
+    silently zeroing the lexical signal."""
+    if not text:
+        return set()
+    return {
+        stripped
+        for stripped in (t.strip(_RELEVANCE_PUNCT) for t in text.lower().split())
+        if stripped
+    }
 
 
 def _has_urgency(text: str) -> bool:
@@ -575,11 +607,35 @@ def _relevance_score(content: str, task_tokens: set[str]) -> float:
     """Word-overlap relevance: 0 to _RELEVANCE_MAX."""
     if not task_tokens or not content:
         return 0.0
-    content_tokens = set(content.lower().split())
+    content_tokens = _tokenize_for_relevance(content)
     overlap = len(task_tokens & content_tokens)
     # Normalize by task token count
     ratio = overlap / len(task_tokens)
     return min(ratio * _RELEVANCE_MAX, _RELEVANCE_MAX)
+
+
+def _lexical_overlap_bonus(content: str, task_tokens: set[str]) -> float:
+    """Additive bonus when query terms appear verbatim in memory content.
+
+    Applied on top of the semantic score. Stopwords ("how", "do", "the",
+    "with", ...) are excluded so trivial overlap on connectives can't
+    inflate the bonus — only meaningful keyword agreement counts.
+
+    Normalizes by the count of meaningful task tokens, so a 2/2 hit on a
+    short query like "install npm" scores the same as a 4/4 hit on a
+    longer one. Capped at _LEXICAL_BONUS_MAX.
+    """
+    if not task_tokens or not content:
+        return 0.0
+    meaningful = {t for t in task_tokens if t and t not in _STOPWORDS}
+    if not meaningful:
+        return 0.0
+    content_tokens = _tokenize_for_relevance(content)
+    overlap = len(meaningful & content_tokens)
+    if overlap == 0:
+        return 0.0
+    ratio = overlap / len(meaningful)
+    return min(ratio * _LEXICAL_BONUS_MAX, _LEXICAL_BONUS_MAX)
 
 
 # Generic words that drag breadcrumb overlap toward noise without informing

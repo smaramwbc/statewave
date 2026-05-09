@@ -33,6 +33,7 @@ async def get_timeline(
                 metadata=e.metadata_,
                 provenance=e.provenance,
                 session_id=e.session_id,
+                occurred_at=e.occurred_at,
                 created_at=e.created_at,
             )
             for e in episodes

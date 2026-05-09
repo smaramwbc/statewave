@@ -31,6 +31,7 @@ class FakeEpisode:
         last_compiled_at=None,
         session_id=None,
         updated_at=None,
+        occurred_at=None,
     ):
         self.id = id
         self.subject_id = subject_id
@@ -40,6 +41,10 @@ class FakeEpisode:
         self.metadata_ = metadata_ or {}
         self.provenance = provenance or {}
         self.created_at = created_at
+        # If no explicit source-event time was supplied, mirror created_at —
+        # matches the new server behaviour where occurred_at defaults to
+        # ingest time when the client doesn't set it.
+        self.occurred_at = occurred_at if occurred_at is not None else created_at
         self.session_id = session_id
         self.last_compiled_at = last_compiled_at
         self.updated_at = updated_at or created_at

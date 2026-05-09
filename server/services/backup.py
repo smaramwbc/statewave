@@ -68,6 +68,7 @@ async def export_subject(subject_id: str, *, tenant_id: str | None = None) -> di
             "payload": ep.payload,
             "metadata": ep.metadata_,
             "provenance": ep.provenance,
+            "occurred_at": ep.occurred_at.isoformat(),
             "created_at": ep.created_at.isoformat(),
             "last_compiled_at": ep.last_compiled_at.isoformat() if ep.last_compiled_at else None,
         }
@@ -186,6 +187,16 @@ async def import_subject(
             new_id = uuid.UUID(old_id) if preserve_ids else uuid.uuid4()
             id_map[old_id] = str(new_id)
 
+            # `occurred_at` was added in migration 0015. Backups taken before
+            # that migration won't have the field; fall back to `created_at`
+            # so restored episodes still land in a sensible chronological
+            # position.
+            created_at_dt = datetime.fromisoformat(ep_data["created_at"])
+            occurred_at_dt = (
+                datetime.fromisoformat(ep_data["occurred_at"])
+                if ep_data.get("occurred_at")
+                else created_at_dt
+            )
             row = EpisodeRow(
                 id=new_id,
                 subject_id=subject_id,
@@ -195,7 +206,8 @@ async def import_subject(
                 payload=ep_data["payload"],
                 metadata_=ep_data.get("metadata", {}),
                 provenance=ep_data.get("provenance", {}),
-                created_at=datetime.fromisoformat(ep_data["created_at"]),
+                occurred_at=occurred_at_dt,
+                created_at=created_at_dt,
                 last_compiled_at=(
                     datetime.fromisoformat(ep_data["last_compiled_at"])
                     if ep_data.get("last_compiled_at")

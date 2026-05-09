@@ -1,0 +1,85 @@
+name: Fly deploy
+
+# Auto-deploys statewave-api to Fly on every push to main. CI is required
+# at PR time via branch protection, so any commit landing on main has
+# already passed tests; this workflow does not re-run them. Direct admin
+# pushes to main bypass CI and will still trigger a deploy — that's a
+# known consequence of the admin-bypass policy on branch protection.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   FLY_API_TOKEN — scoped deploy token for app `statewave-api`. Create
+#                   with: `fly tokens create deploy --app statewave-api`
+#                   (prefer a deploy-scoped token over `fly auth token`
+#                   so a leaked secret can't manage other apps in the org).
+#
+# Race note: the statewave-docs `refresh-support-docs` workflow purges
+# and re-compiles the support pack against the live API. A deploy that
+# lands during the compile window can 502 the in-flight request and
+# leave the pack empty until the next refresh. The `concurrency:` group
+# below serializes Fly deploys against each other, but cross-repo
+# serialization with the docs refresh isn't handled here — the docs
+# workflow has its own retry/verify guard for that case.
+#
+# Why --remote-only: builds on Fly's remote builders (no local Docker in
+# CI required) and matches what `fly deploy` does from a developer
+# laptop. Deploy strategy stays at fly.toml's default rolling, which
+# pairs with `min_machines_running = 2` to keep one machine serving
+# while the other rolls.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why are you deploying manually? (logged for auditability)'
+        required: false
+        default: 'manual deploy'
+
+concurrency:
+  group: fly-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy statewave-api
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Verify FLY_API_TOKEN is set
+        # Fail early with a clear message rather than letting flyctl emit
+        # an opaque auth error.
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then
+            echo "::error::FLY_API_TOKEN secret is not set in this repository."
+            echo "Create one with: fly tokens create deploy --app statewave-api"
+            exit 1
+          fi
+
+      - name: Deploy to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: flyctl deploy --remote-only
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Fly deploy"
+            echo ""
+            echo "- App: \`statewave-api\`"
+            echo "- Trigger: ${{ github.event_name }}${{ github.event.inputs.reason && format(' ({0})', github.event.inputs.reason) || '' }}"
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Status: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

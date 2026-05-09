@@ -203,14 +203,37 @@ def list_starter_packs() -> list[dict[str, Any]]:
     the admin UI can render selectable cards. Manifest read errors on a
     single pack become a `__error` field on that entry rather than failing
     the whole list, so a corrupt pack can't break the picker.
+
+    The `__error` field carries a stable, sanitized error code rather than
+    the raw exception message. The full exception detail is logged
+    server-side via `logger.warning(..., exc_info=True)` so operators still
+    get the diagnostic info, but the API response can't accidentally leak
+    filesystem paths, JSON parser positions, or future error-message text
+    that may grow more sensitive over time (CodeQL py/stack-trace-exposure,
+    GH alert #1). The widened `except Exception` also catches
+    `json.JSONDecodeError` and `OSError` from the manifest read — both of
+    which previously bubbled past the narrower `except StarterPackError`
+    and broke the per-pack soft-fail contract this function promises.
     """
     out: list[dict[str, Any]] = []
     for entry in _read_index():
         directory = _PACKS_ROOT / entry["directory"]
         try:
             manifest = _read_starter_pack_manifest(directory)
-        except StarterPackError as e:
-            out.append({"pack_id": entry["pack_id"], "kind": entry.get("kind"), "__error": str(e)})
+        except Exception:
+            logger.warning(
+                "starter_pack_manifest_unreadable",
+                pack_id=entry.get("pack_id"),
+                directory=entry.get("directory"),
+                exc_info=True,
+            )
+            out.append(
+                {
+                    "pack_id": entry["pack_id"],
+                    "kind": entry.get("kind"),
+                    "__error": "manifest_unreadable",
+                }
+            )
             continue
         out.append(
             {

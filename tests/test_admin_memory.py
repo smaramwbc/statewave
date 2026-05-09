@@ -131,6 +131,110 @@ def test_starter_pack_directory_layout_on_disk():
         assert (d / "memories.jsonl").exists(), f"missing memories.jsonl for {pack['pack_id']}"
 
 
+# ─── __error sanitization (CodeQL alert #1, py/stack-trace-exposure) ────────
+#
+# `list_starter_packs` returns `__error: <code>` for packs whose manifest
+# can't be read. The pre-fix code did `__error: str(exc)`, leaking
+# whatever the exception message contained (filesystem paths, JSON parser
+# positions, future error-message text). These tests pin the contract
+# that the exposed value is a stable, sanitized code regardless of which
+# exception path fired.
+
+
+def _stub_index_with_one_pack(monkeypatch, tmp_path):
+    """Replace _read_index() and _PACKS_ROOT so a synthetic pack dir
+    drives list_starter_packs without touching the bundled corpus."""
+    monkeypatch.setattr(mp, "_PACKS_ROOT", tmp_path)
+    monkeypatch.setattr(
+        mp,
+        "_read_index",
+        lambda: [{"pack_id": "synthetic-pack", "kind": "demo_agent", "directory": "synthetic-pack"}],
+    )
+    pack_dir = tmp_path / "synthetic-pack"
+    pack_dir.mkdir()
+    return pack_dir
+
+
+def test_list_starter_packs_returns_sanitized_code_when_manifest_missing(
+    monkeypatch, tmp_path
+):
+    """Missing manifest → `__error: 'manifest_unreadable'`, no path leak."""
+    _stub_index_with_one_pack(monkeypatch, tmp_path)
+    # No manifest.json written — _read_starter_pack_manifest raises
+    # StarterPackError with the directory name in the message.
+
+    packs = mp.list_starter_packs()
+    assert len(packs) == 1
+    p = packs[0]
+    assert p["__error"] == "manifest_unreadable", (
+        f"expected sanitized code, got {p['__error']!r} — likely leaking exception message"
+    )
+    # Belt-and-suspenders: the directory name (which the StarterPackError
+    # message DID contain) must not appear anywhere in the payload.
+    assert "synthetic-pack" not in p["__error"]
+
+
+def test_list_starter_packs_handles_corrupt_json_without_leaking(
+    monkeypatch, tmp_path
+):
+    """Pre-fix bug: json.JSONDecodeError bubbled past the narrow
+    `except StarterPackError` and broke the soft-fail contract; if it
+    HAD been caught, the message would have included the parser line/
+    column. Now: caught by the widened handler AND sanitized."""
+    pack_dir = _stub_index_with_one_pack(monkeypatch, tmp_path)
+    (pack_dir / "manifest.json").write_text("{ this is not valid json", encoding="utf-8")
+
+    packs = mp.list_starter_packs()
+    assert len(packs) == 1
+    p = packs[0]
+    assert p["__error"] == "manifest_unreadable"
+    assert p["pack_id"] == "synthetic-pack"
+
+
+def test_list_starter_packs_handles_oserror_without_leaking(
+    monkeypatch, tmp_path
+):
+    """Pre-fix bug: an unreadable manifest (e.g. permissions denied)
+    raised OSError, which slipped past the narrow except clause.
+    Now caught and sanitized."""
+    pack_dir = _stub_index_with_one_pack(monkeypatch, tmp_path)
+    # Create manifest.json as a directory so .read_text() raises
+    # IsADirectoryError (an OSError subclass) — portable across OS,
+    # avoids relying on chmod which behaves differently when running
+    # as root in a container.
+    (pack_dir / "manifest.json").mkdir()
+
+    packs = mp.list_starter_packs()
+    assert len(packs) == 1
+    p = packs[0]
+    assert p["__error"] == "manifest_unreadable"
+
+
+def test_list_starter_packs_logs_full_detail_server_side(
+    monkeypatch, tmp_path, caplog
+):
+    """Operator-facing diagnostic info must still be available — just
+    via the server log, not the API response."""
+    pack_dir = _stub_index_with_one_pack(monkeypatch, tmp_path)
+    (pack_dir / "manifest.json").write_text("{ broken", encoding="utf-8")
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        mp.list_starter_packs()
+
+    # Note: structlog routes through stdlib logging; caplog captures the
+    # event name. The full exception chain is attached via exc_info.
+    assert any(
+        "starter_pack_manifest_unreadable" in record.getMessage()
+        or "starter_pack_manifest_unreadable" in str(record.__dict__)
+        for record in caplog.records
+    ), (
+        f"expected 'starter_pack_manifest_unreadable' log event; "
+        f"saw: {[r.getMessage() for r in caplog.records]}"
+    )
+
+
 # ─── Subject-id validation ──────────────────────────────────────────────────
 
 

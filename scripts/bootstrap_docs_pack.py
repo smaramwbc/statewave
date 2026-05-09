@@ -46,6 +46,81 @@ BATCH_SIZE = 50
 SOURCE = "statewave-docs"
 EPISODE_TYPE = "doc_section"
 
+# HTTP statuses that warrant retry. These are the failure shapes a Fly
+# rolling deploy produces when it lands on an in-flight request: 502
+# (bad gateway while the upstream machine is being replaced), 503 (no
+# machines accepting), 504 (request idle timeout while a machine is
+# being replaced). 500 is included because compile failures sometimes
+# surface as 500 from transient DB connection drops during deploy. 429
+# covers rate-limit spikes.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_RETRYABLE_NETWORK_EXCEPTIONS = (
+    httpx.NetworkError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+)
+
+
+async def _request_with_retry(
+    op: str,
+    fn,
+    *,
+    attempts: int = 6,
+    initial_delay_s: float = 2.0,
+    max_delay_s: float = 30.0,
+) -> httpx.Response:
+    """Run an httpx call with exponential backoff on transient failures.
+
+    Catches the failure shape produced by a Fly rolling deploy that
+    lands on an in-flight request: connection drops mid-stream
+    (RemoteProtocolError), 502/503/504 from the platform, or a hung
+    socket that times out. Without retry, the docs refresh silently
+    leaves the support pack empty whenever a deploy collides — the pack
+    only refreshes again on the next docs-repo push or manual rerun.
+
+    Idempotency assumptions for the call sites that use this helper:
+      - DELETE /v1/subjects/{id} is idempotent (404-on-missing accepted
+        as success by `_purge`).
+      - POST /v1/episodes/batch may produce duplicates if a prior call
+        partially committed but the response was lost mid-flight; the
+        downstream compile pass tolerates duplicate episodes gracefully
+        and the workflow's verify-step only checks "episodes > 0".
+      - POST /v1/memories/compile only processes uncompiled episodes,
+        so a retry naturally resumes from where the killed call left
+        off without re-doing work.
+
+    Backoff: 2 → 4 → 8 → 16 → 30 → 30 seconds across 5 retries (~90s
+    total wall-clock), which covers a typical Fly rolling deploy cycle
+    (~30-60s per machine, two machines).
+    """
+    delay = initial_delay_s
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = await fn()
+        except _RETRYABLE_NETWORK_EXCEPTIONS as e:
+            if attempt == attempts:
+                raise
+            print(
+                f"  {op} attempt {attempt}/{attempts} failed: "
+                f"{type(e).__name__}: {e}; retrying in {delay:.1f}s",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay_s)
+            continue
+        if resp.status_code in _RETRYABLE_STATUS and attempt < attempts:
+            print(
+                f"  {op} attempt {attempt}/{attempts} got HTTP "
+                f"{resp.status_code}; retrying in {delay:.1f}s",
+                file=sys.stderr,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay_s)
+            continue
+        return resp
+    # Unreachable: the loop either returns or raises above.
+    raise RuntimeError(f"{op}: retry loop exited without result")
+
 
 def _section_to_episode(section: DocSection) -> dict:
     return {
@@ -76,7 +151,10 @@ async def _existing_episode_count(client: httpx.AsyncClient, url: str) -> int:
 
 
 async def _purge(client: httpx.AsyncClient, url: str) -> None:
-    resp = await client.delete(f"{url}/v1/subjects/{SUBJECT_ID}")
+    resp = await _request_with_retry(
+        "purge",
+        lambda: client.delete(f"{url}/v1/subjects/{SUBJECT_ID}"),
+    )
     if resp.status_code not in (200, 204, 404):
         print(
             f"  WARN: subject delete returned {resp.status_code}: {resp.text}",
@@ -94,7 +172,10 @@ async def _ingest_batched(
     for i in range(0, len(sections), batch_size):
         batch = sections[i : i + batch_size]
         body = {"episodes": [_section_to_episode(s) for s in batch]}
-        resp = await client.post(f"{url}/v1/episodes/batch", json=body)
+        resp = await _request_with_retry(
+            f"ingest batch {i}-{i+len(batch)}",
+            lambda body=body: client.post(f"{url}/v1/episodes/batch", json=body),
+        )
         if resp.status_code not in (200, 201):
             print(
                 f"  ERROR ingest batch {i}-{i+len(batch)}: "
@@ -114,10 +195,13 @@ async def _compile(client: httpx.AsyncClient, url: str) -> dict:
     # client default's 120s — bumped to 600s so a full pack rebuild completes
     # even on the first run after a purge. The fly platform's request idle
     # timeout sits comfortably above this.
-    resp = await client.post(
-        f"{url}/v1/memories/compile",
-        json={"subject_id": SUBJECT_ID},
-        timeout=600.0,
+    resp = await _request_with_retry(
+        "compile",
+        lambda: client.post(
+            f"{url}/v1/memories/compile",
+            json={"subject_id": SUBJECT_ID},
+            timeout=600.0,
+        ),
     )
     if resp.status_code not in (200, 201):
         print(f"  ERROR compile: {resp.status_code} {resp.text}", file=sys.stderr)

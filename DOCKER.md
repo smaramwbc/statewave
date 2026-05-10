@@ -1,6 +1,6 @@
 # Statewave server
 
-Memory + intelligence stack for AI agents — episodes in, distilled memories out.
+Open-source memory runtime for AI agents — episodes in, distilled memories out.
 
 [![Image](https://img.shields.io/docker/image-size/statewavedev/statewave/latest?label=image)](https://hub.docker.com/r/statewavedev/statewave)
 [![Pulls](https://img.shields.io/docker/pulls/statewavedev/statewave)](https://hub.docker.com/r/statewavedev/statewave)

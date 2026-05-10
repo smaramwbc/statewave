@@ -69,7 +69,7 @@ jobs:
             type=semver,pattern={{major}}
           labels: |
             org.opencontainers.image.title=Statewave
-            org.opencontainers.image.description=Statewave server — memory + intelligence stack for AI agents
+            org.opencontainers.image.description=Statewave server — open-source memory runtime for AI agents
             org.opencontainers.image.vendor=Statewave
             org.opencontainers.image.licenses=AGPL-3.0
             org.opencontainers.image.source=https://github.com/smaramwbc/statewave
@@ -116,5 +116,5 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: statewavedev/statewave
-          short-description: "Memory + intelligence stack for AI agents"
+          short-description: "Open-source memory runtime for AI agents"
           readme-filepath: ./DOCKER.md

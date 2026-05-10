@@ -4,7 +4,7 @@
 [![License: AGPL-3.0 + Commercial](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Commercial-blue.svg)](LICENSING.md)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
-**Memory runtime for AI agents and AI-powered applications.**
+**Open-source memory runtime for AI agents.** Statewave compiles raw events into ranked, token-bounded context bundles with full provenance — so your AI stops forgetting across sessions. Self-hosted on Postgres, no vendor lock-in.
 
 **Primary focus: support-agent workflows** — where structured memory clearly outperforms naive history stuffing and simple RAG. Statewave gives your support agent durable customer context across sessions, with provenance, ranked retrieval, and token budgets.
 

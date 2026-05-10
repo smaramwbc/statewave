@@ -1,0 +1,35 @@
+apiVersion: v2
+name: statewave
+description: |
+  Statewave — memory infrastructure for AI agents.
+  Deploys the Statewave API (FastAPI + pgvector) on Kubernetes. Postgres
+  with the pgvector extension is a prerequisite and is NOT bundled by this
+  chart — point STATEWAVE_DATABASE_URL at a managed instance (Neon,
+  Supabase, RDS, Cloud SQL, …) or an in-cluster Postgres you operate.
+type: application
+
+# Chart version follows the chart's own lifecycle, not the API image's.
+# Bump this for any chart-template change.
+version: 0.1.0
+
+# appVersion tracks the Statewave API release this chart was validated
+# against. Operators can override the deployed image via image.tag.
+appVersion: "0.7.0"
+
+home: https://statewave.ai
+sources:
+  - https://github.com/smaramwbc/statewave
+icon: https://statewave.ai/favicon.svg
+
+keywords:
+  - ai
+  - memory
+  - llm
+  - agents
+  - rag
+  - pgvector
+  - fastapi
+
+maintainers:
+  - name: Statewave maintainers
+    url: https://github.com/smaramwbc/statewave

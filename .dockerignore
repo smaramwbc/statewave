@@ -41,3 +41,6 @@ node_modules
 *.db
 *.sqlite
 *.sqlite3
+
+# Helm chart — only needed for k8s deploys, not the API image
+helm

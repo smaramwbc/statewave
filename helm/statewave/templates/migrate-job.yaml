@@ -1,0 +1,77 @@
+{{- if .Values.migrationJob.enabled -}}
+{{/*
+Schema migrations run as a Helm pre-install + pre-upgrade hook Job.
+Helm will not proceed with the install/upgrade until this Job succeeds,
+which guarantees the Deployment never serves traffic against an
+out-of-date schema.
+
+`hook-delete-policy: before-hook-creation,hook-succeeded` cleans up the
+previous Job before the next install/upgrade so the Job name doesn't
+collide across upgrades; the ttlSecondsAfterFinished value provides a
+secondary safety net.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "statewave.fullname" . }}-migrate
+  labels:
+    {{- include "statewave.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrationJob.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrationJob.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.migrationJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "statewave.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+        {{- with .Values.migrationJob.podLabels }}
+          {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.migrationJob.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: OnFailure
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "statewave.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "statewave.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          command: ["alembic"]
+          args: ["upgrade", "head"]
+          env:
+            {{- include "statewave.commonEnv" . | nindent 12 }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.migrationJob.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

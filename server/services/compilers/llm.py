@@ -28,9 +28,11 @@ from typing import Any, Sequence
 
 import structlog
 
+from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
 from server.services.compilers.heuristic import extract_payload_text
+from server.services.memory_ttl import compute_valid_to
 
 logger = structlog.stdlib.get_logger()
 
@@ -216,6 +218,7 @@ class LLMCompiler:
                 else:
                     summary = str(raw_summary)[:200] if raw_summary else content[:200]
 
+                ep_valid_from = source_ep.created_at or datetime.now(timezone.utc)
                 results.append(
                     MemoryRow(
                         id=uuid.uuid4(),
@@ -224,7 +227,8 @@ class LLMCompiler:
                         content=content,
                         summary=summary,
                         confidence=min(max(float(mem.get("confidence", 0.7)), 0.0), 1.0),
-                        valid_from=source_ep.created_at or datetime.now(timezone.utc),
+                        valid_from=ep_valid_from,
+                        valid_to=compute_valid_to(kind, ep_valid_from, settings.kind_ttl_days),
                         source_episode_ids=[source_ep.id],
                         metadata_={"compiler": "llm", "model": self._model},
                         status="active",

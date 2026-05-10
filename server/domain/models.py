@@ -25,7 +25,13 @@ class MemoryKind(str, Enum):
 class MemoryStatus(str, Enum):
     active = "active"
     superseded = "superseded"
-    deleted = "deleted"
+    # `tombstoned` matches the vocabulary that issue #49
+    # (state-assembly receipts) expects to surface in the receipt's
+    # `supersession_status` field. The previous value was `deleted` —
+    # an aspirational hard-delete state that was never wired up; the
+    # rename happened with the v0.7 memory-TTL work which uses this
+    # status as the soft-tombstone target for expired memories.
+    tombstoned = "tombstoned"
 
 
 # ---------------------------------------------------------------------------

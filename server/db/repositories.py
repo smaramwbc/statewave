@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from typing import Sequence
 
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db.tables import (
@@ -20,6 +20,21 @@ from server.db.tables import (
     ResolutionRow,
     SubjectHealthCacheRow,
 )
+
+
+def _unexpired(stmt):
+    """Restrict a Memory query to rows whose `valid_to` has not passed.
+
+    Memories with a NULL `valid_to` are forever-valid (no TTL configured
+    for their kind, no conflict-supersession deadline). Memories with a
+    `valid_to` in the future are still authoritative. Memories whose
+    `valid_to` has passed are excluded — even if the hourly TTL cleanup
+    pass has not yet tombstoned them, so retrieval honours the bound
+    immediately on expiry instead of waiting up to an hour for the
+    backstop sweep. See `server.services.memory_ttl` for the cleanup
+    side and the v0.7 memory-TTL design notes.
+    """
+    return stmt.where(or_(MemoryRow.valid_to.is_(None), MemoryRow.valid_to > func.now()))
 
 
 def _tenant_filter(stmt, column, tenant_id: str | None):
@@ -142,6 +157,7 @@ async def search_memories(
         .where(MemoryRow.subject_id == subject_id)
         .where(MemoryRow.status == "active")
     )
+    stmt = _unexpired(stmt)
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     if kind:
         stmt = stmt.where(MemoryRow.kind == kind)
@@ -194,6 +210,7 @@ async def list_active_memories_by_subject(
         .order_by(MemoryRow.created_at.asc())
         .limit(limit)
     )
+    stmt = _unexpired(stmt)
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.scalars().all()
@@ -246,6 +263,7 @@ async def search_memories_by_embedding(
         .where(MemoryRow.status == "active")
         .where(MemoryRow.embedding.isnot(None))
     )
+    stmt = _unexpired(stmt)
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     if kind:
         stmt = stmt.where(MemoryRow.kind == kind)

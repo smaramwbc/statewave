@@ -268,6 +268,7 @@ async def _ingest_records_async(
     memories_data: Iterable[dict[str, Any]],
     extra_provenance: dict[str, Any],
     extra_metadata: dict[str, Any],
+    wait_for_embeddings: bool = False,
 ) -> dict[str, int]:
     eps = list(episodes_data)
     mems = list(memories_data)
@@ -281,6 +282,15 @@ async def _ingest_records_async(
             f"Too many memories: {len(mems)} > limit {settings.memory_import_max_memories}.",
             status_code=413,
         )
+
+    # Pre-baked packs (bundled starter packs, .swmem exports, clones) ship
+    # compiled memories alongside their source episodes. Without this guard
+    # the first /v1/memories/compile after import re-runs the LLM compiler
+    # over every imported episode — adding ~15s to a fresh visitor's first
+    # chat for no net memory gain. When memories are imported in the same
+    # batch we treat the episodes as already compiled by default; an
+    # explicit `last_compiled_at` in the input still wins.
+    pack_is_pre_compiled = bool(mems)
 
     id_map: dict[str, str] = {}
     async with engine_module.get_session_factory()() as session:
@@ -300,6 +310,9 @@ async def _ingest_records_async(
             ep_occurred_dt = (
                 _parse_iso_or_now(ep["occurred_at"]) if ep.get("occurred_at") else ep_created_dt
             )
+            ep_last_compiled_dt = _parse_iso_or_none(ep.get("last_compiled_at"))
+            if ep_last_compiled_dt is None and pack_is_pre_compiled:
+                ep_last_compiled_dt = ep_created_dt
             row = EpisodeRow(
                 id=new_id,
                 subject_id=target_subject_id,
@@ -311,7 +324,7 @@ async def _ingest_records_async(
                 provenance=provenance,
                 occurred_at=ep_occurred_dt,
                 created_at=ep_created_dt,
-                last_compiled_at=_parse_iso_or_none(ep.get("last_compiled_at")),
+                last_compiled_at=ep_last_compiled_dt,
             )
             session.add(row)
 
@@ -361,16 +374,30 @@ async def _ingest_records_async(
         await session.commit()
 
     if memories_needing_embedding:
-        # Fire-and-forget: must not block the import response. The shared
-        # scheduler is the same one the compile path uses, so both write
-        # paths produce embedded memories with the same guarantees.
+        # Default: fire-and-forget — must not block large operator-supplied
+        # imports. The shared scheduler is the same one the compile path
+        # uses, so both write paths produce embedded memories with the same
+        # guarantees.
+        #
+        # `wait_for_embeddings=True`: caller (e.g. the marketing demo seed)
+        # blocks until the embeddings are persisted. Without this, a fast
+        # visitor's first `/v1/context` lookup can race the backfill and
+        # land on a corpus with NULL embeddings — the vector search returns
+        # nothing, retrieval falls back to recency-only, and the answer
+        # quality on the very first turn is visibly worse than every turn
+        # after. The wait runs against batched embeddings (one provider
+        # call per import), so it adds ~0.5–2s for a typical starter pack.
         from server.services.embeddings.backfill import (
+            generate_embeddings_background,
             schedule_embedding_backfill,
         )
 
         ids = [m[0] for m in memories_needing_embedding]
         texts = [m[1] for m in memories_needing_embedding]
-        schedule_embedding_backfill(ids, texts)
+        if wait_for_embeddings:
+            await generate_embeddings_background(ids, texts)
+        else:
+            schedule_embedding_backfill(ids, texts)
 
     return {"episodes": len(eps), "memories": len(mems)}
 
@@ -454,6 +481,11 @@ async def import_starter_pack(
         memories_data=memories_data,
         extra_provenance={"starter_pack_id": pack_id},
         extra_metadata=extra_metadata,
+        # Block on embedding backfill so the visitor's first /v1/context
+        # call hits a fully-embedded corpus. Starter packs are bounded
+        # (~60 memories) so the added wait is small relative to the rest
+        # of the seed step (which the client already shows a spinner for).
+        wait_for_embeddings=True,
     )
 
     logger.info(

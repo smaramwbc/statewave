@@ -33,9 +33,11 @@ def get_app_version() -> str:
 
 async def _cleanup_loop():
     """Periodically clean up stale ephemeral demo subjects and old compile jobs."""
+    from server.db.engine import get_session_factory
     from server.services.snapshots import cleanup_ephemeral_subjects
     from server.services.compile_jobs_durable import cleanup_old_jobs
     from server.services.ratelimit import cleanup_expired_windows
+    from server.services.memory_ttl import cleanup_expired_memories
 
     while True:
         await asyncio.sleep(3600)  # every hour
@@ -62,6 +64,20 @@ async def _cleanup_loop():
             except Exception as exc:
                 logger.warning("rate_limit_cleanup_error", error=str(exc))
 
+        # Memory TTL — backstop tombstoning of expired memories. Retrieval
+        # already filters `valid_to <= now()` rows out, so this loop is
+        # not on the hot path; it just transitions stale rows to the
+        # `tombstoned` status that the receipts surface (issue #49) reads.
+        if settings.kind_ttl_days:
+            try:
+                async with get_session_factory()() as session:
+                    tombstoned = await cleanup_expired_memories(session)
+                    await session.commit()
+                if tombstoned:
+                    logger.info("memory_ttl_cleanup_done", tombstoned=tombstoned)
+            except Exception as exc:
+                logger.warning("memory_ttl_cleanup_error", error=str(exc))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -73,12 +89,13 @@ async def lifespan(app: FastAPI):
     webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
     await webhooks.start_worker()
 
-    # Start background cleanup (snapshots + compile job retention + rate limit)
+    # Start background cleanup (snapshots + compile job retention + rate limit + memory TTL)
     cleanup_task = None
     needs_cleanup = (
         settings.enable_snapshots
         or settings.compile_job_retention_hours > 0
         or (settings.rate_limit_rpm > 0 and settings.rate_limit_strategy == "distributed")
+        or bool(settings.kind_ttl_days)
     )
     if needs_cleanup:
         cleanup_task = asyncio.create_task(_cleanup_loop())

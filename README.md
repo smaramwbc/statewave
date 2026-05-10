@@ -147,13 +147,13 @@ Statewave is not limited to live chat transcripts. **Connectors** feed real-worl
 | MCP server | Copilot / Claude / Cursor / agent memory | ✅ shipped |
 | GitHub | Issues, pull requests, reviews, releases → repo memory | ✅ shipped |
 | Markdown | Local docs, ADRs, RFCs → decision memory | ✅ shipped |
-| Slack | Channel + thread history → team memory | ✅ shipped |
+| Slack | Channel + thread history (pull) + Events-API webhook (push, with opt-in DMs and group DMs) → team memory | ✅ shipped |
 | n8n | Workflow runs, failures, per-node errors → workflow memory | ✅ shipped |
 | Zapier | "Webhooks by Zapier" → push-mode helper for any zap | ✅ shipped |
-| Discord | Community and team support memory | _planned_ |
-| Notion | Decision docs, architecture pages | _planned_ |
-| Zendesk / Intercom / Freshdesk | Customer support memory | _planned_ |
-| Gmail / email | Relationship and inbox memory | _planned_ |
+| Discord | Server channel + thread history → community memory | ✅ shipped |
+| Notion | Pages + opt-in body content + database scoping → decision memory | ✅ shipped |
+| Zendesk / Intercom / Freshdesk | Tickets + replies + notes (pull) and real-time webhook receivers (push) → customer memory | ✅ shipped |
+| Gmail | Query-scoped messages (pull, with History-API delta sync) and Cloud Pub/Sub push receiver → relationship memory | ✅ shipped |
 
 Connectors live in their own repository so this core stays focused on the runtime. They are **modular** — install only what you need:
 

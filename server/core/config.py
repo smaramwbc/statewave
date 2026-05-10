@@ -1,5 +1,10 @@
 """Application configuration via environment variables."""
 
+from __future__ import annotations
+
+import json
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -64,6 +69,69 @@ class Settings(BaseSettings):
 
     # Compile job retention (hours, 0 = no cleanup)
     compile_job_retention_hours: int = 168  # 7 days
+
+    # ── Memory TTL / expiry policies ────────────────────────────────
+    # Per-kind expiry windows. Keys are MemoryKind values
+    # ("profile_fact", "episode_summary", "procedure", "artifact_ref");
+    # values are positive integers (days). Memories of a configured kind
+    # get `valid_to = valid_from + days` stamped on insert; the cleanup
+    # loop tombstones any active memory whose `valid_to` has passed,
+    # and `/v1/context` retrieval filters out unexpired-but-not-yet-
+    # cleaned-up rows so the bound is enforced even between cleanup runs.
+    #
+    # Empty dict (default) = no expiry for any kind (backwards compatible).
+    # Missing kind = no expiry for that kind (a kind not listed is forever).
+    # Per-subject / per-tenant TTL policies are out of scope for v0.7
+    # — they belong to the policy layer (issue #50). v0.7 ships per-kind
+    # globals only so the simple primitive lands first.
+    #
+    # Set via env: STATEWAVE_KIND_TTL_DAYS='{"episode_summary":30,"artifact_ref":7}'
+    kind_ttl_days: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("kind_ttl_days", mode="before")
+    @classmethod
+    def _parse_kind_ttl_days(cls, value):
+        """Accept either a real dict (in-process construction / test fixtures)
+        or a JSON-encoded string (the env-var path). Reject anything else
+        eagerly so misconfiguration surfaces at startup, not at first
+        memory insert."""
+        if value is None or value == "":
+            return {}
+        if isinstance(value, dict):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"STATEWAVE_KIND_TTL_DAYS is not valid JSON: {exc.msg}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "STATEWAVE_KIND_TTL_DAYS must decode to a JSON object "
+                    f"(got {type(parsed).__name__})"
+                )
+        else:
+            raise ValueError(
+                f"STATEWAVE_KIND_TTL_DAYS must be a dict or JSON string, got {type(value).__name__}"
+            )
+        # Normalise + validate values. Reject zero / negative explicitly
+        # — a zero-day TTL is almost certainly an operator mistake; the
+        # right way to disable expiry for a kind is to leave it out of
+        # the dict entirely.
+        clean: dict[str, int] = {}
+        for kind, days in parsed.items():
+            if not isinstance(days, int) or isinstance(days, bool):
+                raise ValueError(
+                    f"STATEWAVE_KIND_TTL_DAYS[{kind!r}] must be an integer, got {type(days).__name__}"
+                )
+            if days <= 0:
+                raise ValueError(
+                    f"STATEWAVE_KIND_TTL_DAYS[{kind!r}] must be > 0; "
+                    "remove the kind from the dict to disable expiry for it."
+                )
+            clean[str(kind)] = days
+        return clean
 
     # Webhooks (empty = disabled)
     webhook_url: str | None = None

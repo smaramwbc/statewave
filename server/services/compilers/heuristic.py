@@ -14,7 +14,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
+from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
+from server.services.memory_ttl import compute_valid_to
 
 
 class HeuristicCompiler:
@@ -32,6 +34,9 @@ class HeuristicCompiler:
         if not text:
             return results
 
+        ttl = settings.kind_ttl_days
+        ep_valid_from = ep.created_at or datetime.now(timezone.utc)
+
         # Episode summary
         results.append(
             MemoryRow(
@@ -41,7 +46,8 @@ class HeuristicCompiler:
                 content=text[:500],
                 summary=text[:200],
                 confidence=0.8,
-                valid_from=ep.created_at or datetime.now(timezone.utc),
+                valid_from=ep_valid_from,
+                valid_to=compute_valid_to("episode_summary", ep_valid_from, ttl),
                 source_episode_ids=[ep.id],
                 metadata_={},
                 status="active",
@@ -58,7 +64,8 @@ class HeuristicCompiler:
                     content=fact,
                     summary=fact[:200],
                     confidence=0.6,
-                    valid_from=ep.created_at or datetime.now(timezone.utc),
+                    valid_from=ep_valid_from,
+                    valid_to=compute_valid_to("profile_fact", ep_valid_from, ttl),
                     source_episode_ids=[ep.id],
                     metadata_={},
                     status="active",

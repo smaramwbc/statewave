@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Sequence
 
 import structlog
@@ -31,7 +30,7 @@ import structlog
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
-from server.services.compilers.heuristic import extract_payload_text
+from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
 
 logger = structlog.stdlib.get_logger()
@@ -40,7 +39,18 @@ logger = structlog.stdlib.get_logger()
 
 _MAX_BATCH_CHARS = 6000  # Max total chars per LLM call (leaves room for prompt + response)
 _MAX_CONCURRENCY = 4  # Max parallel LLM calls
-_MAX_TOKENS = 3000  # Response token limit per batch
+# Response token limit per batch. The old 3000 ceiling combined with a
+# 500-per-episode allocation produced two failure modes:
+#   - Single-episode batches got 500 tokens, far too tight for a dense
+#     conversation: the LLM emitted ~10 memories with content + summary,
+#     hit the cap mid-string, and acomplete_json's strict json.loads
+#     raised LLMResponseError. The whole batch was discarded.
+#   - Multi-episode batches got 500 * episode_count but capped at 3000,
+#     still tight for ~15+ memories per batch.
+# gpt-4o-mini supports 16K output tokens. 8000 leaves real headroom and
+# costs nothing extra (only used tokens are billed).
+_MAX_TOKENS = 8000  # Response token limit per batch
+_TOKENS_PER_EPISODE = 1500  # Per-episode allocation inside the cap
 
 _SYSTEM_PROMPT = """\
 You are a memory extraction engine for an AI context system called Statewave.
@@ -68,6 +78,7 @@ Rules:
 - If an episode contains no extractable memories, skip it.
 - Return ONLY the JSON array, no markdown fences or extra text.
 """
+
 
 class LLMCompiler:
     """Async LLM memory compiler with batching + parallelism. Implements BaseCompiler protocol.
@@ -218,7 +229,7 @@ class LLMCompiler:
                 else:
                     summary = str(raw_summary)[:200] if raw_summary else content[:200]
 
-                ep_valid_from = source_ep.created_at or datetime.now(timezone.utc)
+                ep_valid_from = episode_valid_from(source_ep)
                 results.append(
                     MemoryRow(
                         id=uuid.uuid4(),
@@ -245,8 +256,11 @@ class LLMCompiler:
         gives us provider portability plus standardized timeout/retry/error
         mapping.
         """
-        # Adjust max tokens based on batch size
-        max_tokens = min(_MAX_TOKENS, 500 * episode_count)
+        # Adjust max tokens based on batch size. 1500/episode is the
+        # empirical headroom for a dense LoCoMo session (~15 memories
+        # at ~100 tokens each); the _MAX_TOKENS ceiling stops absurdly
+        # large batches from blowing past gpt-4o-mini's 16K output cap.
+        max_tokens = min(_MAX_TOKENS, _TOKENS_PER_EPISODE * episode_count)
 
         try:
             parsed = await llm_adapter.acomplete_json(

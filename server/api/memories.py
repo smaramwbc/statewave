@@ -71,6 +71,18 @@ async def _run_compile(
             for row in new_rows:
                 await session.refresh(row)
 
+            # Backfill embeddings in the background. Without this the
+            # async compile path leaves every freshly-compiled memory
+            # with `embedding=NULL`, which silently breaks semantic
+            # retrieval (`search_memories(semantic=True)` returns 0,
+            # `assemble_context` falls back to lexical + heuristic
+            # ranking only). The sync compile route below already
+            # schedules this; the async route used to skip it.
+            schedule_embedding_backfill(
+                [row.id for row in new_rows],
+                [row.content for row in new_rows],
+            )
+
             await webhooks.fire(
                 "memories.compiled",
                 {

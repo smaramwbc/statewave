@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone
 from typing import Any, Sequence
 
 import structlog
@@ -31,7 +30,7 @@ import structlog
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
-from server.services.compilers.heuristic import extract_payload_text
+from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
 
 logger = structlog.stdlib.get_logger()
@@ -40,7 +39,18 @@ logger = structlog.stdlib.get_logger()
 
 _MAX_BATCH_CHARS = 6000  # Max total chars per LLM call (leaves room for prompt + response)
 _MAX_CONCURRENCY = 4  # Max parallel LLM calls
-_MAX_TOKENS = 3000  # Response token limit per batch
+# Response token limit per batch. The old 3000 ceiling combined with a
+# 500-per-episode allocation produced two failure modes:
+#   - Single-episode batches got 500 tokens, far too tight for a dense
+#     conversation: the LLM emitted ~10 memories with content + summary,
+#     hit the cap mid-string, and acomplete_json's strict json.loads
+#     raised LLMResponseError. The whole batch was discarded.
+#   - Multi-episode batches got 500 * episode_count but capped at 3000,
+#     still tight for ~15+ memories per batch.
+# gpt-4o-mini supports 16K output tokens. 8000 leaves real headroom and
+# costs nothing extra (only used tokens are billed).
+_MAX_TOKENS = 8000  # Response token limit per batch
+_TOKENS_PER_EPISODE = 1500  # Per-episode allocation inside the cap
 
 _SYSTEM_PROMPT = """\
 You are a memory extraction engine for an AI context system called Statewave.
@@ -67,7 +77,29 @@ Rules:
 - If an episode is mostly code or example data with no generalizable claims, return episode_summary describing what the section is about, not profile_facts cataloguing the example values.
 - If an episode contains no extractable memories, skip it.
 - Return ONLY the JSON array, no markdown fences or extra text.
+
+Temporal grounding:
+- If a message is prefixed with a bracketed timestamp like `[1:14 pm on 25 May, 2023]`, that timestamp marks WHEN the speaker said this — and by extension, when any event they describe in present/past tense happened.
+- For ANY memory you extract about a dated event, action, or state change (e.g. "ran a race", "attended a conference", "joined a group", "started a project", "moved cities", "got married"), the memory `content` MUST include the date.
+- Convert relative phrases against the message timestamp: "yesterday" -> the message timestamp minus 1 day; "last Saturday" -> the most recent Saturday before the message timestamp; "two days ago" -> message timestamp minus 2 days; "last year" -> the year before the message timestamp's year. Render the resolved date as ISO-like prose ("on 2023-05-24" or "on 24 May 2023") in the memory `content`.
+- If a message is itself stated as a present-tense event ("I'm running a charity race today"), use the message's own timestamp date.
+- If no timestamp is available and no absolute date is mentioned in the text, omit the date rather than guess.
+- This applies to BOTH profile_fact and episode_summary memories — a summary of a dated session should also lead with or include the session date.
+
+Granularity — extract DETAILS, not just headlines:
+- "Generalizable" does not mean "high-level". A specific concrete attribute about a subject IS a generalizable fact about them. "Melanie bought purple running shoes" is a valid profile_fact. "Caroline's favorite book is 'Becoming Nicole' by Amy Ellis Nutt" is a valid profile_fact. "Melanie's daughter's birthday is August 13" is a valid profile_fact.
+- Extract each of these as distinct memories when they appear in the source — DO NOT collapse them into a vague "Caroline likes books" or "Melanie is into running".
+- Specifically watch for and preserve:
+    * Concrete objects + their attributes (colors, brand names, materials: "purple running shoes", "hand-painted bowl", "necklace from grandma in Sweden")
+    * Motivations and reasons ("Melanie got into running to de-stress")
+    * Quantities, durations, ages ("4 years", "10 years ago", "two weekends ago")
+    * Specific titles, names, places ("'Becoming Nicole' by Amy Ellis Nutt", "Connected LGBTQ Activists", "lake sunrise")
+    * Stated preferences and feelings ("the support group made Caroline feel accepted")
+    * Relationships between people / things (who-mentors-whom, who-bought-what-for-whom)
+- A profile_fact about a person can be ONE specific item — don't wait to find "enough" to summarize.
+- Better to emit 30 concrete granular memories than 5 vague ones. The retrieval layer ranks them; the compiler's job is recall.
 """
+
 
 class LLMCompiler:
     """Async LLM memory compiler with batching + parallelism. Implements BaseCompiler protocol.
@@ -218,7 +250,7 @@ class LLMCompiler:
                 else:
                     summary = str(raw_summary)[:200] if raw_summary else content[:200]
 
-                ep_valid_from = source_ep.created_at or datetime.now(timezone.utc)
+                ep_valid_from = episode_valid_from(source_ep)
                 results.append(
                     MemoryRow(
                         id=uuid.uuid4(),
@@ -245,8 +277,11 @@ class LLMCompiler:
         gives us provider portability plus standardized timeout/retry/error
         mapping.
         """
-        # Adjust max tokens based on batch size
-        max_tokens = min(_MAX_TOKENS, 500 * episode_count)
+        # Adjust max tokens based on batch size. 1500/episode is the
+        # empirical headroom for a dense LoCoMo session (~15 memories
+        # at ~100 tokens each); the _MAX_TOKENS ceiling stops absurdly
+        # large batches from blowing past gpt-4o-mini's 16K output cap.
+        max_tokens = min(_MAX_TOKENS, _TOKENS_PER_EPISODE * episode_count)
 
         try:
             parsed = await llm_adapter.acomplete_json(

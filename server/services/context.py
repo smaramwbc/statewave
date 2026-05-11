@@ -768,11 +768,45 @@ def _short_episode_text(payload: dict, source: str, type_: str) -> str:
 
 
 def _render_memory_line(row: Any) -> str:
-    """Render a memory as a clean context line, appropriate for its kind."""
+    """Render a memory as a clean context line, appropriate for its kind.
+
+    Date prefix: every memory carries a `valid_from` (set by the compiler
+    from `payload.event_time` / `payload.messages[0].timestamp` /
+    `ep.created_at`). If the memory's content text doesn't already
+    mention an absolute date, we prefix the line with `[YYYY-MM-DD]` so
+    downstream answer-model prompts can reason about timing. Without
+    this, questions like "when did X happen?" become unanswerable from
+    the bundle even though the temporal info is on the row.
+    """
     if row.kind == "episode_summary":
         # Summaries contain raw "role: content" lines — condense into a readable note
-        return f"- {_clean_summary(row.content)}"
-    return f"- {row.content}"
+        body = _clean_summary(row.content)
+    else:
+        body = row.content
+    date_prefix = _date_prefix_for(row, body)
+    return f"- {date_prefix}{body}" if date_prefix else f"- {body}"
+
+
+def _date_prefix_for(row: Any, body: str) -> str:
+    """Return a `[YYYY-MM-DD] ` prefix if `row.valid_from` looks real
+    (not the bench-incident default of "compile time") AND the body
+    doesn't already mention an absolute date. Returns empty string
+    otherwise.
+    """
+    import re
+
+    valid_from = getattr(row, "valid_from", None)
+    if valid_from is None:
+        return ""
+    # If the body already contains a YYYY year token (2019-2099 range),
+    # the compiler already surfaced a date — don't double-stamp.
+    if re.search(r"\b(20[1-9]\d)\b", body):
+        return ""
+    try:
+        stamp = valid_from.strftime("%Y-%m-%d")
+    except (AttributeError, ValueError):
+        return ""
+    return f"[{stamp}] "
 
 
 def _clean_summary(text: str) -> str:

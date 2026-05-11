@@ -77,6 +77,14 @@ Rules:
 - If an episode is mostly code or example data with no generalizable claims, return episode_summary describing what the section is about, not profile_facts cataloguing the example values.
 - If an episode contains no extractable memories, skip it.
 - Return ONLY the JSON array, no markdown fences or extra text.
+
+Temporal grounding:
+- If a message is prefixed with a bracketed timestamp like `[1:14 pm on 25 May, 2023]`, that timestamp marks WHEN the speaker said this — and by extension, when any event they describe in present/past tense happened.
+- For ANY memory you extract about a dated event, action, or state change (e.g. "ran a race", "attended a conference", "joined a group", "started a project", "moved cities", "got married"), the memory `content` MUST include the date.
+- Convert relative phrases against the message timestamp: "yesterday" -> the message timestamp minus 1 day; "last Saturday" -> the most recent Saturday before the message timestamp; "two days ago" -> message timestamp minus 2 days; "last year" -> the year before the message timestamp's year. Render the resolved date as ISO-like prose ("on 2023-05-24" or "on 24 May 2023") in the memory `content`.
+- If a message is itself stated as a present-tense event ("I'm running a charity race today"), use the message's own timestamp date.
+- If no timestamp is available and no absolute date is mentioned in the text, omit the date rather than guess.
+- This applies to BOTH profile_fact and episode_summary memories — a summary of a dated session should also lead with or include the session date.
 """
 
 

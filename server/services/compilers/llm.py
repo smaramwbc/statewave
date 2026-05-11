@@ -85,6 +85,19 @@ Temporal grounding:
 - If a message is itself stated as a present-tense event ("I'm running a charity race today"), use the message's own timestamp date.
 - If no timestamp is available and no absolute date is mentioned in the text, omit the date rather than guess.
 - This applies to BOTH profile_fact and episode_summary memories — a summary of a dated session should also lead with or include the session date.
+
+Granularity — extract DETAILS, not just headlines:
+- "Generalizable" does not mean "high-level". A specific concrete attribute about a subject IS a generalizable fact about them. "Melanie bought purple running shoes" is a valid profile_fact. "Caroline's favorite book is 'Becoming Nicole' by Amy Ellis Nutt" is a valid profile_fact. "Melanie's daughter's birthday is August 13" is a valid profile_fact.
+- Extract each of these as distinct memories when they appear in the source — DO NOT collapse them into a vague "Caroline likes books" or "Melanie is into running".
+- Specifically watch for and preserve:
+    * Concrete objects + their attributes (colors, brand names, materials: "purple running shoes", "hand-painted bowl", "necklace from grandma in Sweden")
+    * Motivations and reasons ("Melanie got into running to de-stress")
+    * Quantities, durations, ages ("4 years", "10 years ago", "two weekends ago")
+    * Specific titles, names, places ("'Becoming Nicole' by Amy Ellis Nutt", "Connected LGBTQ Activists", "lake sunrise")
+    * Stated preferences and feelings ("the support group made Caroline feel accepted")
+    * Relationships between people / things (who-mentors-whom, who-bought-what-for-whom)
+- A profile_fact about a person can be ONE specific item — don't wait to find "enough" to summarize.
+- Better to emit 30 concrete granular memories than 5 vague ones. The retrieval layer ranks them; the compiler's job is recall.
 """
 
 

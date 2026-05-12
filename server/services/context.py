@@ -28,6 +28,7 @@ from server.schemas.responses import (
     MemoryResponse,
     SessionInfo,
 )
+from server.services import policy as policy_service
 from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.embeddings import get_provider as get_embedding_provider
@@ -120,6 +121,8 @@ async def assemble_context(
     query_id: str | None = None,
     task_id: str | None = None,
     parent_receipt_id: str | None = None,
+    caller_id: str | None = None,
+    caller_type: str | None = None,
 ) -> ContextBundleResponse:
     """Build a deterministic, token-bounded, ranked context bundle.
 
@@ -250,6 +253,68 @@ async def assemble_context(
         fact_rows = list(fact_rows) + added_facts
         procedure_rows = list(procedure_rows) + added_procs
         summary_rows = list(summary_rows) + added_summaries
+
+    # -- Apply sensitivity-label policy (#50) -------------------------------
+    # Evaluate each candidate memory against the active policy bundle BEFORE
+    # scoring, so denied rows never enter the ranker and the receipt's
+    # `policy.filters_applied` records every fired rule. In log_only mode
+    # (the default) no row is removed — the decisions are still recorded
+    # into the receipt so tenants can audit what *would* be filtered before
+    # flipping to enforce.
+    tenant_config = await receipts_service.load_tenant_receipt_config(
+        session, tenant_id
+    )
+    policy_mode = (tenant_config or {}).get("policy_mode", "log_only")
+    policy_enforce = policy_mode == "enforce"
+    active_bundle = await policy_service.resolve_active_bundle(session, tenant_id)
+    policy_context = policy_service.PolicyContext(
+        caller_id=caller_id,
+        caller_type=caller_type,
+        tenant_id=tenant_id,
+    )
+
+    all_memory_rows_pre_policy = (
+        list(fact_rows) + list(procedure_rows) + list(summary_rows)
+    )
+    policy_decisions: dict[Any, policy_service.MemoryPolicyDecision] = {}
+    for row in all_memory_rows_pre_policy:
+        decision = policy_service.evaluate_memory(
+            memory_labels=list(getattr(row, "sensitivity_labels", None) or []),
+            bundle=active_bundle,
+            context=policy_context,
+        )
+        if decision.action != "allow":
+            policy_decisions[row.id] = decision
+
+    if policy_enforce and policy_decisions:
+        # Filter the per-kind buckets so the rest of the assembly path
+        # never sees a denied row. Redact is applied in place by
+        # apply_decisions and the row is kept.
+        kept_facts, _ = policy_service.apply_decisions(
+            fact_rows, policy_decisions, enforce=True
+        )
+        kept_procs, _ = policy_service.apply_decisions(
+            procedure_rows, policy_decisions, enforce=True
+        )
+        kept_summaries, _ = policy_service.apply_decisions(
+            summary_rows, policy_decisions, enforce=True
+        )
+        fact_rows = kept_facts
+        procedure_rows = kept_procs
+        summary_rows = kept_summaries
+        denied_count = sum(
+            1 for d in policy_decisions.values() if d.action == "deny"
+        )
+        redacted_count = sum(
+            1 for d in policy_decisions.values() if d.action == "redact"
+        )
+        logger.info(
+            "policy_enforced",
+            tenant_id=tenant_id,
+            bundle_hash=active_bundle.bundle_hash if active_bundle else None,
+            denied=denied_count,
+            redacted=redacted_count,
+        )
 
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)
@@ -577,6 +642,12 @@ async def assemble_context(
         task_id=task_id,
         parent_receipt_id=parent_receipt_id,
         mode="retrieval",
+        caller_id=caller_id,
+        caller_type=caller_type,
+        tenant_config=tenant_config,
+        policy_bundle=active_bundle,
+        policy_mode=policy_mode,
+        policy_decisions=policy_decisions,
     )
 
     return ContextBundleResponse(
@@ -610,19 +681,26 @@ async def _maybe_emit_receipt(
     task_id: str | None,
     parent_receipt_id: str | None,
     mode: str,
+    caller_id: str | None = None,
+    caller_type: str | None = None,
+    tenant_config: dict[str, Any] | None = None,
+    policy_bundle: policy_service.PolicyBundle | None = None,
+    policy_mode: str = "log_only",
+    policy_decisions: dict[Any, policy_service.MemoryPolicyDecision] | None = None,
 ) -> tuple[str | None, bool]:
     """Decide, build, and persist a receipt. Returns (receipt_id, emitted).
 
     Both surfaces that emit receipts (`/v1/context` and `/v1/handoff`)
     share this routine — keeping the decision logic and the write path
     in a single place avoids divergence as the schema grows."""
-    tenant_config = await receipts_service.load_tenant_receipt_config(
-        session, tenant_id
-    )
+    if tenant_config is None:
+        tenant_config = await receipts_service.load_tenant_receipt_config(
+            session, tenant_id
+        )
     decision = receipts_service.decide_emission(
         request_flag=emit_receipt,
         tenant_config=tenant_config,
-        policy_decision=None,  # reserved for #50
+        policy_decision=None,  # reserved for force-on (#50 v2)
     )
     if not decision.emit:
         logger.debug(
@@ -634,6 +712,11 @@ async def _maybe_emit_receipt(
         return None, False
 
     context_hash, context_size_bytes = receipts_service.canonicalize_context(assembled)
+    policy_decisions = policy_decisions or {}
+    filters_applied = policy_service.build_filters_applied(policy_decisions)
+    filters_skipped = policy_service.build_filters_skipped(
+        policy_decisions, policy_bundle
+    )
 
     selected_memories = [
         receipts_service.SelectedMemory(
@@ -675,6 +758,12 @@ async def _maybe_emit_receipt(
         query_id=query_id,
         task_id=task_id,
         parent_receipt_id=parent_receipt_id,
+        policy_bundle_hash=policy_bundle.bundle_hash if policy_bundle else None,
+        policy_mode=policy_mode,
+        filters_applied=filters_applied,
+        filters_skipped=filters_skipped,
+        caller_id=caller_id,
+        caller_type=caller_type,
     )
     written_id = await receipts_service.write_receipt(
         session, receipt_body=body, as_of=as_of
@@ -691,6 +780,10 @@ async def _maybe_emit_receipt(
         memory_count=len(selected_memories),
         episode_count=len(selected_episodes),
         context_size_bytes=context_size_bytes,
+        policy_filters_applied=len(filters_applied),
+        policy_bundle_hash=(
+            policy_bundle.bundle_hash if policy_bundle else None
+        ),
     )
     return written_id, True
 
@@ -991,6 +1084,7 @@ def _memory_response(row: Any) -> MemoryResponse:
         source_episode_ids=row.source_episode_ids or [],
         metadata=row.metadata_,
         status=row.status,
+        sensitivity_labels=list(getattr(row, "sensitivity_labels", None) or []),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )

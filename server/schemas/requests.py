@@ -72,6 +72,25 @@ class GetContextRequest(BaseModel):
         max_length=26,
         description="ULID of a parent receipt to chain this assembly to.",
     )
+    caller_id: str | None = Field(
+        None,
+        max_length=256,
+        description=(
+            "Identity of the caller making the request — consumed by the "
+            "sensitivity-label policy layer (#50). When the tenant config "
+            "sets `require_caller_identity: true`, this and `caller_type` "
+            "are mandatory and missing values return 401."
+        ),
+    )
+    caller_type: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Category of caller (e.g. 'support_agent', 'marketing_tool', "
+            "'eval_harness'). Used by policy predicates to express "
+            "tool-class-level rules without per-caller policy authoring."
+        ),
+    )
 
 
 class CreateResolutionRequest(BaseModel):
@@ -100,6 +119,28 @@ class HandoffRequest(BaseModel):
     query_id: str | None = Field(None, max_length=64)
     task_id: str | None = Field(None, max_length=64)
     parent_receipt_id: str | None = Field(None, max_length=26)
+    caller_id: str | None = Field(None, max_length=256)
+    caller_type: str | None = Field(None, max_length=64)
+
+
+class SetMemoryLabelsRequest(BaseModel):
+    """Body for PATCH /v1/memories/{memory_id}/labels.
+
+    Replaces the memory's sensitivity_labels with the supplied list.
+    Empty list clears all labels (memory becomes untagged → policy
+    default-allow). See docs/sensitivity-labels.md for the label
+    vocabulary recommendations and policy interaction.
+    """
+
+    sensitivity_labels: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description=(
+            "Replacement label list. Capped at 32 entries to keep "
+            "policy evaluation bounded — labels are not free-form "
+            "metadata, they're an enumerable capability vocabulary."
+        ),
+    )
 
 
 class LLMChatMessage(BaseModel):

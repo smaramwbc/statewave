@@ -73,6 +73,13 @@ class MemoryRow(Base):
     )
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    # Per-memory capability tags consumed by the policy layer (issue #50).
+    # Empty list = untagged = policy default-allow. See migration 0018 for
+    # the GIN index that makes `sensitivity_labels && '{pii}'` cheap on the
+    # hot path.
+    sensitivity_labels: Mapped[list[str]] = mapped_column(
+        ARRAY(String()), nullable=False, default=list
+    )
     # Stored as pgvector `vector(EMBEDDING_DIMENSIONS)` since migration 0013.
     # Reads/writes happen as `list[float]` — the pgvector SQLAlchemy adapter
     # serializes/deserializes transparently. Cosine search uses the SQL `<=>`

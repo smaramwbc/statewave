@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import uuid
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
 from server.db.engine import get_session
-from server.schemas.requests import CompileMemoriesRequest
+from server.db.tables import MemoryRow
+from server.schemas.requests import CompileMemoriesRequest, SetMemoryLabelsRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
 from server.services.compilers import get_compiler
 from server.services.embeddings import get_provider as get_embedding_provider
@@ -270,6 +273,64 @@ def _to_response(row) -> MemoryResponse:
         source_episode_ids=row.source_episode_ids or [],
         metadata=row.metadata_,
         status=row.status,
+        sensitivity_labels=list(getattr(row, "sensitivity_labels", None) or []),
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+@router.patch("/{memory_id}/labels", response_model=MemoryResponse)
+async def set_memory_labels(
+    memory_id: uuid.UUID,
+    body: SetMemoryLabelsRequest,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
+):
+    """Replace a memory's `sensitivity_labels` with the supplied list.
+
+    Tenant-scoped: a memory belonging to another tenant returns 404,
+    not 403, so a tenant cannot probe another tenant's id space by
+    PATCHing an id and looking at the error code.
+
+    Labels are deduplicated, lowercased, and stripped of surrounding
+    whitespace before write — operator-supplied strings are
+    notoriously inconsistent, and the policy evaluator does exact
+    match, so normalizing at the write boundary is the only place to
+    do it safely. An empty list clears all labels (the memory becomes
+    untagged → policy default-allow).
+    """
+    # Canonicalize labels so policy evaluation is stable regardless of
+    # how the operator typed them. Cap at 32 entries (Pydantic
+    # validation already enforces this; defensive recheck here).
+    normalized = sorted({lbl.strip().lower() for lbl in body.sensitivity_labels if lbl.strip()})
+    if len(normalized) > 32:
+        raise HTTPException(status_code=400, detail="too many labels (max 32)")
+
+    stmt = select(MemoryRow).where(MemoryRow.id == memory_id)
+    if tenant_id is not None:
+        stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+    result = await session.execute(stmt)
+    row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="memory not found")
+
+    update_stmt = (
+        update(MemoryRow)
+        .where(MemoryRow.id == memory_id)
+        .values(sensitivity_labels=normalized)
+    )
+    if tenant_id is not None:
+        update_stmt = update_stmt.where(MemoryRow.tenant_id == tenant_id)
+    await session.execute(update_stmt)
+    await session.commit()
+
+    # Re-fetch so the response carries the post-write timestamp.
+    result = await session.execute(stmt)
+    row = result.scalar_one()
+    logger.info(
+        "memory_labels_set",
+        memory_id=str(memory_id),
+        tenant_id=tenant_id,
+        labels=normalized,
+    )
+    return _to_response(row)

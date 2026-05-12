@@ -51,6 +51,7 @@ async def get_timeline(
                 source_episode_ids=m.source_episode_ids or [],
                 metadata=m.metadata_,
                 status=m.status,
+                sensitivity_labels=list(m.sensitivity_labels or []),
                 created_at=m.created_at,
                 updated_at=m.updated_at,
             )

@@ -13,12 +13,16 @@ from typing import Sequence
 from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import datetime
+
 from server.db.tables import (
     EpisodeRow,
     MemoryRow,
     QueryEmbeddingCacheRow,
+    ReceiptRow,
     ResolutionRow,
     SubjectHealthCacheRow,
+    TenantConfigRow,
 )
 
 
@@ -558,3 +562,88 @@ async def query_cache_set(
         QueryEmbeddingCacheRow.expires_at < cleanup_threshold
     )
     await session.execute(cleanup_stmt)
+
+
+# ---------------------------------------------------------------------------
+# Receipts (issue #49)
+# ---------------------------------------------------------------------------
+
+
+async def insert_receipt(session: AsyncSession, row: ReceiptRow) -> ReceiptRow:
+    """Append-only insert. Service code is the sole writer; nothing in
+    this repository module exposes UPDATE or DELETE against receipts.
+    Operators wanting hard tamper-evidence should additionally restrict
+    DB role privileges to INSERT+SELECT only."""
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def get_receipt_by_id(
+    session: AsyncSession,
+    receipt_id: str,
+    *,
+    tenant_id: str | None = None,
+) -> ReceiptRow | None:
+    """Fetch one receipt. Tenant-scoped when `tenant_id` is set so a
+    tenant can never read another tenant's receipts even if it guesses
+    the ULID."""
+    stmt = select(ReceiptRow).where(ReceiptRow.receipt_id == receipt_id)
+    stmt = _tenant_filter(stmt, ReceiptRow.tenant_id, tenant_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def list_receipts(
+    session: AsyncSession,
+    subject_id: str,
+    *,
+    tenant_id: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> Sequence[ReceiptRow]:
+    """List receipts for a subject, newest first.
+
+    Pagination is cursor-based (not offset) — ULIDs sort lexically by
+    creation time, so the cursor is simply the last `receipt_id` from
+    the previous page. Offset pagination is unsafe for an append-only
+    audit log where rows are continuously inserted.
+    """
+    stmt = (
+        select(ReceiptRow)
+        .where(ReceiptRow.subject_id == subject_id)
+        .order_by(ReceiptRow.created_at.desc(), ReceiptRow.receipt_id.desc())
+        .limit(limit)
+    )
+    stmt = _tenant_filter(stmt, ReceiptRow.tenant_id, tenant_id)
+    if since is not None:
+        stmt = stmt.where(ReceiptRow.created_at >= since)
+    if until is not None:
+        stmt = stmt.where(ReceiptRow.created_at <= until)
+    if cursor is not None:
+        stmt = stmt.where(ReceiptRow.receipt_id < cursor)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
+# ---------------------------------------------------------------------------
+# Tenant configs (issue #49 — used by emission-decision; issue #50 will add
+# policy_mode and require_caller_identity keys to the same document)
+# ---------------------------------------------------------------------------
+
+
+async def get_tenant_config(
+    session: AsyncSession,
+    tenant_id: str,
+) -> TenantConfigRow | None:
+    """Fetch the tenant's config row, or None if it has never been set.
+
+    Callers should treat None as "all defaults" — the missing-row case
+    is the dominant case (every tenant starts without an explicit
+    config) and must not be a hot-path error path.
+    """
+    stmt = select(TenantConfigRow).where(TenantConfigRow.tenant_id == tenant_id)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()

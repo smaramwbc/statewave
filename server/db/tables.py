@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -206,6 +206,86 @@ class SubjectHealthCacheRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ReceiptRow(Base):
+    """State-assembly receipt — immutable per-retrieval audit artifact.
+
+    See docs/state-assembly-receipts.md for the full schema and
+    rationale. Append-only by service-layer convention; nothing in
+    the server codebase issues UPDATE or DELETE against this table.
+    """
+
+    __tablename__ = "receipts"
+
+    receipt_id: Mapped[str] = mapped_column(String(26), primary_key=True)
+    parent_receipt_id: Mapped[str | None] = mapped_column(String(26), nullable=True)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    query_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    policy_bundle_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    region: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    receipt_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_receipts_tenant_subject_created",
+            "tenant_id",
+            "subject_id",
+            "created_at",
+        ),
+    )
+
+
+class TenantConfigRow(Base):
+    """Per-tenant configuration document. JSONB so future knobs land
+    without per-setting migrations. See docs/state-assembly-receipts.md
+    for the keys that v1 reads."""
+
+    __tablename__ = "tenant_configs"
+
+    tenant_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    config: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class PolicyBundleRow(Base):
+    """Immutable policy YAML bundle, addressed by content hash.
+
+    Reserved for issue #50 — created in the same migration as receipts
+    so #50 doesn't have to migrate again. Empty in v1; receipt rows
+    carry `policy_bundle_hash = NULL` until the policy layer ships.
+    """
+
+    __tablename__ = "policy_bundles"
+
+    bundle_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    yaml_content: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (Index("ix_policy_bundles_tenant_active", "tenant_id", "active"),)
 
 
 class QueryEmbeddingCacheRow(Base):

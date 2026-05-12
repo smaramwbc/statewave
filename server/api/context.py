@@ -21,7 +21,11 @@ async def get_context(
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):
-    """Build a ranked, token-bounded context bundle for an AI task. Returns identity facts, recent history, and raw episodes within the token budget."""
+    """Build a ranked, token-bounded context bundle for an AI task. Returns identity facts, recent history, and raw episodes within the token budget.
+
+    When `emit_receipt=true` (or the tenant's receipts config is `always`),
+    the response includes a `receipt_id` pointing at an immutable
+    state-assembly receipt — see docs/state-assembly-receipts.md."""
     with span("assemble_context", {"subject_id": body.subject_id, "task": body.task}):
         return await assemble_context(
             session,
@@ -30,4 +34,8 @@ async def get_context(
             max_tokens=body.max_tokens,
             tenant_id=tenant_id,
             session_id=body.session_id,
+            emit_receipt=body.emit_receipt,
+            query_id=body.query_id,
+            task_id=body.task_id,
+            parent_receipt_id=body.parent_receipt_id,
         )

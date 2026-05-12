@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.core.config import settings
 from server.db import repositories as repo
 from server.schemas.responses import HandoffResponse, HealthFactorResponse, ResolutionSummaryItem
+from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.health import compute_health
 from server.services.health_alerts import check_and_alert
@@ -34,10 +35,16 @@ async def assemble_handoff(
     reason: str = "escalation",
     max_tokens: int | None = None,
     tenant_id: str | None = None,
+    *,
+    emit_receipt: bool | None = None,
+    query_id: str | None = None,
+    task_id: str | None = None,
+    parent_receipt_id: str | None = None,
 ) -> HandoffResponse:
     """Build a compact handoff context pack for agent escalation/transfer."""
     budget = max_tokens or 4000
     enc = tiktoken.get_encoding(settings.tiktoken_model)
+    as_of = datetime.now(timezone.utc)
 
     # -- Fetch data ---------------------------------------------------------
     fact_rows = await repo.search_memories(
@@ -217,6 +224,30 @@ async def assemble_handoff(
         "context_episode_ids": [str(ep.id) for ep in other_eps[:5]],
     }
 
+    # -- Receipt emission ---------------------------------------------------
+    # Same decision function as /v1/context. The handoff selected-entries
+    # set is the rows already captured in `provenance`: the active facts,
+    # the current-session episode cap, the resolution rows, and the
+    # carry-forward recent-context episodes. Ranks reflect iteration
+    # order, not retrieval scoring — handoff has no scoring pass.
+    receipt_id, receipt_emitted = await _maybe_emit_handoff_receipt(
+        session=session,
+        tenant_id=tenant_id,
+        subject_id=subject_id,
+        session_id=session_id,
+        reason=reason,
+        as_of=as_of,
+        handoff_notes=handoff_notes,
+        token_estimate=token_estimate,
+        active_fact_rows=[row for row in fact_rows if row.status == "active"],
+        session_episode_rows=current_session_eps[:10],
+        carry_forward_episode_rows=other_eps[:5],
+        emit_receipt=emit_receipt,
+        query_id=query_id,
+        task_id=task_id,
+        parent_receipt_id=parent_receipt_id,
+    )
+
     return HandoffResponse(
         subject_id=subject_id,
         session_id=session_id,
@@ -237,7 +268,98 @@ async def assemble_handoff(
         handoff_notes=handoff_notes,
         token_estimate=token_estimate,
         provenance=provenance,
+        receipt_id=receipt_id,
+        receipt_emitted=receipt_emitted,
     )
+
+
+async def _maybe_emit_handoff_receipt(
+    *,
+    session: AsyncSession,
+    tenant_id: str | None,
+    subject_id: str,
+    session_id: str,
+    reason: str,
+    as_of: datetime,
+    handoff_notes: str,
+    token_estimate: int,
+    active_fact_rows: list[Any],
+    session_episode_rows: list[Any],
+    carry_forward_episode_rows: list[Any],
+    emit_receipt: bool | None,
+    query_id: str | None,
+    task_id: str | None,
+    parent_receipt_id: str | None,
+) -> tuple[str | None, bool]:
+    """Decide-and-write a handoff receipt. Mirrors the /v1/context flow
+    but uses `mode="retrieval"` (v1 has one mode; future handoff-specific
+    modes can subdivide if needed). Receipt task text is the synthetic
+    `handoff:{reason}` string so audit dashboards can filter handoffs
+    cleanly from regular retrievals."""
+    tenant_config = await receipts_service.load_tenant_receipt_config(
+        session, tenant_id
+    )
+    decision = receipts_service.decide_emission(
+        request_flag=emit_receipt,
+        tenant_config=tenant_config,
+        policy_decision=None,
+    )
+    if not decision.emit:
+        return None, False
+
+    context_hash, context_size_bytes = receipts_service.canonicalize_context(
+        handoff_notes
+    )
+
+    rank = 0
+    selected_memories = []
+    for row in active_fact_rows:
+        rank += 1
+        selected_memories.append(
+            receipts_service.SelectedMemory(
+                memory_id=row.id,
+                kind=row.kind,
+                valid_from=row.valid_from,
+                valid_to=row.valid_to,
+                supersession_status=receipts_service.supersession_status_from_row(row),
+                source_episode_ids=list(row.source_episode_ids or []),
+                rank=rank,
+            )
+        )
+    selected_episodes = []
+    for row in list(session_episode_rows) + list(carry_forward_episode_rows):
+        rank += 1
+        selected_episodes.append(
+            receipts_service.SelectedEpisode(
+                episode_id=row.id,
+                source=row.source,
+                type=row.type,
+                occurred_at=getattr(row, "occurred_at", None) or row.created_at,
+                rank=rank,
+            )
+        )
+
+    receipt_id = receipts_service.new_ulid()
+    body = receipts_service.build_receipt_body(
+        receipt_id=receipt_id,
+        mode="retrieval",
+        tenant_id=tenant_id,
+        subject_id=subject_id,
+        task=f"handoff:{reason}:{session_id}",
+        as_of=as_of,
+        selected_memories=selected_memories,
+        selected_episodes=selected_episodes,
+        context_hash=context_hash,
+        context_size_bytes=context_size_bytes,
+        token_estimate=token_estimate,
+        query_id=query_id,
+        task_id=task_id,
+        parent_receipt_id=parent_receipt_id,
+    )
+    written_id = await receipts_service.write_receipt(
+        session, receipt_body=body, as_of=as_of
+    )
+    return (written_id, written_id is not None)
 
 
 def _build_customer_summary(facts: list[str], subject_id: str) -> str:

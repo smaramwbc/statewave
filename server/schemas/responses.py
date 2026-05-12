@@ -74,6 +74,24 @@ class ContextBundleResponse(BaseModel):
     sessions: list[SessionInfo] = Field(
         default_factory=list, description="Sessions represented in the context bundle"
     )
+    receipt_id: str | None = Field(
+        None,
+        description=(
+            "ULID of the state-assembly receipt, when emitted. None when no "
+            "receipt was emitted for this call (caller didn't request one, "
+            "tenant config is `never`, or emission failed — check "
+            "`receipt_emitted` to distinguish the last case)."
+        ),
+    )
+    receipt_emitted: bool = Field(
+        False,
+        description=(
+            "True iff a receipt was successfully written for this call. "
+            "When False and `receipt_id` is also None, the call requested no "
+            "receipt; when False but emission was attempted, the failure was "
+            "logged server-side and the assembly result is still authoritative."
+        ),
+    )
 
 
 class TimelineResponse(BaseModel):
@@ -141,6 +159,14 @@ class HandoffResponse(BaseModel):
     handoff_notes: str = ""
     token_estimate: int = 0
     provenance: dict[str, Any] = Field(default_factory=dict)
+    receipt_id: str | None = Field(
+        None,
+        description="ULID of the state-assembly receipt, when emitted.",
+    )
+    receipt_emitted: bool = Field(
+        False,
+        description="True iff a receipt was successfully written for this handoff.",
+    )
 
 
 class HealthResponse(BaseModel):

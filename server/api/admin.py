@@ -2478,3 +2478,71 @@ async def get_active_policy(tenant_id: str | None = Query(None)):
             for r in bundle.rules
         ],
     }
+
+
+# ─── Memory-labels admin shim (issue #50) ──────────────────────────────────
+#
+# Mirrors PATCH /v1/memories/{memory_id}/labels but lives under
+# /admin so the admin-app proxy (which only forwards /admin/*) can
+# reach it without widening its allowlist. The endpoint accepts an
+# optional `tenant_id` query param so an operator can edit labels
+# across tenants; the underlying canonicalization (dedup + lowercase
+# + trim) and 32-label cap are the same as the /v1 endpoint.
+
+
+class AdminSetMemoryLabelsRequest(BaseModel):
+    sensitivity_labels: list[str]
+
+
+@router.patch("/memories/{memory_id}/labels")
+async def admin_set_memory_labels(
+    memory_id: uuid.UUID,
+    req: AdminSetMemoryLabelsRequest,
+    tenant_id: str | None = Query(None),
+):
+    """Operator-facing memory-labels editor. Same canonicalization
+    rules as /v1/memories/{id}/labels."""
+    from sqlalchemy import select, update as sa_update
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    normalized = sorted(
+        {lbl.strip().lower() for lbl in req.sensitivity_labels if lbl.strip()}
+    )
+    if len(normalized) > 32:
+        raise HTTPException(status_code=400, detail="too many labels (max 32)")
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = select(MemoryRow).where(MemoryRow.id == memory_id)
+        if tenant_id is not None:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        update_stmt = (
+            sa_update(MemoryRow)
+            .where(MemoryRow.id == memory_id)
+            .values(sensitivity_labels=normalized)
+        )
+        if tenant_id is not None:
+            update_stmt = update_stmt.where(MemoryRow.tenant_id == tenant_id)
+        await session.execute(update_stmt)
+        await session.commit()
+        result = await session.execute(stmt)
+        row = result.scalar_one()
+
+    return {
+        "id": str(row.id),
+        "kind": row.kind,
+        "content": row.content,
+        "summary": row.summary,
+        "confidence": row.confidence,
+        "status": row.status,
+        "source_episode_ids": [str(s) for s in (row.source_episode_ids or [])],
+        "valid_from": row.valid_from.isoformat(),
+        "valid_to": row.valid_to.isoformat() if row.valid_to else None,
+        "sensitivity_labels": list(row.sensitivity_labels or []),
+        "created_at": row.created_at.isoformat(),
+    }

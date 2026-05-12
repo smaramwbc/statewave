@@ -5,8 +5,44 @@ on:
     tags: ["v*"]
 
 jobs:
+  verify-workspace-versions:
+    name: Verify workspace version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out statewave
+        uses: actions/checkout@v6
+        with:
+          path: statewave
+
+      - name: Check out statewave-py
+        uses: actions/checkout@v6
+        with:
+          repository: smaramwbc/statewave-py
+          path: statewave-py
+
+      - name: Check out statewave-ts
+        uses: actions/checkout@v6
+        with:
+          repository: smaramwbc/statewave-ts
+          path: statewave-ts
+
+      - name: Check out statewave-docs
+        uses: actions/checkout@v6
+        with:
+          repository: smaramwbc/statewave-docs
+          path: statewave-docs
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify mechanical version refs match statewave/pyproject.toml
+        run: python statewave-docs/tools/check-versions.py
+
   release:
     runs-on: ubuntu-latest
+    needs: verify-workspace-versions
     permissions:
       contents: write
 

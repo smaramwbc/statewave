@@ -20,8 +20,6 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from server.services.receipts import (
     CANONICALIZATION_VERSION,
     EmissionDecision,

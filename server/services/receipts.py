@@ -340,6 +340,14 @@ async def write_receipt(
             as_of=as_of,
         )
         await repo.insert_receipt(session, row)
+        # Explicit commit: get_session() does not auto-commit on exit
+        # (the /v1/context dependency session was primarily a read-side
+        # path before receipts). Without this the row is flushed but
+        # rolled back at session close, leaving callers with a
+        # receipt_id that points at nothing. A commit failure is
+        # treated the same as an insert failure: logged, swallowed,
+        # None returned so the bundle still serves.
+        await session.commit()
         return row.receipt_id
     except Exception:
         logger.warning(
@@ -349,6 +357,10 @@ async def write_receipt(
             tenant_id=receipt_body.get("tenant_id"),
             exc_info=True,
         )
+        try:
+            await session.rollback()
+        except Exception:
+            pass
         return None
 
 

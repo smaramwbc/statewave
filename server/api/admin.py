@@ -2137,3 +2137,100 @@ async def import_memory_endpoint(req: ImportPayloadRequest):
         )
     except StarterPackError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+# ─── Receipts (admin operator view) ─────────────────────────────────────────
+#
+# Mirrors GET /v1/receipts but allows cross-tenant listing for operators
+# auditing fleet-wide assembly traffic. Use the per-tenant /v1/receipts
+# from inside an application; use /admin/receipts from the admin app or
+# CLI when you need to see every tenant in one pane.
+
+
+@router.get("/receipts")
+async def admin_list_receipts(
+    subject_id: str | None = Query(None, description="Filter by subject id"),
+    tenant_id: str | None = Query(None, description="Filter by tenant id"),
+    since: str | None = Query(None, description="Lower bound on created_at (ISO 8601)"),
+    until: str | None = Query(None, description="Upper bound on created_at (ISO 8601)"),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Pagination cursor — pass the last receipt_id from the previous "
+            "page. ULIDs sort lexically by time so this is stable under "
+            "concurrent inserts."
+        ),
+    ),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """List receipts across tenants for operator audit views.
+
+    Either `subject_id` or `tenant_id` (or both) must be supplied —
+    cross-fleet unscoped listing is intentionally not exposed to avoid
+    a single page fetch becoming a 200-row dump of every tenant's
+    receipts at once.
+    """
+    if not subject_id and not tenant_id:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one of subject_id or tenant_id is required",
+        )
+
+    from datetime import datetime
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import ReceiptRow
+
+    def _parse(ts: str | None) -> datetime | None:
+        if not ts:
+            return None
+        # Tolerate the trailing-Z form some clients still emit.
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = (
+            select(ReceiptRow)
+            .order_by(ReceiptRow.created_at.desc(), ReceiptRow.receipt_id.desc())
+            .limit(limit)
+        )
+        if subject_id:
+            stmt = stmt.where(ReceiptRow.subject_id == subject_id)
+        if tenant_id:
+            stmt = stmt.where(ReceiptRow.tenant_id == tenant_id)
+        since_dt = _parse(since)
+        until_dt = _parse(until)
+        if since_dt is not None:
+            stmt = stmt.where(ReceiptRow.created_at >= since_dt)
+        if until_dt is not None:
+            stmt = stmt.where(ReceiptRow.created_at <= until_dt)
+        if cursor is not None:
+            stmt = stmt.where(ReceiptRow.receipt_id < cursor)
+
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+    next_cursor = rows[-1].receipt_id if len(rows) == limit else None
+    return {
+        "receipts": [row.body for row in rows],
+        "next_cursor": next_cursor,
+        "limit": limit,
+    }
+
+
+@router.get("/receipts/{receipt_id}")
+async def admin_get_receipt(receipt_id: str):
+    """Fetch one receipt by id across all tenants (admin view)."""
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import ReceiptRow
+
+    async with engine_module.get_session_factory()() as session:
+        result = await session.execute(
+            select(ReceiptRow).where(ReceiptRow.receipt_id == receipt_id)
+        )
+        row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="receipt not found")
+    return row.body

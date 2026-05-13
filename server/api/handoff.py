@@ -32,4 +32,8 @@ async def create_handoff(
         reason=body.reason,
         max_tokens=body.max_tokens,
         tenant_id=tenant_id,
+        emit_receipt=body.emit_receipt,
+        query_id=body.query_id,
+        task_id=body.task_id,
+        parent_receipt_id=body.parent_receipt_id,
     )

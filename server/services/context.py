@@ -28,6 +28,7 @@ from server.schemas.responses import (
     MemoryResponse,
     SessionInfo,
 )
+from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.query_cache import cached_embed_query
@@ -114,10 +115,24 @@ async def assemble_context(
     max_tokens: int | None = None,
     tenant_id: str | None = None,
     session_id: str | None = None,
+    *,
+    emit_receipt: bool | None = None,
+    query_id: str | None = None,
+    task_id: str | None = None,
+    parent_receipt_id: str | None = None,
 ) -> ContextBundleResponse:
-    """Build a deterministic, token-bounded, ranked context bundle."""
+    """Build a deterministic, token-bounded, ranked context bundle.
+
+    When emission is decided (see `server.services.receipts.decide_emission`),
+    a state-assembly receipt is written and its ULID is attached to the
+    response. Receipt write failures are non-fatal — the bundle is still
+    returned and a structured log records the failure."""
     budget = max_tokens or settings.default_max_context_tokens
     enc = tiktoken.get_encoding(settings.tiktoken_model)
+    # Captured up front so receipt's `as_of` records the wall-clock moment
+    # the assembly resolved against, not the moment the receipt was
+    # written (which can drift if downstream work is slow).
+    as_of = datetime.now(timezone.utc)
 
     # -- Fetch candidates ---------------------------------------------------
     fact_rows = await repo.search_memories(
@@ -443,6 +458,13 @@ async def assemble_context(
         "episodes": [],
     }
 
+    # Receipt provenance: collect the rows + score that actually made it
+    # into the bundle, in rank order. Recorded alongside the response so
+    # the receipt-write path doesn't have to walk `scored` again.
+    receipt_memory_rows: list[tuple[Any, float, int]] = []
+    receipt_episode_rows: list[tuple[Any, float, int]] = []
+    rank_counter = 0
+
     for item in scored:
         item_tokens = len(enc.encode(item.text))
         # Reserve ~10 tokens for section headers
@@ -451,6 +473,7 @@ async def assemble_context(
 
         budget_used += item_tokens
         section_lines[item.section].append(item.text)
+        rank_counter += 1
 
         if item.kind == "memory":
             resp = _memory_response(item.memory_row)
@@ -460,8 +483,10 @@ async def assemble_context(
                 included_procedures.append(resp)
             elif item.memory_row.kind == "episode_summary":
                 included_summaries.append(resp)
+            receipt_memory_rows.append((item.memory_row, item.score, rank_counter))
         elif item.kind == "episode":
             included_episodes.append(_episode_response(item.episode_row))
+            receipt_episode_rows.append((item.episode_row, item.score, rank_counter))
 
     # -- Render final text --------------------------------------------------
     # Order: task → facts → procedures → history → episodes
@@ -534,6 +559,26 @@ async def assemble_context(
     # Include summaries in the facts response list for backward compatibility
     all_facts = included_facts + included_summaries
 
+    # -- Receipt emission ---------------------------------------------------
+    # Decide-and-write happens after the bundle is fully built so the
+    # `output.context_hash` covers the exact bytes we're about to return.
+    receipt_id, receipt_emitted = await _maybe_emit_receipt(
+        session=session,
+        tenant_id=tenant_id,
+        subject_id=subject_id,
+        task=task,
+        as_of=as_of,
+        assembled=assembled,
+        token_estimate=token_estimate,
+        memory_rows=receipt_memory_rows,
+        episode_rows=receipt_episode_rows,
+        emit_receipt=emit_receipt,
+        query_id=query_id,
+        task_id=task_id,
+        parent_receipt_id=parent_receipt_id,
+        mode="retrieval",
+    )
+
     return ContextBundleResponse(
         subject_id=subject_id,
         task=task,
@@ -544,7 +589,110 @@ async def assemble_context(
         assembled_context=assembled,
         token_estimate=token_estimate,
         sessions=sessions,
+        receipt_id=receipt_id,
+        receipt_emitted=receipt_emitted,
     )
+
+
+async def _maybe_emit_receipt(
+    *,
+    session: AsyncSession,
+    tenant_id: str | None,
+    subject_id: str,
+    task: str,
+    as_of: datetime,
+    assembled: str,
+    token_estimate: int,
+    memory_rows: list[tuple[Any, float, int]],
+    episode_rows: list[tuple[Any, float, int]],
+    emit_receipt: bool | None,
+    query_id: str | None,
+    task_id: str | None,
+    parent_receipt_id: str | None,
+    mode: str,
+) -> tuple[str | None, bool]:
+    """Decide, build, and persist a receipt. Returns (receipt_id, emitted).
+
+    Both surfaces that emit receipts (`/v1/context` and `/v1/handoff`)
+    share this routine — keeping the decision logic and the write path
+    in a single place avoids divergence as the schema grows."""
+    tenant_config = await receipts_service.load_tenant_receipt_config(
+        session, tenant_id
+    )
+    decision = receipts_service.decide_emission(
+        request_flag=emit_receipt,
+        tenant_config=tenant_config,
+        policy_decision=None,  # reserved for #50
+    )
+    if not decision.emit:
+        logger.debug(
+            "receipt_skipped",
+            reason=decision.reason,
+            subject_id=subject_id,
+            tenant_id=tenant_id,
+        )
+        return None, False
+
+    context_hash, context_size_bytes = receipts_service.canonicalize_context(assembled)
+
+    selected_memories = [
+        receipts_service.SelectedMemory(
+            memory_id=row.id,
+            kind=row.kind,
+            valid_from=row.valid_from,
+            valid_to=row.valid_to,
+            supersession_status=receipts_service.supersession_status_from_row(row),
+            source_episode_ids=list(row.source_episode_ids or []),
+            rank=rank,
+            score=score,
+        )
+        for row, score, rank in memory_rows
+    ]
+    selected_episodes = [
+        receipts_service.SelectedEpisode(
+            episode_id=row.id,
+            source=row.source,
+            type=row.type,
+            occurred_at=getattr(row, "occurred_at", None) or row.created_at,
+            rank=rank,
+        )
+        for row, score, rank in episode_rows
+    ]
+
+    receipt_id = receipts_service.new_ulid()
+    body = receipts_service.build_receipt_body(
+        receipt_id=receipt_id,
+        mode=mode,
+        tenant_id=tenant_id,
+        subject_id=subject_id,
+        task=task,
+        as_of=as_of,
+        selected_memories=selected_memories,
+        selected_episodes=selected_episodes,
+        context_hash=context_hash,
+        context_size_bytes=context_size_bytes,
+        token_estimate=token_estimate,
+        query_id=query_id,
+        task_id=task_id,
+        parent_receipt_id=parent_receipt_id,
+    )
+    written_id = await receipts_service.write_receipt(
+        session, receipt_body=body, as_of=as_of
+    )
+    if written_id is None:
+        # Failure path: bundle still authoritative, log already emitted.
+        return None, False
+    logger.info(
+        "receipt_emitted",
+        receipt_id=written_id,
+        reason=decision.reason,
+        subject_id=subject_id,
+        tenant_id=tenant_id,
+        memory_count=len(selected_memories),
+        episode_count=len(selected_episodes),
+        context_size_bytes=context_size_bytes,
+    )
+    return written_id, True
 
 
 # ---------------------------------------------------------------------------

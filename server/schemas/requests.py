@@ -49,6 +49,29 @@ class GetContextRequest(BaseModel):
         max_length=256,
         description="Current session ID — episodes in this session receive a relevance boost",
     )
+    emit_receipt: bool | None = Field(
+        None,
+        description=(
+            "Per-request opt-in for emitting a state-assembly receipt. "
+            "Default behavior is governed by tenant config; see "
+            "docs/state-assembly-receipts.md."
+        ),
+    )
+    query_id: str | None = Field(
+        None,
+        max_length=64,
+        description="Caller-supplied query id, recorded on the receipt for trace correlation.",
+    )
+    task_id: str | None = Field(
+        None,
+        max_length=64,
+        description="Caller-supplied task id, recorded on the receipt for multi-call grouping.",
+    )
+    parent_receipt_id: str | None = Field(
+        None,
+        max_length=26,
+        description="ULID of a parent receipt to chain this assembly to.",
+    )
 
 
 class CreateResolutionRequest(BaseModel):
@@ -66,6 +89,17 @@ class HandoffRequest(BaseModel):
     )
     reason: str = Field("escalation", max_length=256, description="Why the handoff is happening")
     max_tokens: int | None = Field(None, ge=1, le=16000)
+    emit_receipt: bool | None = Field(
+        None,
+        description=(
+            "Per-request opt-in for emitting a state-assembly receipt. "
+            "Default behavior is governed by tenant config; see "
+            "docs/state-assembly-receipts.md."
+        ),
+    )
+    query_id: str | None = Field(None, max_length=64)
+    task_id: str | None = Field(None, max_length=64)
+    parent_receipt_id: str | None = Field(None, max_length=26)
 
 
 class LLMChatMessage(BaseModel):

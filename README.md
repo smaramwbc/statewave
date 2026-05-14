@@ -1,7 +1,7 @@
 # Statewave
 
 [![CI](https://github.com/smaramwbc/statewave/workflows/CI/badge.svg)](https://github.com/smaramwbc/statewave/actions/workflows/ci.yml)
-[![License: AGPL-3.0 + Commercial](https://img.shields.io/badge/license-AGPL--3.0%20%2B%20Commercial-blue.svg)](LICENSING.md)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
 **Open-source memory runtime for AI agents.** Statewave compiles raw events into ranked, token-bounded context bundles with full provenance — so your AI stops forgetting across sessions. Self-hosted on Postgres, no vendor lock-in.
@@ -281,28 +281,15 @@ The full community guide — categories, RFC process, moderation — lives in [s
 
 ## Licensing
 
-Statewave is **dual-licensed**:
+Statewave is licensed under the [Apache License, Version 2.0](LICENSE).
 
-- **[AGPLv3](LICENSE)** — for open-source / community use.
-- **[Commercial license](COMMERCIAL-LICENSE.md)** — for proprietary, SaaS,
-  embedded, hosted, or enterprise use.
+You may use, modify, and distribute it — including in proprietary or
+hosted products — without a separate agreement. Apache-2.0 includes an
+explicit patent grant from contributors.
 
-This allows Statewave to stay open and community-driven while protecting
-the project from unmanaged commercial hosting or closed-source
-redistribution. If you want to use Statewave in a proprietary product,
-SaaS platform, managed service, or enterprise environment without AGPL
-obligations, contact us for a commercial license.
-
-A startup-friendly commercial tier is available for early-stage companies
-under a qualifying threshold.
-
-- **Quick decision guide:** [LICENSING.md](LICENSING.md)
-- **Commercial license overview:** [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md)
-- **Tiers (Community / Startup / Growth / Enterprise):** [docs/licensing.md](docs/licensing.md)
+- **License:** [LICENSE](LICENSE) (Apache-2.0)
+- **Licensing overview:** [LICENSING.md](LICENSING.md)
 - **Trademark policy:** [TRADEMARKS.md](TRADEMARKS.md)
-- **Contributing under dual licensing:** [CONTRIBUTING.md](CONTRIBUTING.md)
-- **Contact:** [licensing@statewave.ai](mailto:licensing@statewave.ai)
-
-> This repository describes Statewave's licensing model and is not legal
-> advice. Consult qualified counsel before adopting Statewave in a
-> commercial product.
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Enterprise support (SLA, indemnity, procurement):**
+  [licensing@statewave.ai](mailto:licensing@statewave.ai)

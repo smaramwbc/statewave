@@ -6,14 +6,8 @@ Copyright (c) Statewave contributors.
 This product includes software developed by the Statewave project and its
 contributors.
 
-Statewave is dual-licensed:
-
-- **Open source:** GNU Affero General Public License v3.0 — see [LICENSE](LICENSE).
-- **Commercial:** Statewave Commercial License — see
-  [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md).
-
-For a plain-language summary of when each license applies, see
-[LICENSING.md](LICENSING.md). For trademark and brand usage, see
+Statewave is licensed under the Apache License, Version 2.0 — see
+[LICENSE](LICENSE). For trademark and brand usage, see
 [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Third-party software

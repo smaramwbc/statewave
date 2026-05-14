@@ -4,7 +4,7 @@ Thanks for your interest in contributing — Statewave is built in the open and
 external contributions are very welcome.
 
 This document covers the contribution process and the licensing implications
-of contributing to a dual-licensed project.
+of contributing to an Apache-2.0-licensed project.
 
 ## Ways to contribute
 
@@ -73,29 +73,16 @@ open an Issue or PR. Otherwise, start in Discussions.
 
 ## Licensing of contributions
 
-Statewave is dual-licensed under AGPLv3 and the Statewave Commercial
-License (see [LICENSING.md](LICENSING.md)). By contributing — opening a
-pull request, sending a patch, or otherwise submitting work — you agree
-that your contribution may be distributed under that same dual-license
-model: AGPLv3 **and** the Statewave Commercial License. You retain
-copyright in your work; we just need the right to ship it under both
-license tracks so the dual-licensing model keeps working.
+Statewave is licensed under the [Apache License, Version 2.0](LICENSE).
+By contributing — opening a pull request, sending a patch, or otherwise
+submitting work — you agree that your contribution is licensed under
+Apache-2.0 along with the rest of the project. You retain copyright in
+your work.
 
-To keep that arrangement on a clean footing, we use a lightweight CLA
-workflow for non-trivial contributions:
-
-- **Non-trivial contributions** — new features, refactors, behavioral
-  changes, anything beyond a small fix — may require a **signed
-  Contributor License Agreement (CLA)** before merge. A maintainer will
-  share the CLA text and link when relevant; it's a one-time step per
-  contributor.
-- **Trivial patches** — typo fixes, documentation corrections, small
-  patches — may be accepted without a full CLA at the maintainers'
-  discretion.
-- **DCO** (`git commit -s`, Developer Certificate of Origin) may be used
-  as a lightweight interim process if a CLA workflow is not yet in place
-  for your contribution. DCO is not a long-term substitute for the CLA
-  where commercial relicensing is involved.
+We use the **Developer Certificate of Origin** ([DCO](https://developercertificate.org/))
+for contributions. Sign your commits with `git commit -s` (or `--signoff`)
+to add a `Signed-off-by:` trailer asserting that you have the right to
+contribute the work under the project's license.
 
 If your employer has rights to your work, please make sure they have
 authorized the contribution before submitting.

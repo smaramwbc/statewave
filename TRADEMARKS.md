@@ -2,7 +2,7 @@
 
 The name **"Statewave"**, the Statewave logo, and related branding (the
 "Statewave Marks") are project and company marks. The open-source license
-that covers the source code of Statewave (AGPLv3) does **not** grant
+that covers the source code of Statewave (Apache-2.0) does **not** grant
 any rights to use the Statewave Marks. This policy describes the limited
 use we permit without a separate written agreement.
 
@@ -20,7 +20,7 @@ getting.
 - Use the name "Statewave" in **factual references**: documentation, blog
   posts, talks, comparisons, tutorials, academic papers, and similar
   educational or journalistic content.
-- Distribute **unmodified** copies of Statewave under AGPLv3 with the
+- Distribute **unmodified** copies of Statewave under Apache-2.0 with the
   original branding intact.
 - Use the unmodified Statewave logo in screenshots, slides, or comparison
   charts that accurately depict the project.
@@ -49,13 +49,14 @@ getting.
 This is the most important case for us, so we want to be explicit:
 
 - You may operate Statewave for your own users (internal use, embedded in
-  your product, or as part of an AGPLv3-compliant deployment) without
+  your product, or as part of any Apache-2.0-compliant deployment) without
   written permission, provided you do not brand the service with the
   Statewave Marks.
 - If you wish to **offer Statewave as a hosted, managed, or SaaS service to
-  third parties under the Statewave brand**, you need a written commercial
-  and trademark agreement from us. This is true regardless of whether you
-  comply with AGPLv3 — copyright and trademark are separate rights.
+  third parties under the Statewave brand**, you need a written trademark
+  agreement from us. Apache-2.0 grants copyright and patent rights to the
+  software; it does not grant trademark rights — copyright and trademark
+  are separate.
 - "Built with Statewave" or "powered by Statewave" labels on a hosted
   service are acceptable; "Statewave Cloud", "Hosted Statewave", or any
   variant that suggests we run or endorse the service is not.

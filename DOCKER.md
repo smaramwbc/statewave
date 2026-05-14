@@ -4,7 +4,7 @@ Open-source memory runtime for AI agents — episodes in, distilled memories out
 
 [![Image](https://img.shields.io/docker/image-size/statewavedev/statewave/latest?label=image)](https://hub.docker.com/r/statewavedev/statewave)
 [![Pulls](https://img.shields.io/docker/pulls/statewavedev/statewave)](https://hub.docker.com/r/statewavedev/statewave)
-[![License](https://img.shields.io/badge/license-AGPL--3.0-blue)](https://github.com/smaramwbc/statewave/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](https://github.com/smaramwbc/statewave/blob/main/LICENSE)
 
 Multi-arch (`linux/amd64`, `linux/arm64`), built with provenance + SBOM and signed via Sigstore.
 
@@ -74,4 +74,4 @@ gh attestation verify \
 
 - Repository: <https://github.com/smaramwbc/statewave>
 - Documentation: <https://statewave.ai>
-- License: AGPL-3.0
+- License: Apache-2.0

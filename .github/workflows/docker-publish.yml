@@ -71,7 +71,7 @@ jobs:
             org.opencontainers.image.title=Statewave
             org.opencontainers.image.description=Statewave server — open-source memory runtime for AI agents
             org.opencontainers.image.vendor=Statewave
-            org.opencontainers.image.licenses=AGPL-3.0
+            org.opencontainers.image.licenses=Apache-2.0
             org.opencontainers.image.source=https://github.com/smaramwbc/statewave
             org.opencontainers.image.documentation=https://statewave.ai
 

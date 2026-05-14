@@ -2454,15 +2454,20 @@ async def reload_policy_cache():
 @router.get("/policy/active")
 async def get_active_policy(tenant_id: str | None = Query(None)):
     """Return the currently active bundle for a tenant scope, or
-    the global active bundle when `tenant_id` is omitted. 404 when
-    no bundle is active for the scope."""
+    the global active bundle when `tenant_id` is omitted. Returns
+    JSON `null` (with HTTP 200) when no bundle is active for the
+    scope — "no policy uploaded yet" is the expected default state
+    on a fresh install, not an error. Returning 404 here used to
+    pollute every operator's browser console on first page load.
+    Admin client treats `null` and the bundle object uniformly via
+    a `ActivePolicyBundle | null` return type."""
     from server.db import engine as engine_module
     from server.services import policy as policy_service
 
     async with engine_module.get_session_factory()() as session:
         bundle = await policy_service.resolve_active_bundle(session, tenant_id)
     if bundle is None:
-        raise HTTPException(status_code=404, detail="no active policy bundle")
+        return None
     return {
         "bundle_hash": bundle.bundle_hash,
         "version": bundle.version,

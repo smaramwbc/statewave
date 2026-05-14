@@ -34,7 +34,7 @@ Everything is organised around **subjects** — a user, account, agent, repo, or
 
 Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
 
-> **Status:** v0.7.2 — actively developed. Per-kind memory TTL with hourly tombstone sweep, Helm chart for ops, cross-machine query embedding cache (L1 + L2), on top of the full support-agent intelligence stack from v0.7.1: session-aware context, resolution tracking, handoff packs, health scoring, SLA tracking, proactive alerts. See [current limitations](#current-limitations) below.
+> **Status:** v0.8.0 — actively developed. **Governance & audit layer shipped:** every context assembly can emit an immutable [state-assembly receipt](https://github.com/smaramwbc/statewave-docs/blob/main/receipts.md) (content-hash integrity, full provenance, queryable + chainable by ULID), per-memory [sensitivity labels](https://github.com/smaramwbc/statewave-docs/blob/main/sensitivity-labels.md) feed a declarative YAML policy engine that filters by caller identity, and per-tenant config flips enforce mode on without a SQL shell. Builds on the v0.7.x foundation: per-kind memory TTL, Helm chart, cross-machine query embedding cache, and the full support-agent intelligence stack (session-aware context, resolution tracking, handoff packs, health, SLA, proactive alerts). See [current limitations](#current-limitations) below.
 
 ## 🎯 Try it
 
@@ -89,6 +89,11 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 - **SLA tracking** — first-response time, resolution time, breach detection
 - **Proactive health alerts** — webhooks on health state transitions (degradation + recovery)
 - **Repeat-issue detection** — surfaces prior resolutions when patterns recur
+- **State-assembly receipts** — every `/v1/context` and `/v1/handoff` call can emit an immutable, ULID-addressable audit record of which memories + episodes influenced the bundle, with a SHA-256 hash of the bytes delivered to the agent and tenant-scoped retrieval via `GET /v1/receipts`
+- **Per-memory sensitivity labels** — operator-supplied capability tags (`pii`, `financial`, `secret`, …) carried as a `TEXT[]` column with a GIN index; set via `PATCH /v1/memories/{id}/labels`
+- **Declarative policy engine** — YAML/JSON policy bundles with six predicates (label match, caller_type, caller_id), two actions (`deny`, `redact`), and first-match-wins evaluation; bundles are content-hashed and immutable, addressable by `bundle_hash`; per-tenant policy_mode toggles between `log_only` (record decisions to receipts, no filtering) and `enforce` (drop denied memories before ranking)
+- **Caller identity** — `caller_id` and `caller_type` on context/handoff requests feed the policy evaluator; tenant config `require_caller_identity: true` 401s anonymous calls
+- **Per-tenant config** — `GET / PATCH /admin/tenants/{id}/config` for receipts emission, retention, policy_mode, caller-identity gating; PATCH-shape merge with optimistic concurrency via `expected_version`
 
 ## Quick start
 

@@ -72,25 +72,35 @@ async def _seed_subject(client: AsyncClient, subject_id: str) -> None:
     assert r.status_code == 200
 
 
-async def _label_first_memory(
+async def _label_all_memories(
     session_factory, subject_id: str, labels: list[str]
-) -> None:
-    """Stamp `labels` onto the first memory for the subject. Used as
-    a fast in-test fixture — the /v1/memories/{id}/labels API path
-    is exercised by its own test below."""
+) -> int:
+    """Stamp `labels` onto EVERY memory for the subject. Used as a
+    fast in-test fixture — the /v1/memories/{id}/labels API path is
+    exercised by its own test below.
+
+    The negative test for "PII memory blocked for marketing caller"
+    needs the deny rule to cover the memory carrying the PII content,
+    and the heuristic compiler emits multiple memories per subject
+    (one per fact, plus episode summaries). Labelling all memories
+    guarantees the rule applies whichever one carries `alice@globex.com`.
+    """
     async with session_factory() as session:
         from sqlalchemy import select
 
         result = await session.execute(
-            select(MemoryRow).where(MemoryRow.subject_id == subject_id).limit(1)
+            select(MemoryRow.id).where(MemoryRow.subject_id == subject_id)
         )
-        row = result.scalar_one()
+        ids = [row[0] for row in result.all()]
+        if not ids:
+            return 0
         await session.execute(
             update(MemoryRow)
-            .where(MemoryRow.id == row.id)
+            .where(MemoryRow.id.in_(ids))
             .values(sensitivity_labels=labels)
         )
         await session.commit()
+        return len(ids)
 
 
 async def _set_tenant_policy_mode(session_factory, tenant_id: str, mode: str) -> None:
@@ -121,25 +131,51 @@ async def _set_tenant_policy_mode(session_factory, tenant_id: str, mode: str) ->
 async def _install_active_policy(
     session_factory, yaml_content: str, tenant_id: str | None = None
 ) -> str:
-    """Insert + activate a policy bundle. Returns the hash. Mirrors
-    what `POST /admin/policy/bundles` does."""
+    """Insert (or re-activate) a policy bundle and mark it active.
+    Returns the hash. Mirrors what `POST /admin/policy/bundles` does
+    with `activate=true`.
+
+    Idempotent on hash: bundles are content-addressed, so the same
+    YAML produces the same primary key. The bundle table is
+    immutable, so we INSERT-IF-MISSING and then flip `active`
+    rather than failing on the unique constraint. Tests that reuse
+    the same bundle YAML across cases (the typical pattern) work
+    without each one having to track whether it's been inserted yet.
+    """
     bundle = policy_service.load_bundle(yaml_content)
     async with session_factory() as session:
-        # Deactivate prior bundles in the same scope.
+        from sqlalchemy import select
+
+        # Deactivate every prior bundle in the same scope so the
+        # active-bundle resolver sees exactly one row.
         scope = update(PolicyBundleRow)
         if tenant_id is None:
             scope = scope.where(PolicyBundleRow.tenant_id.is_(None))
         else:
             scope = scope.where(PolicyBundleRow.tenant_id == tenant_id)
         await session.execute(scope.values(active=False))
-        session.add(
-            PolicyBundleRow(
-                bundle_hash=bundle.bundle_hash,
-                yaml_content=yaml_content,
-                active=True,
-                tenant_id=tenant_id,
+
+        # Insert-or-skip on the immutable bundle row.
+        existing = await session.execute(
+            select(PolicyBundleRow).where(
+                PolicyBundleRow.bundle_hash == bundle.bundle_hash
             )
         )
+        if existing.scalar_one_or_none() is None:
+            session.add(
+                PolicyBundleRow(
+                    bundle_hash=bundle.bundle_hash,
+                    yaml_content=yaml_content,
+                    active=True,
+                    tenant_id=tenant_id,
+                )
+            )
+        else:
+            await session.execute(
+                update(PolicyBundleRow)
+                .where(PolicyBundleRow.bundle_hash == bundle.bundle_hash)
+                .values(active=True)
+            )
         await session.commit()
     policy_service.invalidate_bundle_cache()
     return bundle.bundle_hash
@@ -155,7 +191,7 @@ async def test_pii_memory_blocked_for_marketing_caller_under_enforce(
     client.headers["X-Tenant-ID"] = tenant_id
 
     await _seed_subject(client, subject_id)
-    await _label_first_memory(session_factory, subject_id, ["pii"])
+    await _label_all_memories(session_factory, subject_id, ["pii"])
     bundle_hash = await _install_active_policy(session_factory, PII_BUNDLE_YAML)
     await _set_tenant_policy_mode(session_factory, tenant_id, "enforce")
 
@@ -198,7 +234,7 @@ async def test_log_only_mode_records_decisions_without_filtering(
     client.headers["X-Tenant-ID"] = tenant_id
 
     await _seed_subject(client, subject_id)
-    await _label_first_memory(session_factory, subject_id, ["pii"])
+    await _label_all_memories(session_factory, subject_id, ["pii"])
     await _install_active_policy(session_factory, PII_BUNDLE_YAML)
     # Explicitly NOT setting policy_mode → defaults to log_only.
 
@@ -238,7 +274,7 @@ async def test_policy_bundle_hash_changes_invalidate_audit_replay(
     client.headers["X-Tenant-ID"] = tenant_id
 
     await _seed_subject(client, subject_id)
-    await _label_first_memory(session_factory, subject_id, ["pii"])
+    await _label_all_memories(session_factory, subject_id, ["pii"])
 
     hash_v1 = await _install_active_policy(session_factory, PII_BUNDLE_YAML)
     r1 = await client.post(

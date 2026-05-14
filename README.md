@@ -243,15 +243,17 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active development (v0.7.2). Honest status:
+Statewave is in active development (v0.8.0). Honest status:
 
 - **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
-- **Multi-tenant is app-layer** — real query-scoped isolation (v0.5), no Postgres RLS yet
-- **Single-node only** — no clustering, no horizontal scaling yet
+- **Multi-tenant is app-layer** — query-scoped data isolation (v0.5) + per-tenant config / policy bundles / receipts (v0.8) layered on top, but no Postgres RLS yet
 - **PostgreSQL required** — no alternative storage backends
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them
+- **Policy retention purge worker** — `tenant_configs.receipt_retention_days` is read by the config surface but no scheduled worker deletes expired receipts yet; planned for v0.9
 
 See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) for what's being fixed and when.
+
+> **Horizontal scaling.** Statewave runs multi-replica in production (Fly multi-machine + Helm HPA both verified). The policy bundle cache that previously assumed single-process was dropped in v0.8 (#77) precisely so multi-replica deploys behave correctly under enforce mode. Heavy load is bottlenecked by Postgres + your embedding provider, not the API.
 
 ## Community
 

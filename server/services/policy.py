@@ -85,7 +85,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
 
@@ -98,12 +97,6 @@ from server.db.tables import PolicyBundleRow
 # Single redaction marker — stable so consumers can dedupe / detect
 # redaction without re-parsing the rule id.
 REDACTED_MARKER = "[REDACTED by policy]"
-
-# Active-bundle cache TTL. Short enough that policy-reload latency
-# feels live; long enough that the cache earns its keep under
-# request-per-second loads on the hot path.
-_BUNDLE_CACHE_TTL_SECONDS = 60
-
 
 # ---------------------------------------------------------------------------
 # Data shape
@@ -310,19 +303,43 @@ def _validate_predicate_shapes(rule_id: str, when: dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bundle resolution + caching
+# Bundle resolution
 # ---------------------------------------------------------------------------
-
-
-# Module-level cache. Key is `(tenant_id_or_none, "default")`. The
-# value is `(loaded_at_seconds, bundle_or_none)`. Even None is
-# cached — "no active bundle for this tenant" is a hot answer too.
-_active_bundle_cache: dict[tuple[str | None], tuple[float, PolicyBundle | None]] = {}
+#
+# The active bundle is resolved from `policy_bundles` on every
+# assembly call. There is intentionally **no in-process cache**:
+#
+#   * The query is `SELECT * FROM policy_bundles WHERE tenant_id=$1
+#     AND active=true LIMIT 1`, served from the existing
+#     `(tenant_id, active)` index. Sub-millisecond on warm
+#     connections, negligible against the rest of the assembly path
+#     (semantic search, scoring, token-budget packing).
+#
+#   * A module-level cache USED to live here with a 60s TTL and a
+#     local `invalidate_bundle_cache()` call after admin writes.
+#     That works in single-process tests and in single-machine
+#     deployments. It DOES NOT work on multi-replica Fly (or any
+#     horizontally-scaled deploy): an `/admin/policy/bundles` call
+#     lands on one machine and invalidates its cache; a subsequent
+#     `/v1/context` call may route to a different machine whose
+#     cache still serves the pre-upload value (None, typically) for
+#     the remainder of the TTL. Under enforce mode that's a real
+#     security regression — sensitive memories pass through
+#     unfiltered for up to 60 seconds after a tenant activates a
+#     policy. Caught in prod smoke testing of #50.
+#
+# Cross-replica cache busting would need either Postgres
+# LISTEN/NOTIFY (each replica subscribes; bust on NOTIFY) or a
+# version-row pattern with an extra SELECT-per-call (which is the
+# same cost as just dropping the cache). Both add complexity for no
+# practical benefit. Drop the cache.
 
 
 def invalidate_bundle_cache() -> None:
-    """Drop every cached bundle. Called by `POST /admin/policy/reload`."""
-    _active_bundle_cache.clear()
+    """No-op kept for API stability — older admin endpoints still call
+    this after policy uploads. The active bundle is now resolved from
+    DB on every assembly call, so there is nothing to invalidate."""
+    return None
 
 
 async def resolve_active_bundle(
@@ -332,9 +349,8 @@ async def resolve_active_bundle(
     """Return the active bundle for a tenant, falling back to the
     global active bundle. None if neither exists.
 
-    Cached for `_BUNDLE_CACHE_TTL_SECONDS` per tenant key. The bundle
-    is keyed by `tenant_id` (or None for the global slot) and the
-    cache is busted by `invalidate_bundle_cache()` on policy reload.
+    Always hits the database. See the module-level comment above for
+    why there is no cache.
 
     Fail-open: if the DB call raises (table missing pre-migration,
     transient connection failure), this returns None and the caller
@@ -342,16 +358,8 @@ async def resolve_active_bundle(
     pre-#50 behaviour exactly, so a degraded policy table never
     breaks agent serving. The failure is logged.
     """
-    cache_key: tuple[str | None] = (tenant_id,)
-    cached = _active_bundle_cache.get(cache_key)
-    now = time.monotonic()
-    if cached is not None:
-        loaded_at, bundle = cached
-        if now - loaded_at < _BUNDLE_CACHE_TTL_SECONDS:
-            return bundle
-
     try:
-        bundle = await _load_active_from_db(session, tenant_id)
+        return await _load_active_from_db(session, tenant_id)
     except Exception:
         import structlog
         structlog.stdlib.get_logger().warning(
@@ -359,9 +367,7 @@ async def resolve_active_bundle(
             tenant_id=tenant_id,
             exc_info=True,
         )
-        bundle = None
-    _active_bundle_cache[cache_key] = (now, bundle)
-    return bundle
+        return None
 
 
 async def _load_active_from_db(

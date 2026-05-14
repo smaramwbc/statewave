@@ -454,3 +454,58 @@ def test_filters_skipped_is_bounded_by_rule_count():
 def test_filters_skipped_empty_when_no_bundle():
     skipped = build_filters_skipped({}, None)
     assert skipped == []
+
+
+# ---------------------------------------------------------------------------
+# resolve_active_bundle — no-cache contract (regression test for prod
+# multi-replica staleness bug caught in #50 smoke testing)
+#
+# resolve_active_bundle MUST hit the database on every call. An older
+# v1 of this module cached the result in-process for 60s, which
+# silently served stale `None` values on Fly replicas that didn't
+# handle the admin upload — sensitive memories could pass through
+# unfiltered for up to a minute after a tenant activated a policy.
+# These tests pin the post-hotfix contract: every call goes to DB.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_resolve_active_bundle_hits_db_every_call():
+    """Each call to resolve_active_bundle must execute a DB query.
+    Verifies the no-cache property end-to-end at the function level."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from server.services.policy import resolve_active_bundle
+
+    session = MagicMock()
+    session.execute = AsyncMock()
+    # session.execute returns a result with scalar_one_or_none → None
+    # so resolve_active_bundle returns None each call.
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value=None)
+    session.execute.return_value = result
+
+    for _ in range(5):
+        bundle = await resolve_active_bundle(session, tenant_id="tenant-x")
+        assert bundle is None
+
+    # 5 calls × 2 SELECT statements (tenant-specific then global fallback)
+    # = 10 executes. If any caching crept back in this would be < 10.
+    assert session.execute.call_count == 10, (
+        f"expected 10 SELECTs across 5 resolve calls, got "
+        f"{session.execute.call_count}. Did caching get re-added?"
+    )
+
+
+def test_invalidate_bundle_cache_is_a_noop_but_callable():
+    """`invalidate_bundle_cache()` is kept as a no-op for API
+    stability — the admin upload/activate endpoints still call it.
+    Removing the function would break those endpoints; the no-op
+    is the right backwards-compatible shape."""
+    from server.services.policy import invalidate_bundle_cache
+
+    # Should not raise. Returns None (the no-op contract).
+    assert invalidate_bundle_cache() is None
+    # Can be called repeatedly without side effects.
+    for _ in range(3):
+        invalidate_bundle_cache()

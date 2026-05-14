@@ -218,11 +218,14 @@ class TenantConfigPatch(BaseModel):
     )
     expected_version: int | None = Field(
         None,
-        ge=1,
+        ge=0,
         description=(
             "Optimistic concurrency: if supplied, the server returns 409 "
             "when the current row's `version` differs. Prevents lost-"
-            "update races between parallel admin edits. Omit if you're "
-            "the only writer; supply the value from a prior GET if not."
+            "update races between parallel admin edits. `0` is the "
+            "create semantic — supply 0 to assert the tenant has no row "
+            "yet (GET returns `version: 0` for unconfigured tenants). "
+            "Omit if you're the only writer; supply the value from a "
+            "prior GET if not."
         ),
     )

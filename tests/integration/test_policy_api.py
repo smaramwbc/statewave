@@ -416,32 +416,14 @@ async def test_set_memory_labels_endpoint_normalizes_and_persists(
 @pytest.mark.anyio
 async def test_admin_policy_upload_and_activate_round_trip(client: AsyncClient):
     """The /admin/policy/* endpoints lifecycle: upload a bundle,
-    list it, activate it, fetch active. Verifies the operator
-    surface end-to-end.
-
-    Uses a content unique to this test rather than the shared
-    PII_BUNDLE_YAML — bundles are content-addressed (same YAML →
-    same hash), and `bundle_hash` is the primary key of
-    `policy_bundles`. Reusing PII_BUNDLE_YAML here would silently
-    point at the row inserted by the earlier global-scope tests
-    (whose `tenant_id IS NULL`), so the tenant-scoped listing would
-    miss it. Cross-tenant bundle reuse via a composite-key schema
-    is a v2 follow-up.
-    """
-    unique_yaml = """
-version: 1
-metadata:
-  description: admin-round-trip-test
-rules:
-  - id: deny-admin-round-trip-only
-    when:
-      memory_has_any_label: [admin-round-trip-marker]
-    action: deny
-"""
+    list it, fetch active. Reuses PII_BUNDLE_YAML — earlier tests
+    in this file install it globally; post-#79 the upload here
+    creates a separate row scoped to `acme-policy-admin` and the
+    tenant-scoped listing must show it independently."""
     r = await client.post(
         "/admin/policy/bundles",
         json={
-            "yaml_content": unique_yaml,
+            "yaml_content": PII_BUNDLE_YAML,
             "tenant_id": "acme-policy-admin",
             "activate": True,
         },
@@ -459,3 +441,58 @@ rules:
     r3 = await client.get("/admin/policy/active?tenant_id=acme-policy-admin")
     assert r3.status_code == 200
     assert r3.json()["bundle_hash"] == bundle_hash
+
+
+@pytest.mark.anyio
+async def test_same_yaml_two_tenants_resolve_independently(client: AsyncClient):
+    """#79 acceptance test: two tenants uploading the exact same YAML
+    must each end up with their own active bundle. Before the
+    composite (tenant_id, bundle_hash) uniqueness landed, the
+    second tenant's upload silently re-bound the first tenant's row
+    and broke that first tenant's policy resolution."""
+    yaml = """
+version: 1
+metadata:
+  description: shared YAML for the cross-tenant test
+rules:
+  - id: deny-shared
+    when:
+      memory_has_any_label: [pii]
+    action: deny
+"""
+    # Tenant A uploads + activates.
+    r_a = await client.post(
+        "/admin/policy/bundles",
+        json={"yaml_content": yaml, "tenant_id": "cross-a", "activate": True},
+    )
+    assert r_a.status_code == 200
+    hash_a = r_a.json()["bundle_hash"]
+
+    # Tenant B uploads the IDENTICAL YAML + activates.
+    r_b = await client.post(
+        "/admin/policy/bundles",
+        json={"yaml_content": yaml, "tenant_id": "cross-b", "activate": True},
+    )
+    assert r_b.status_code == 200
+    hash_b = r_b.json()["bundle_hash"]
+
+    # Same content → same hash. Different rows (separate tenant_id).
+    assert hash_a == hash_b
+
+    # Both tenants must see the bundle as active on their own
+    # listing and active-resolve. Pre-#79 one of these returned 404.
+    r_a_active = await client.get("/admin/policy/active?tenant_id=cross-a")
+    assert r_a_active.status_code == 200
+    assert r_a_active.json()["bundle_hash"] == hash_a
+
+    r_b_active = await client.get("/admin/policy/active?tenant_id=cross-b")
+    assert r_b_active.status_code == 200
+    assert r_b_active.json()["bundle_hash"] == hash_b
+
+    # And the per-tenant listing each shows the one row, not both.
+    r_a_list = await client.get("/admin/policy/bundles?tenant_id=cross-a")
+    a_rows = [b for b in r_a_list.json()["bundles"] if b["tenant_id"] == "cross-a"]
+    assert len(a_rows) == 1 and a_rows[0]["active"]
+    r_b_list = await client.get("/admin/policy/bundles?tenant_id=cross-b")
+    b_rows = [b for b in r_b_list.json()["bundles"] if b["tenant_id"] == "cross-b"]
+    assert len(b_rows) == 1 and b_rows[0]["active"]

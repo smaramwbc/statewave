@@ -2279,14 +2279,23 @@ async def upload_policy_bundle(req: UploadPolicyBundleRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
     async with engine_module.get_session_factory()() as session:
-        # If a row already exists with this hash, the bundle is a
-        # duplicate of one we already stored — return the existing
-        # row's metadata rather than INSERT-conflicting.
-        existing = await session.execute(
-            select(PolicyBundleRow).where(
-                PolicyBundleRow.bundle_hash == bundle.bundle_hash
-            )
+        # If a row already exists with the SAME (tenant_id, bundle_hash),
+        # the bundle is a duplicate the caller already uploaded —
+        # return the existing row's metadata rather than INSERT-
+        # conflicting on the composite unique index. The tenant_id
+        # scope on this lookup is the load-bearing fix for #79: two
+        # tenants installing the same YAML must produce two rows,
+        # not silently rebind the first row's tenant.
+        existing_stmt = select(PolicyBundleRow).where(
+            PolicyBundleRow.bundle_hash == bundle.bundle_hash
         )
+        if req.tenant_id is None:
+            existing_stmt = existing_stmt.where(PolicyBundleRow.tenant_id.is_(None))
+        else:
+            existing_stmt = existing_stmt.where(
+                PolicyBundleRow.tenant_id == req.tenant_id
+            )
+        existing = await session.execute(existing_stmt)
         existing_row = existing.scalar_one_or_none()
         if existing_row is None:
             session.add(
@@ -2313,11 +2322,22 @@ async def upload_policy_bundle(req: UploadPolicyBundleRequest):
                 )
             scope_stmt = scope_stmt.values(active=False)
             await session.execute(scope_stmt)
-            await session.execute(
-                sa_update(PolicyBundleRow)
-                .where(PolicyBundleRow.bundle_hash == bundle.bundle_hash)
-                .values(active=True)
+            # Activate ONLY the row for this (tenant, hash) — without
+            # the tenant_id scope, an UPDATE on `bundle_hash=X` alone
+            # would flip the active flag on another tenant's row that
+            # happened to share the same content hash.
+            activate_stmt = sa_update(PolicyBundleRow).where(
+                PolicyBundleRow.bundle_hash == bundle.bundle_hash
             )
+            if req.tenant_id is None:
+                activate_stmt = activate_stmt.where(
+                    PolicyBundleRow.tenant_id.is_(None)
+                )
+            else:
+                activate_stmt = activate_stmt.where(
+                    PolicyBundleRow.tenant_id == req.tenant_id
+                )
+            await session.execute(activate_stmt.values(active=True))
             await session.commit()
             policy_service.invalidate_bundle_cache()
 
@@ -2359,8 +2379,15 @@ async def list_policy_bundles(tenant_id: str | None = Query(None)):
 
 
 @router.get("/policy/bundles/{bundle_hash}")
-async def get_policy_bundle(bundle_hash: str):
-    """Fetch a bundle's full YAML content + parsed rule summary."""
+async def get_policy_bundle(bundle_hash: str, tenant_id: str | None = Query(None)):
+    """Fetch a bundle's full YAML content + parsed rule summary.
+
+    `tenant_id` query param disambiguates when multiple tenants have
+    uploaded the same YAML (post-#79). Omit for the global-scope row
+    (`tenant_id IS NULL`); pass a specific id to scope to that tenant.
+    When omitted and the hash exists in multiple scopes, returns the
+    global row if one exists, else 404 with a hint to specify
+    `?tenant_id=` for tenant-scoped rows."""
     from sqlalchemy import select
 
     from server.db import engine as engine_module
@@ -2368,10 +2395,30 @@ async def get_policy_bundle(bundle_hash: str):
     from server.services import policy as policy_service
 
     async with engine_module.get_session_factory()() as session:
-        result = await session.execute(
-            select(PolicyBundleRow).where(PolicyBundleRow.bundle_hash == bundle_hash)
+        stmt = select(PolicyBundleRow).where(
+            PolicyBundleRow.bundle_hash == bundle_hash
         )
-        row = result.scalar_one_or_none()
+        if tenant_id is not None:
+            stmt = stmt.where(PolicyBundleRow.tenant_id == tenant_id)
+            result = await session.execute(stmt)
+            row = result.scalar_one_or_none()
+        else:
+            # No tenant filter — prefer the global row (tenant_id IS NULL).
+            # If absent, surface that the hash exists tenant-scoped and
+            # the caller needs to disambiguate.
+            global_stmt = stmt.where(PolicyBundleRow.tenant_id.is_(None))
+            result = await session.execute(global_stmt)
+            row = result.scalar_one_or_none()
+            if row is None:
+                any_stmt = stmt.limit(1)
+                if (await session.execute(any_stmt)).scalar_one_or_none() is not None:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=(
+                            f"bundle {bundle_hash} exists in tenant-scoped form; "
+                            "pass `?tenant_id=<id>` to fetch it"
+                        ),
+                    )
     if row is None:
         raise HTTPException(status_code=404, detail="bundle not found")
     parsed = policy_service.load_bundle(row.yaml_content)
@@ -2397,19 +2444,24 @@ async def get_policy_bundle(bundle_hash: str):
 class ActivateBundleRequest(BaseModel):
     """Body for POST /admin/policy/activate.
 
-    Scope (global vs tenant-specific) is inferred from the stored
-    bundle's `tenant_id` column — we don't accept it on the activate
-    call to avoid a request body that disagrees with the row.
+    Identifies the bundle to activate by `(tenant_id, bundle_hash)`.
+    Post-#79 the same `bundle_hash` can exist in multiple scopes
+    (global + N tenants), so the request must specify which one to
+    flip — otherwise the activate could silently target the wrong
+    row. Use `tenant_id: null` to activate the global-scope row.
     """
 
     bundle_hash: str
+    tenant_id: str | None = None
 
 
 @router.post("/policy/activate")
 async def activate_policy_bundle(req: ActivateBundleRequest):
     """Mark a bundle as the active policy for its scope. Deactivates
     any other bundle in the same scope (global or tenant-specific)
-    so the active-bundle resolver sees exactly one row."""
+    so the active-bundle resolver sees exactly one row.
+
+    Returns 404 if no row matches `(tenant_id, bundle_hash)`."""
     from sqlalchemy import select, update as sa_update
 
     from server.db import engine as engine_module
@@ -2417,16 +2469,26 @@ async def activate_policy_bundle(req: ActivateBundleRequest):
     from server.services import policy as policy_service
 
     async with engine_module.get_session_factory()() as session:
-        result = await session.execute(
-            select(PolicyBundleRow).where(
-                PolicyBundleRow.bundle_hash == req.bundle_hash
-            )
+        target_stmt = select(PolicyBundleRow).where(
+            PolicyBundleRow.bundle_hash == req.bundle_hash
         )
+        if req.tenant_id is None:
+            target_stmt = target_stmt.where(PolicyBundleRow.tenant_id.is_(None))
+        else:
+            target_stmt = target_stmt.where(
+                PolicyBundleRow.tenant_id == req.tenant_id
+            )
+        result = await session.execute(target_stmt)
         target = result.scalar_one_or_none()
         if target is None:
             raise HTTPException(status_code=404, detail="bundle not found")
+
+        # Deactivate every other bundle in the same scope (≠ THIS
+        # bundle, same tenant). Using target.id rather than
+        # bundle_hash here is the load-bearing precision: we want to
+        # leave the same-hash-different-tenant rows untouched.
         scope_stmt = sa_update(PolicyBundleRow).where(
-            PolicyBundleRow.bundle_hash != req.bundle_hash
+            PolicyBundleRow.id != target.id
         )
         if target.tenant_id is None:
             scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id.is_(None))
@@ -2436,7 +2498,7 @@ async def activate_policy_bundle(req: ActivateBundleRequest):
         await session.execute(scope_stmt)
         await session.execute(
             sa_update(PolicyBundleRow)
-            .where(PolicyBundleRow.bundle_hash == req.bundle_hash)
+            .where(PolicyBundleRow.id == target.id)
             .values(active=True)
         )
         await session.commit()

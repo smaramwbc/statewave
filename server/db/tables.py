@@ -275,16 +275,23 @@ class TenantConfigRow(Base):
 
 
 class PolicyBundleRow(Base):
-    """Immutable policy YAML bundle, addressed by content hash.
+    """Immutable policy YAML bundle, content-addressed by `bundle_hash`.
 
-    Reserved for issue #50 — created in the same migration as receipts
-    so #50 doesn't have to migrate again. Empty in v1; receipt rows
-    carry `policy_bundle_hash = NULL` until the policy layer ships.
+    Identity of the *row* is the synthetic `id` UUID (added in 0019)
+    so two tenants can install the same YAML independently — same
+    `bundle_hash`, different `tenant_id`, distinct rows. Composite
+    unique index on `(tenant_id, bundle_hash) NULLS NOT DISTINCT`
+    enforces "one bundle per (scope, content)"; receipts continue to
+    reference bundles by `bundle_hash` (with the tenant context
+    available alongside on the receipt itself).
     """
 
     __tablename__ = "policy_bundles"
 
-    bundle_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     yaml_content: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -292,7 +299,11 @@ class PolicyBundleRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    __table_args__ = (Index("ix_policy_bundles_tenant_active", "tenant_id", "active"),)
+    # The composite unique index `ix_policy_bundles_tenant_hash`
+    # (created in migration 0019 with NULLS NOT DISTINCT) enforces
+    # "one row per (tenant_id, bundle_hash)". Not declared here as a
+    # SQLAlchemy UniqueConstraint because NULLS NOT DISTINCT isn't
+    # natively expressible — the migration owns it.
 
 
 class QueryEmbeddingCacheRow(Base):

@@ -1,6 +1,6 @@
 """policy_bundles: composite (tenant_id, bundle_hash) uniqueness — closes #79
 
-Revision ID: 0019_policy_bundles_composite_uniqueness
+Revision ID: 0019_per_tenant_bundles
 Revises: 0018_sensitivity_labels
 Create Date: 2026-05-14
 
@@ -49,7 +49,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import UUID
 
 
-revision: str = "0019_policy_bundles_composite_uniqueness"
+revision: str = "0019_per_tenant_bundles"
 down_revision: Union[str, None] = "0018_sensitivity_labels"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

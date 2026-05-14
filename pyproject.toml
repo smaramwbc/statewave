@@ -1,6 +1,6 @@
 [project]
 name = "statewave"
-version = "0.7.2"
+version = "0.8.0"
 description = "Open-source memory runtime for AI agents — durable, structured context with provenance."
 readme = "README.md"
 license = {text = "AGPL-3.0-only OR LicenseRef-Statewave-Commercial"}

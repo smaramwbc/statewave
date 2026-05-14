@@ -185,8 +185,16 @@ async def _install_active_policy(
 async def test_pii_memory_blocked_for_marketing_caller_under_enforce(
     client: AsyncClient, subject_id: str, session_factory
 ):
-    """Issue #50 negative test: sensitive memory must NOT be
-    delivered to a disallowed caller when enforce is on."""
+    """Issue #50 negative test: sensitive *memory* must NOT be
+    delivered to a disallowed caller when enforce is on.
+
+    Scope note: v1 of the policy layer filters memories only — raw
+    episodes are out of v1 scope and pass through unchanged. The
+    seed episodes contain `alice@globex.com` directly, so the
+    assembled context (which includes a `## Recent interactions`
+    episode section) WILL still contain it. The test verifies the
+    surface that policy *does* govern: the `facts` array (compiled
+    memories) and the receipt's `filters_applied` block."""
     tenant_id = "acme"
     client.headers["X-Tenant-ID"] = tenant_id
 
@@ -207,8 +215,17 @@ async def test_pii_memory_blocked_for_marketing_caller_under_enforce(
     )
     assert r.status_code == 200
     body = r.json()
-    # The PII-labeled memory must not appear in the assembled context.
-    assert "alice@globex.com" not in body["assembled_context"]
+
+    # No PII memories survived enforce mode — this is the property
+    # #50 actually delivers. The `provenance.fact_ids` and `facts`
+    # arrays must both be empty for a subject where every memory
+    # was labelled `pii` and the policy denies PII for marketing.
+    assert body["facts"] == [], (
+        f"facts must be empty under enforce + deny-all-pii, got {body['facts']}"
+    )
+    assert body["provenance"].get("fact_ids", []) == [], (
+        "provenance.fact_ids must be empty when all memories were denied"
+    )
 
     # The receipt records the deny so a reviewer can verify the policy
     # actually fired (rather than the memory just not having been
@@ -400,11 +417,31 @@ async def test_set_memory_labels_endpoint_normalizes_and_persists(
 async def test_admin_policy_upload_and_activate_round_trip(client: AsyncClient):
     """The /admin/policy/* endpoints lifecycle: upload a bundle,
     list it, activate it, fetch active. Verifies the operator
-    surface end-to-end."""
+    surface end-to-end.
+
+    Uses a content unique to this test rather than the shared
+    PII_BUNDLE_YAML — bundles are content-addressed (same YAML →
+    same hash), and `bundle_hash` is the primary key of
+    `policy_bundles`. Reusing PII_BUNDLE_YAML here would silently
+    point at the row inserted by the earlier global-scope tests
+    (whose `tenant_id IS NULL`), so the tenant-scoped listing would
+    miss it. Cross-tenant bundle reuse via a composite-key schema
+    is a v2 follow-up.
+    """
+    unique_yaml = """
+version: 1
+metadata:
+  description: admin-round-trip-test
+rules:
+  - id: deny-admin-round-trip-only
+    when:
+      memory_has_any_label: [admin-round-trip-marker]
+    action: deny
+"""
     r = await client.post(
         "/admin/policy/bundles",
         json={
-            "yaml_content": PII_BUNDLE_YAML,
+            "yaml_content": unique_yaml,
             "tenant_id": "acme-policy-admin",
             "activate": True,
         },

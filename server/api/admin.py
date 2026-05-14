@@ -5,11 +5,16 @@ from __future__ import annotations
 import uuid
 from typing import Literal, Optional
 
+import structlog
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from server.core.config import settings
+from server.schemas.requests import TenantConfigPatch
+from server.schemas.responses import TenantConfigResponse
 from server.services import webhooks
+
+logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -2551,3 +2556,146 @@ async def admin_set_memory_labels(
         "sensitivity_labels": list(row.sensitivity_labels or []),
         "created_at": row.created_at.isoformat(),
     }
+
+
+# ─── Tenant configuration (issue #49 + #50) ─────────────────────────────────
+#
+# Read/write the `tenant_configs.config` JSONB document. The receipt
+# emission gate and the sensitivity-label policy enforcement mode both
+# live in this document. Without a write endpoint, `policy_mode:
+# enforce` and `require_caller_identity: true` were unreachable via
+# the API — compliance customers would have had to write the values
+# via direct SQL. v2 of #50 fills that gap.
+#
+# The write path is PATCH-shaped: only the fields you supply are
+# changed; other keys in the dict are preserved verbatim. This
+# matters because future per-tenant knobs (rate-limit tiers,
+# webhook URLs, etc.) will land in the same document, and we don't
+# want each new admin endpoint to know the full key set.
+#
+# Optimistic concurrency: `version` on the row is bumped on every
+# write. PATCH callers may pass `expected_version` to fail-fast on
+# concurrent edits.
+
+
+@router.get(
+    "/tenants/{tenant_id}/config",
+    response_model=TenantConfigResponse,
+    summary="Read a tenant's configuration document",
+)
+async def get_tenant_config_endpoint(tenant_id: str):
+    """Returns 200 with `config: {}`, `version: 0` when the tenant has
+    no row yet — that's the default state on a fresh install, not an
+    error. The two known top-level keys are `receipts` (emission
+    policy from #49) and `policy_mode` / `require_caller_identity`
+    (from #50)."""
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import TenantConfigRow
+
+    async with engine_module.get_session_factory()() as session:
+        result = await session.execute(
+            select(TenantConfigRow).where(TenantConfigRow.tenant_id == tenant_id)
+        )
+        row = result.scalar_one_or_none()
+
+    if row is None:
+        return TenantConfigResponse(tenant_id=tenant_id, config={}, version=0)
+    return TenantConfigResponse(
+        tenant_id=row.tenant_id,
+        config=row.config or {},
+        version=row.version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+@router.patch(
+    "/tenants/{tenant_id}/config",
+    response_model=TenantConfigResponse,
+    summary="Update a tenant's configuration document",
+)
+async def patch_tenant_config(tenant_id: str, patch: TenantConfigPatch):
+    """Partial update of `tenant_configs.config`. Only supplied
+    fields are changed; other keys in the existing dict are
+    preserved (forward-compat for future knobs).
+
+    Race protection: pass `expected_version` from a prior GET to
+    fail-fast (409) on a concurrent write. Omit if you're the only
+    writer.
+
+    Returns the post-write document so callers can re-render
+    without an extra round-trip.
+    """
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import TenantConfigRow
+
+    # Build the partial-update dict from supplied fields only. Pydantic
+    # treats `None` as "field not set" via `exclude_none`, which is
+    # exactly the PATCH semantic we want — supplying a literal `null`
+    # for a known field is also "don't change it" (consistent with
+    # the doc strings).
+    incoming = patch.model_dump(exclude_none=True)
+    # `expected_version` is a request-only concurrency token, not a
+    # config key. Pop it before it leaks into the JSONB.
+    expected_version = incoming.pop("expected_version", None)
+
+    async with engine_module.get_session_factory()() as session:
+        result = await session.execute(
+            select(TenantConfigRow).where(TenantConfigRow.tenant_id == tenant_id)
+        )
+        existing = result.scalar_one_or_none()
+
+        if existing is None:
+            if expected_version is not None and expected_version != 0:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"version mismatch: expected {expected_version}, "
+                        f"got 0 (no row exists yet)"
+                    ),
+                )
+            new_config = dict(incoming)
+            row = TenantConfigRow(
+                tenant_id=tenant_id,
+                config=new_config,
+                version=1,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+        else:
+            if (
+                expected_version is not None
+                and expected_version != existing.version
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"version mismatch: expected {expected_version}, "
+                        f"current is {existing.version}"
+                    ),
+                )
+            merged = {**(existing.config or {}), **incoming}
+            existing.config = merged
+            existing.version = existing.version + 1
+            await session.commit()
+            await session.refresh(existing)
+            row = existing
+
+    logger.info(
+        "tenant_config_updated",
+        tenant_id=tenant_id,
+        version=row.version,
+        updated_keys=sorted(incoming.keys()),
+    )
+    return TenantConfigResponse(
+        tenant_id=row.tenant_id,
+        config=row.config or {},
+        version=row.version,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )

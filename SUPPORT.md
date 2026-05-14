@@ -63,4 +63,4 @@ Not sure? Open an issue in the main [statewave](https://github.com/smaramwbc/sta
 
 ## 🏢 Enterprise Support
 
-For enterprise support inquiries, please contact us at [enterprise@statewave.ai](mailto:enterprise@statewave.ai).
+For enterprise support inquiries, please contact us at [licensing@statewave.ai](mailto:licensing@statewave.ai).

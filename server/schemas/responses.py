@@ -41,6 +41,13 @@ class MemoryResponse(BaseModel):
     source_episode_ids: list[uuid.UUID]
     metadata: dict[str, Any]
     status: MemoryStatus
+    sensitivity_labels: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Per-memory capability tags consumed by the policy layer (#50). "
+            "Empty list = untagged = default-allow under any policy."
+        ),
+    )
     created_at: datetime
     updated_at: datetime
 

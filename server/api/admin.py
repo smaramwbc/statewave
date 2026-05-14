@@ -2234,3 +2234,315 @@ async def admin_get_receipt(receipt_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail="receipt not found")
     return row.body
+
+
+# ─── Sensitivity-label policy (issue #50) ──────────────────────────────────
+#
+# v1 surface: upload a YAML/JSON bundle, list bundles, set the active
+# bundle (per-tenant or global), invalidate the in-process cache. The
+# server consults the active bundle on every assembly call; the policy
+# layer is data-driven so changes don't require a redeploy.
+
+
+class UploadPolicyBundleRequest(BaseModel):
+    """Body for POST /admin/policy/bundles.
+
+    `yaml_content` is parsed at upload time so a syntactically broken
+    bundle never reaches the active slot. Validation errors return
+    400 with the parser message so an operator can fix the YAML
+    locally before retrying.
+    """
+
+    yaml_content: str
+    tenant_id: str | None = None
+    activate: bool = False
+
+
+@router.post("/policy/bundles")
+async def upload_policy_bundle(req: UploadPolicyBundleRequest):
+    """Upload a new policy bundle. Returns the content hash so the
+    operator can refer to it in subsequent activate calls."""
+    from sqlalchemy import select, update as sa_update
+
+    from server.db import engine as engine_module
+    from server.db.tables import PolicyBundleRow
+    from server.services import policy as policy_service
+
+    try:
+        bundle = policy_service.load_bundle(req.yaml_content)
+    except policy_service.PolicyError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    async with engine_module.get_session_factory()() as session:
+        # If a row already exists with this hash, the bundle is a
+        # duplicate of one we already stored — return the existing
+        # row's metadata rather than INSERT-conflicting.
+        existing = await session.execute(
+            select(PolicyBundleRow).where(
+                PolicyBundleRow.bundle_hash == bundle.bundle_hash
+            )
+        )
+        existing_row = existing.scalar_one_or_none()
+        if existing_row is None:
+            session.add(
+                PolicyBundleRow(
+                    bundle_hash=bundle.bundle_hash,
+                    yaml_content=req.yaml_content,
+                    active=False,
+                    tenant_id=req.tenant_id,
+                )
+            )
+            await session.commit()
+
+        if req.activate:
+            # Deactivate other bundles in the same scope so the
+            # active-bundle resolver sees exactly one row.
+            scope_stmt = sa_update(PolicyBundleRow).where(
+                PolicyBundleRow.bundle_hash != bundle.bundle_hash
+            )
+            if req.tenant_id is None:
+                scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id.is_(None))
+            else:
+                scope_stmt = scope_stmt.where(
+                    PolicyBundleRow.tenant_id == req.tenant_id
+                )
+            scope_stmt = scope_stmt.values(active=False)
+            await session.execute(scope_stmt)
+            await session.execute(
+                sa_update(PolicyBundleRow)
+                .where(PolicyBundleRow.bundle_hash == bundle.bundle_hash)
+                .values(active=True)
+            )
+            await session.commit()
+            policy_service.invalidate_bundle_cache()
+
+    return {
+        "bundle_hash": bundle.bundle_hash,
+        "version": bundle.version,
+        "rule_count": bundle.rule_count,
+        "tenant_id": req.tenant_id,
+        "active": req.activate,
+    }
+
+
+@router.get("/policy/bundles")
+async def list_policy_bundles(tenant_id: str | None = Query(None)):
+    """List policy bundles, optionally filtered by tenant. Returns
+    metadata only — bundle YAML is fetched separately via /admin/policy/bundles/{hash}."""
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import PolicyBundleRow
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = select(PolicyBundleRow).order_by(PolicyBundleRow.created_at.desc())
+        if tenant_id is not None:
+            stmt = stmt.where(PolicyBundleRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+    return {
+        "bundles": [
+            {
+                "bundle_hash": r.bundle_hash,
+                "tenant_id": r.tenant_id,
+                "active": r.active,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+    }
+
+
+@router.get("/policy/bundles/{bundle_hash}")
+async def get_policy_bundle(bundle_hash: str):
+    """Fetch a bundle's full YAML content + parsed rule summary."""
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import PolicyBundleRow
+    from server.services import policy as policy_service
+
+    async with engine_module.get_session_factory()() as session:
+        result = await session.execute(
+            select(PolicyBundleRow).where(PolicyBundleRow.bundle_hash == bundle_hash)
+        )
+        row = result.scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="bundle not found")
+    parsed = policy_service.load_bundle(row.yaml_content)
+    return {
+        "bundle_hash": row.bundle_hash,
+        "tenant_id": row.tenant_id,
+        "active": row.active,
+        "created_at": row.created_at.isoformat(),
+        "yaml_content": row.yaml_content,
+        "metadata": parsed.metadata,
+        "rules": [
+            {
+                "id": r.id,
+                "description": r.description,
+                "when": r.when,
+                "action": r.action,
+            }
+            for r in parsed.rules
+        ],
+    }
+
+
+class ActivateBundleRequest(BaseModel):
+    """Body for POST /admin/policy/activate.
+
+    Scope (global vs tenant-specific) is inferred from the stored
+    bundle's `tenant_id` column — we don't accept it on the activate
+    call to avoid a request body that disagrees with the row.
+    """
+
+    bundle_hash: str
+
+
+@router.post("/policy/activate")
+async def activate_policy_bundle(req: ActivateBundleRequest):
+    """Mark a bundle as the active policy for its scope. Deactivates
+    any other bundle in the same scope (global or tenant-specific)
+    so the active-bundle resolver sees exactly one row."""
+    from sqlalchemy import select, update as sa_update
+
+    from server.db import engine as engine_module
+    from server.db.tables import PolicyBundleRow
+    from server.services import policy as policy_service
+
+    async with engine_module.get_session_factory()() as session:
+        result = await session.execute(
+            select(PolicyBundleRow).where(
+                PolicyBundleRow.bundle_hash == req.bundle_hash
+            )
+        )
+        target = result.scalar_one_or_none()
+        if target is None:
+            raise HTTPException(status_code=404, detail="bundle not found")
+        scope_stmt = sa_update(PolicyBundleRow).where(
+            PolicyBundleRow.bundle_hash != req.bundle_hash
+        )
+        if target.tenant_id is None:
+            scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id.is_(None))
+        else:
+            scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id == target.tenant_id)
+        scope_stmt = scope_stmt.values(active=False)
+        await session.execute(scope_stmt)
+        await session.execute(
+            sa_update(PolicyBundleRow)
+            .where(PolicyBundleRow.bundle_hash == req.bundle_hash)
+            .values(active=True)
+        )
+        await session.commit()
+
+    policy_service.invalidate_bundle_cache()
+    return {"bundle_hash": req.bundle_hash, "active": True}
+
+
+@router.post("/policy/reload")
+async def reload_policy_cache():
+    """Force the in-process active-bundle cache to drop. Use after
+    setting `policy_bundles.active` manually outside the API (e.g.
+    direct DB fix-ups during incident response)."""
+    from server.services import policy as policy_service
+
+    policy_service.invalidate_bundle_cache()
+    return {"reloaded": True}
+
+
+@router.get("/policy/active")
+async def get_active_policy(tenant_id: str | None = Query(None)):
+    """Return the currently active bundle for a tenant scope, or
+    the global active bundle when `tenant_id` is omitted. 404 when
+    no bundle is active for the scope."""
+    from server.db import engine as engine_module
+    from server.services import policy as policy_service
+
+    async with engine_module.get_session_factory()() as session:
+        bundle = await policy_service.resolve_active_bundle(session, tenant_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="no active policy bundle")
+    return {
+        "bundle_hash": bundle.bundle_hash,
+        "version": bundle.version,
+        "rule_count": bundle.rule_count,
+        "metadata": bundle.metadata,
+        "rules": [
+            {
+                "id": r.id,
+                "description": r.description,
+                "when": r.when,
+                "action": r.action,
+            }
+            for r in bundle.rules
+        ],
+    }
+
+
+# ─── Memory-labels admin shim (issue #50) ──────────────────────────────────
+#
+# Mirrors PATCH /v1/memories/{memory_id}/labels but lives under
+# /admin so the admin-app proxy (which only forwards /admin/*) can
+# reach it without widening its allowlist. The endpoint accepts an
+# optional `tenant_id` query param so an operator can edit labels
+# across tenants; the underlying canonicalization (dedup + lowercase
+# + trim) and 32-label cap are the same as the /v1 endpoint.
+
+
+class AdminSetMemoryLabelsRequest(BaseModel):
+    sensitivity_labels: list[str]
+
+
+@router.patch("/memories/{memory_id}/labels")
+async def admin_set_memory_labels(
+    memory_id: uuid.UUID,
+    req: AdminSetMemoryLabelsRequest,
+    tenant_id: str | None = Query(None),
+):
+    """Operator-facing memory-labels editor. Same canonicalization
+    rules as /v1/memories/{id}/labels."""
+    from sqlalchemy import select, update as sa_update
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    normalized = sorted(
+        {lbl.strip().lower() for lbl in req.sensitivity_labels if lbl.strip()}
+    )
+    if len(normalized) > 32:
+        raise HTTPException(status_code=400, detail="too many labels (max 32)")
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = select(MemoryRow).where(MemoryRow.id == memory_id)
+        if tenant_id is not None:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+        update_stmt = (
+            sa_update(MemoryRow)
+            .where(MemoryRow.id == memory_id)
+            .values(sensitivity_labels=normalized)
+        )
+        if tenant_id is not None:
+            update_stmt = update_stmt.where(MemoryRow.tenant_id == tenant_id)
+        await session.execute(update_stmt)
+        await session.commit()
+        result = await session.execute(stmt)
+        row = result.scalar_one()
+
+    return {
+        "id": str(row.id),
+        "kind": row.kind,
+        "content": row.content,
+        "summary": row.summary,
+        "confidence": row.confidence,
+        "status": row.status,
+        "source_episode_ids": [str(s) for s in (row.source_episode_ids or [])],
+        "valid_from": row.valid_from.isoformat(),
+        "valid_to": row.valid_to.isoformat() if row.valid_to else None,
+        "sensitivity_labels": list(row.sensitivity_labels or []),
+        "created_at": row.created_at.isoformat(),
+    }

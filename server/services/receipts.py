@@ -233,6 +233,11 @@ def build_receipt_body(
     task_id: str | None = None,
     parent_receipt_id: str | None = None,
     policy_bundle_hash: str | None = None,
+    policy_mode: str = "log_only",
+    filters_applied: list[dict[str, Any]] | None = None,
+    filters_skipped: list[dict[str, Any]] | None = None,
+    caller_id: str | None = None,
+    caller_type: str | None = None,
     region: str | None = None,
 ) -> dict[str, Any]:
     """Render the strict-superset receipt body. Pure function — same
@@ -281,15 +286,21 @@ def build_receipt_body(
         "task": task,
         "as_of": _iso(as_of),
         "created_at": _iso(created_at),
+        # Caller identity (#50) — the request fields the policy layer
+        # evaluated against. Null when the caller is anonymous (the
+        # default for tenants that don't `require_caller_identity`).
+        "caller_id": caller_id,
+        "caller_type": caller_type,
         "selected_entries": entries,
         "policy": {
-            # v1 ships with the policy layer absent. Issue #50 fills
-            # these in. The keys exist so consumers can write code now
-            # that won't break when policy lands.
+            # Filled in by the policy layer (#50) when a bundle is
+            # active. Untagged-everywhere tenants and no-bundle
+            # deployments get the same empty shape they got pre-#50,
+            # which is exactly the right answer.
             "policy_bundle_hash": policy_bundle_hash,
-            "filters_applied": [],
-            "filters_skipped": [],
-            "mode": "log_only",
+            "filters_applied": list(filters_applied or []),
+            "filters_skipped": list(filters_skipped or []),
+            "mode": policy_mode,
         },
         "output": {
             "context_hash": context_hash,

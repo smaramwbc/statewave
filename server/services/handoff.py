@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from server.core.config import settings
 from server.db import repositories as repo
 from server.schemas.responses import HandoffResponse, HealthFactorResponse, ResolutionSummaryItem
+from server.services import policy as policy_service
 from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.health import compute_health
@@ -40,6 +41,8 @@ async def assemble_handoff(
     query_id: str | None = None,
     task_id: str | None = None,
     parent_receipt_id: str | None = None,
+    caller_id: str | None = None,
+    caller_type: str | None = None,
 ) -> HandoffResponse:
     """Build a compact handoff context pack for agent escalation/transfer."""
     budget = max_tokens or 4000
@@ -56,6 +59,36 @@ async def assemble_handoff(
     resolution_rows = await repo.list_resolutions(
         session, subject_id, tenant_id=tenant_id, limit=20
     )
+
+    # -- Sensitivity-label policy (#50) --------------------------------------
+    # Handoff briefs are sent to agents/operators downstream, so they go
+    # through the same policy gate as /v1/context. The active bundle is
+    # the same one /v1/context resolves; log_only vs enforce is the same
+    # per-tenant flag.
+    tenant_config = await receipts_service.load_tenant_receipt_config(
+        session, tenant_id
+    )
+    policy_mode = (tenant_config or {}).get("policy_mode", "log_only")
+    policy_enforce = policy_mode == "enforce"
+    active_bundle = await policy_service.resolve_active_bundle(session, tenant_id)
+    policy_context = policy_service.PolicyContext(
+        caller_id=caller_id,
+        caller_type=caller_type,
+        tenant_id=tenant_id,
+    )
+    policy_decisions: dict[Any, policy_service.MemoryPolicyDecision] = {}
+    for row in fact_rows:
+        decision = policy_service.evaluate_memory(
+            memory_labels=list(getattr(row, "sensitivity_labels", None) or []),
+            bundle=active_bundle,
+            context=policy_context,
+        )
+        if decision.action != "allow":
+            policy_decisions[row.id] = decision
+    if policy_enforce and policy_decisions:
+        fact_rows, _ = policy_service.apply_decisions(
+            fact_rows, policy_decisions, enforce=True
+        )
 
     # -- Key facts ----------------------------------------------------------
     key_facts = [row.content for row in fact_rows if row.status == "active"]
@@ -246,6 +279,12 @@ async def assemble_handoff(
         query_id=query_id,
         task_id=task_id,
         parent_receipt_id=parent_receipt_id,
+        caller_id=caller_id,
+        caller_type=caller_type,
+        tenant_config=tenant_config,
+        policy_bundle=active_bundle,
+        policy_mode=policy_mode,
+        policy_decisions=policy_decisions,
     )
 
     return HandoffResponse(
@@ -290,15 +329,22 @@ async def _maybe_emit_handoff_receipt(
     query_id: str | None,
     task_id: str | None,
     parent_receipt_id: str | None,
+    caller_id: str | None = None,
+    caller_type: str | None = None,
+    tenant_config: dict[str, Any] | None = None,
+    policy_bundle: policy_service.PolicyBundle | None = None,
+    policy_mode: str = "log_only",
+    policy_decisions: dict[Any, policy_service.MemoryPolicyDecision] | None = None,
 ) -> tuple[str | None, bool]:
     """Decide-and-write a handoff receipt. Mirrors the /v1/context flow
     but uses `mode="retrieval"` (v1 has one mode; future handoff-specific
     modes can subdivide if needed). Receipt task text is the synthetic
     `handoff:{reason}` string so audit dashboards can filter handoffs
     cleanly from regular retrievals."""
-    tenant_config = await receipts_service.load_tenant_receipt_config(
-        session, tenant_id
-    )
+    if tenant_config is None:
+        tenant_config = await receipts_service.load_tenant_receipt_config(
+            session, tenant_id
+        )
     decision = receipts_service.decide_emission(
         request_flag=emit_receipt,
         tenant_config=tenant_config,
@@ -309,6 +355,11 @@ async def _maybe_emit_handoff_receipt(
 
     context_hash, context_size_bytes = receipts_service.canonicalize_context(
         handoff_notes
+    )
+    policy_decisions = policy_decisions or {}
+    filters_applied = policy_service.build_filters_applied(policy_decisions)
+    filters_skipped = policy_service.build_filters_skipped(
+        policy_decisions, policy_bundle
     )
 
     rank = 0
@@ -355,6 +406,12 @@ async def _maybe_emit_handoff_receipt(
         query_id=query_id,
         task_id=task_id,
         parent_receipt_id=parent_receipt_id,
+        policy_bundle_hash=policy_bundle.bundle_hash if policy_bundle else None,
+        policy_mode=policy_mode,
+        filters_applied=filters_applied,
+        filters_skipped=filters_skipped,
+        caller_id=caller_id,
+        caller_type=caller_type,
     )
     written_id = await receipts_service.write_receipt(
         session, receipt_body=body, as_of=as_of

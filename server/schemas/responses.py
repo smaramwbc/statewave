@@ -213,3 +213,30 @@ class LLMCompleteResponse(BaseModel):
     callers don't need usage/tokens for the widget-completion use case."""
 
     reply: str
+
+
+class TenantConfigResponse(BaseModel):
+    """Read-side projection of a `tenant_configs` row. `version` is the
+    optimistic-concurrency counter — pass it back as `expected_version`
+    on the next PATCH to fail-fast on lost updates."""
+
+    tenant_id: str
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "The full config document. Known keys: `receipts`, "
+            "`receipt_retention_days`, `policy_mode`, "
+            "`require_caller_identity`. Unknown keys are preserved "
+            "across writes for forward-compatibility."
+        ),
+    )
+    version: int = Field(
+        ...,
+        ge=0,
+        description=(
+            "Incremented on every PATCH. `0` is returned when the tenant "
+            "has no row in `tenant_configs` yet (the default state)."
+        ),
+    )
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

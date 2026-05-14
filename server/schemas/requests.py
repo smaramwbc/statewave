@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -162,3 +162,70 @@ class LLMCompleteRequest(BaseModel):
     messages: list[LLMChatMessage] = Field(..., min_length=1, max_length=50)
     max_tokens: int | None = Field(None, ge=1, le=4096)
     temperature: float | None = Field(None, ge=0.0, le=2.0)
+
+
+class TenantConfigPatch(BaseModel):
+    """Partial update to `tenant_configs.config`. Every known key is
+    optional — `None` means "don't change this key", a supplied
+    value sets it. Unknown keys in the existing config dict are
+    preserved across the merge.
+
+    Validation lives here at the API boundary rather than inside the
+    config JSON because typos in enum values (e.g. `policy_mode:
+    "enforced"` instead of `"enforce"`) would otherwise silently keep
+    policy in `log_only`. Catching them at the request layer is the
+    only place that's safe — once the value lives in JSONB nothing
+    type-checks it again.
+    """
+
+    receipts: Literal["always", "on_request", "never"] | None = Field(
+        None,
+        description=(
+            "State-assembly receipt emission policy (#49). `on_request` "
+            "is the default — callers opt in per-request via "
+            "`emit_receipt: true`. `always` overrides per-request `false`. "
+            "`never` suppresses all emission for the tenant."
+        ),
+    )
+    receipt_retention_days: int | None = Field(
+        None,
+        ge=0,
+        le=36500,
+        description=(
+            "Number of days a receipt is kept before the retention worker "
+            "deletes it. `0` = forever (the default). v1 of #49 ships this "
+            "surface; the purge worker itself is a v2 follow-up."
+        ),
+    )
+    policy_mode: Literal["log_only", "enforce"] | None = Field(
+        None,
+        description=(
+            "Sensitivity-label policy enforcement mode (#50). `log_only` "
+            "(the default) records what *would* be filtered into receipts "
+            "without removing memories from the response. `enforce` drops "
+            "denied memories and redacts marked ones. Flip to enforce only "
+            "after auditing the log_only receipts for a few days."
+        ),
+    )
+    require_caller_identity: bool | None = Field(
+        None,
+        description=(
+            "When true, `/v1/context` and `/v1/handoff` 401 anonymous "
+            "callers (missing both `caller_id` and `caller_type`). "
+            "Compliance-grade tenants flip this on to make policy "
+            "enforcement non-bypassable."
+        ),
+    )
+    expected_version: int | None = Field(
+        None,
+        ge=0,
+        description=(
+            "Optimistic concurrency: if supplied, the server returns 409 "
+            "when the current row's `version` differs. Prevents lost-"
+            "update races between parallel admin edits. `0` is the "
+            "create semantic — supply 0 to assert the tenant has no row "
+            "yet (GET returns `version: 0` for unconfigured tenants). "
+            "Omit if you're the only writer; supply the value from a "
+            "prior GET if not."
+        ),
+    )

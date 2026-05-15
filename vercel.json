@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "docs.statewave.ai" }],
+      "destination": "https://github.com/smaramwbc/statewave-docs",
+      "permanent": true
+    }
+  ]
+}

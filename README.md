@@ -1,18 +1,24 @@
+<!-- HERO GRAPHIC: docs/img/hero.png landing in follow-up PR (issue #4) -->
+
 # Statewave
 
 [![CI](https://github.com/smaramwbc/statewave/workflows/CI/badge.svg)](https://github.com/smaramwbc/statewave/actions/workflows/ci.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/statewave)](https://pypi.org/project/statewave/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/statewavedev/statewave)](https://hub.docker.com/r/statewavedev/statewave)
 
-**Open-source memory runtime for AI agents.** Statewave compiles raw events into ranked, token-bounded context bundles with full provenance — so your AI stops forgetting across sessions. Self-hosted on Postgres, no vendor lock-in.
+Statewave is the open-source memory runtime that gives AI agents reproducible, provenance-tagged context — without sampling-noise from query-time retrieval.
 
-**Primary focus: support-agent workflows** — where structured memory clearly outperforms naive history stuffing and simple RAG. Statewave gives your support agent durable customer context across sessions, with provenance, ranked retrieval, and token budgets.
+<!-- QUICKSTART GIF: docs/img/quickstart.gif landing in follow-up PR (issue #4) -->
 
-### The problem
+> **v0.8.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)
+
+## The problem
 
 Most AI applications have no memory. Every conversation starts from scratch. Context is lost between sessions, decisions aren't remembered, and user history disappears the moment a session ends. Bolting on a vector database or dumping chat logs into a prompt doesn't solve this — it creates fragile, unstructured context that degrades as it scales.
 
-### What Statewave does
+## What Statewave does
 
 Statewave gives your AI system **durable, structured memory** with a clear data lifecycle:
 
@@ -23,79 +29,82 @@ Statewave gives your AI system **durable, structured memory** with a clear data 
 
 Everything is organised around **subjects** — a user, account, agent, repo, or any entity you track.
 
-### Why Statewave
+Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
+
+## How it works
+
+Statewave reads raw events, compiles them once per subject change into typed memories, and assembles a token-bounded context bundle on demand. Each bundle carries provenance back to its source episodes — the same query against the same subject at the same point in time always produces the same bytes. That determinism is what separates *compile-then-use* from query-time retrieval, where sampling noise leaks into every answer.
+
+```
+   Raw events                    Compiled memories             Context bundle
+   (append-only)                 (typed, deduped)              (ranked, capped)
+
+   ┌──────────────┐                                            ┌─────────────────┐
+   │ episode  #42 │ ─┐                                         │ • alice: pro    │
+   │ (slack)      │  │            ┌──────────────┐             │   tier (ep#42)  │
+   ├──────────────┤  │            │ memory       │             ├─────────────────┤
+   │ episode  #67 │  ├─ COMPILE ─►│ kind=fact    ├─ ASSEMBLE ─►│ • churn risk    │
+   │ (zendesk)    │  │            │ confidence=… │             │   (ep#67)       │
+   ├──────────────┤  │            │ provenance=… │             ├─────────────────┤
+   │ episode  #71 │ ─┘            └──────────────┘             │ • escalation    │
+   │ (gmail)      │                                            │   call (ep#71)  │
+   └──────────────┘                                            └─────────────────┘
+                                                               2,345 tokens · ranked
+```
+
+Idempotent at every step — recompiling a subject produces no duplicates; reassembling a bundle for the same task at the same point in time returns the same bytes.
+
+## Capabilities
+
+The runtime essentials. [Full capability inventory →](docs/capabilities.md)
+
+- **Compiled context bundles** — ranked, token-bounded, deterministic per subject and task
+- **Provenance** — every memory traces back to its source episodes; receipts are content-hashed
+- **Pluggable compilers** — heuristic (regex, fully local) or LLM (any [LiteLLM](https://github.com/BerriAI/litellm) provider)
+- **Subject-organised** — `user:`, `repo:`, `account:`, or any entity prefix you choose
+- **State-assembly receipts** — immutable, ULID-addressable record of which memories influenced each bundle
+- **Sensitivity labels + policy engine** — declarative YAML policies (`deny` / `redact`) over per-memory tags (`pii`, `financial`, `secret`, …) with `log_only` and `enforce` modes
+- **Multi-tenant** — query-scoped data isolation via `X-Tenant-ID` header, per-tenant config and policies
+- **Self-hosted on Postgres + pgvector** — no vendor lock-in; runs on your infrastructure
+
+## Why Statewave
 
 - **Your AI remembers** — preferences, decisions, history persist across sessions
-- **Context is structured, not dumped** — ranked retrieval with token budgets, not raw chat log stuffing
+- **Context is structured, not dumped** — ranked retrieval with token budgets, not raw chat-log stuffing
 - **Provenance is built in** — every memory traces back to its source episodes
 - **You own the storage** — self-hosted, open source, no vendor lock-in. Episodes and compiled memories live in your Postgres. The default heuristic compiler runs fully local; choose an LLM compiler or hosted embeddings if you want them. See [Privacy & Data Flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md).
 - **No GPU required** — the API process is CPU-only. GPUs only enter the picture if you self-host an LLM compiler or embedding model. See [Hardware & Scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md).
 - **Framework-neutral** — works with any AI stack, any language, via REST API or typed SDKs
 
-Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or a hosted service. It is infrastructure you run alongside your application.
-
-> **Status:** v0.8.0 — actively developed. **Governance & audit layer shipped:** every context assembly can emit an immutable [state-assembly receipt](https://github.com/smaramwbc/statewave-docs/blob/main/receipts.md) (content-hash integrity, full provenance, queryable + chainable by ULID), per-memory [sensitivity labels](https://github.com/smaramwbc/statewave-docs/blob/main/sensitivity-labels.md) feed a declarative YAML policy engine that filters by caller identity, and per-tenant config flips enforce mode on without a SQL shell. Builds on the v0.7.x foundation: per-kind memory TTL, Helm chart, cross-machine query embedding cache, and the full support-agent intelligence stack (session-aware context, resolution tracking, handoff packs, health, SLA, proactive alerts). See [current limitations](#current-limitations) below.
-
 ## 🎯 Try it
 
-> The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
+The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
 
-## Documentation
+## Quickstart
 
-| | |
-|---|---|
-| **[Getting started](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md)** | Clone, run, ingest your first episode |
-| [What is Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/product.md) | Product overview, use cases, limitations |
-| [Why Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/why-statewave.md) | Technical comparison for support-agent workflows |
-| [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md) | Full endpoint reference |
-| [Architecture overview](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/overview.md) | System design and data flow |
-| [Compiler modes](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/compiler-modes.md) | Heuristic vs LLM — when to use which |
-| [Privacy & data flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md) | What stays local, what leaves your network |
-| [Hardware & scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md) | GPU is never required; scaling characteristics |
-| [Deployment sizing guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/sizing.md) | Hardware profiles by tier (local → enterprise) and topology patterns |
-| [Capacity planning checklist](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/capacity-planning.md) | Diagnostic flow + tuning order when load grows |
-| [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
-| [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
-| [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
-| [Python SDK](https://github.com/smaramwbc/statewave-py) | `pip install statewave` — sync + async client, Pydantic models |
-| [TypeScript SDK](https://github.com/smaramwbc/statewave-ts) | `npm install @statewavedev/sdk` — fetch-based client, full type definitions |
-| [Connectors](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/index.md) | Feed real-world events (GitHub, Markdown/ADRs, MCP, …) into Statewave as episodes — see [Connectors](#connectors) below |
-| [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstart, support agent, coding agent |
-| [Context quality eval](https://github.com/smaramwbc/statewave-examples/tree/main/eval-support-agent) | Automated assertions on context correctness |
-| [Benchmark](https://github.com/smaramwbc/statewave-examples/tree/main/benchmark-support-agent) | Statewave vs history stuffing vs RAG |
+```python
+from statewave import StatewaveClient
 
-## Capabilities
+with StatewaveClient("http://localhost:8100") as sw:
+    sw.create_episode(subject_id="user-42", source="chat", type="message",
+                      payload={"text": "Alice asked about pricing tiers"})
+    sw.compile_memories("user-42")
+    print(sw.get_context("user-42", task="answer pricing", max_tokens=1000).assembled_context)
+```
 
-- **Episode ingestion** — append-only raw event recording, single or batch (up to 100)
-- **Pluggable compilers** — heuristic (regex) or LLM (any LiteLLM-supported provider) memory extraction
-- **Idempotent compilation** — recompiling the same subject produces no duplicates
-- **Semantic search** — pgvector cosine similarity with text-search fallback
-- **Token-bounded context** — context bundles respect a configurable token budget
-- **Ranked retrieval** — kind priority × recency × task relevance × temporal validity × semantic similarity
-- **Memory conflict resolution** — auto-supersede older overlapping memories
-- **Provenance** — every memory traces back to its source episodes
-- **Subject management** — list subjects with counts, inspect timelines, permanently delete all data by subject
-- **Authentication** — optional API key via `X-API-Key` header
-- **Rate limiting** — per-IP fixed-window, distributed (Postgres-backed) or in-memory
-- **Multi-tenant** — optional `X-Tenant-ID` header with real query-scoped data isolation
-- **Webhooks** — persistent HTTP callbacks with retries and dead-letter on episode, compile, and delete events
-- **OpenTelemetry tracing** — optional spans on key operations (requires `[otel]` extra)
-- **Structured logging** — structlog with JSON output in production, console in development
-- **Structured errors** — consistent JSON error format with request-ID correlation
-- **Session-aware context** — active session boosted, resolved sessions deprioritized
-- **Resolution tracking** — mark issues open/resolved, surface resolution history
-- **Handoff context packs** — compact escalation briefs with health, SLA, and issue context
-- **Customer health scoring** — deterministic 0–100 score with explainable factors
-- **SLA tracking** — first-response time, resolution time, breach detection
-- **Proactive health alerts** — webhooks on health state transitions (degradation + recovery)
-- **Repeat-issue detection** — surfaces prior resolutions when patterns recur
-- **State-assembly receipts** — every `/v1/context` and `/v1/handoff` call can emit an immutable, ULID-addressable audit record of which memories + episodes influenced the bundle, with a SHA-256 hash of the bytes delivered to the agent and tenant-scoped retrieval via `GET /v1/receipts`
-- **Per-memory sensitivity labels** — operator-supplied capability tags (`pii`, `financial`, `secret`, …) carried as a `TEXT[]` column with a GIN index; set via `PATCH /v1/memories/{id}/labels`
-- **Declarative policy engine** — YAML/JSON policy bundles with six predicates (label match, caller_type, caller_id), two actions (`deny`, `redact`), and first-match-wins evaluation; bundles are content-hashed and immutable, addressable by `bundle_hash`; per-tenant policy_mode toggles between `log_only` (record decisions to receipts, no filtering) and `enforce` (drop denied memories before ranking)
-- **Caller identity** — `caller_id` and `caller_type` on context/handoff requests feed the policy evaluator; tenant config `require_caller_identity: true` 401s anonymous calls
-- **Per-tenant config** — `GET / PATCH /admin/tenants/{id}/config` for receipts emission, retention, policy_mode, caller-identity gating; PATCH-shape merge with optimistic concurrency via `expected_version`
+That's the loop: **ingest → compile → use** — ranked, token-bounded context with provenance. Run the server below, or [self-host with Docker](DOCKER.md) / [Helm](helm/). Full SDK docs: [statewave-py](https://github.com/smaramwbc/statewave-py) (Python) · [statewave-ts](https://github.com/smaramwbc/statewave-ts) (TypeScript).
 
-## Quick start
+## Use cases
+
+Three runnable examples in [statewave-examples](https://github.com/smaramwbc/statewave-examples):
+
+- **[Customer support agent](https://github.com/smaramwbc/statewave-examples/tree/main/support-agent-python)** — returning customer recognised across sessions, ranked context with token budget, provenance tracing, handoff pack on escalation. *(Python · TypeScript)*
+- **[Long-running coding agent](https://github.com/smaramwbc/statewave-examples/tree/main/coding-agent-python)** — multi-session project memory: tech stack, preferences, architecture decisions persist between conversations. *(Python · TypeScript)*
+- **[Stateless vs memory-powered agent (live LLM)](https://github.com/smaramwbc/statewave-examples/tree/main/support-agent-llm)** — full loop with a real LLM (any LiteLLM provider) running side by side with and without Statewave so you can A/B the difference yourself. *(Python)*
+
+Plus four more — minimal quickstart, docs-grounded support, eval suite (55 assertions across 23 tests), and a benchmark — in the [examples repo](https://github.com/smaramwbc/statewave-examples).
+
+## Run the server
 
 ```bash
 # Start Postgres (pgvector)
@@ -142,6 +151,35 @@ See the full [getting started guide](https://github.com/smaramwbc/statewave-docs
 | `GET` | `/v1/subjects/{id}/sla` | SLA metrics — response time, resolution time, breaches |
 
 Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md).
+
+## Supported platforms
+
+| Surface | Supported |
+|---|---|
+| Python | 3.11+ (CI runs 3.11; 3.12 / 3.13 expected to work but not gated in CI yet) |
+| OS — server | Linux verified in CI; macOS + Windows usually fine for local dev but not CI-tested |
+| Docker image | `linux/amd64` and `linux/arm64` |
+| Database | PostgreSQL 14+ with [pgvector](https://github.com/pgvector/pgvector) ≥ 0.4.2 |
+| LLM provider (compiler) | Any of [100+ LiteLLM-supported providers](https://docs.litellm.ai/docs/providers) — OpenAI, Anthropic, Azure, Bedrock, Ollama, Cohere, Gemini, Mistral, Groq, … |
+| Embedding provider | Any LiteLLM-supported, plus `stub` (local heuristic, no API key) |
+| SDKs | [Python](https://github.com/smaramwbc/statewave-py) (`pip install statewave`) · [TypeScript](https://github.com/smaramwbc/statewave-ts) (`npm install @statewavedev/sdk`) |
+
+## FAQ
+
+**How is this different from Mem0 / Zep?**
+Mem0 is lean and fast but loses on multi-hop reasoning in our bench. Zep extracts a graph but in our LoCoMo run its retrieval surface returned the same thread summary regardless of the query. Statewave compiles the context once per subject change, with provenance. See [statewave-bench](https://github.com/smaramwbc/statewave-bench) for row-level data and a 20-minute reproducibility command against your own keys.
+
+**Does it work with my model provider?**
+Yes — Statewave uses [LiteLLM](https://github.com/BerriAI/litellm) so any of 100+ providers work (OpenAI, Anthropic, Azure, Bedrock, Ollama, Groq, Cohere, Gemini, Mistral, …). Set `STATEWAVE_LITELLM_MODEL` to any LiteLLM identifier.
+
+**What's the license — can I use this commercially?**
+Yes. Statewave (server + SDKs) is Apache-2.0 — a permissive license with an explicit patent grant. Use it freely in proprietary, hosted, or commercial products with no source-disclosure obligations. See [LICENSING.md](LICENSING.md).
+
+**Can I self-host?**
+Yes — that's the default. Docker Compose, Helm chart, or bare-metal. See [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md).
+
+**Why does it cost more tokens per answer than Mem0?**
+Compiled context bundles are denser than Mem0's fact-store retrieval — that's what buys the higher multi-hop accuracy. If your queries are mostly single-hop and you're cost-sensitive, Mem0 may be the right call. The bench tells you when each system wins.
 
 ## Connectors
 
@@ -255,6 +293,24 @@ See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.
 
 > **Horizontal scaling.** Statewave runs multi-replica in production (Fly multi-machine + Helm HPA both verified). The policy bundle cache that previously assumed single-process was dropped in v0.8 (#77) precisely so multi-replica deploys behave correctly under enforce mode. Heavy load is bottlenecked by Postgres + your embedding provider, not the API.
 
+## Documentation
+
+| | |
+|---|---|
+| **[Getting started](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md)** | Clone, run, ingest your first episode |
+| [What is Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/product.md) | Product overview, use cases, limitations |
+| [Why Statewave?](https://github.com/smaramwbc/statewave-docs/blob/main/why-statewave.md) | Technical comparison for support-agent workflows |
+| [API v1 contract](https://github.com/smaramwbc/statewave-docs/blob/main/api/v1-contract.md) | Full endpoint reference |
+| [Architecture overview](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/overview.md) | System design and data flow |
+| [Compiler modes](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/compiler-modes.md) | Heuristic vs LLM — when to use which |
+| [Privacy & data flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md) | What stays local, what leaves your network |
+| [Hardware & scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md) | GPU is never required; scaling characteristics |
+| [Deployment sizing guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/sizing.md) | Hardware profiles by tier (local → enterprise) and topology patterns |
+| [Capacity planning checklist](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/capacity-planning.md) | Diagnostic flow + tuning order when load grows |
+| [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
+| [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
+| [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
+
 ## Community
 
 Statewave is built in the open. Where to post what:
@@ -278,6 +334,12 @@ The full community guide — categories, RFC process, moderation — lives in [s
 | [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
 | [Website + demo](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
 | [Admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
+
+## Star history
+
+<a href="https://star-history.com/#smaramwbc/statewave&Date">
+  <img src="https://api.star-history.com/svg?repos=smaramwbc/statewave&type=Date" width="80%" alt="Star history of smaramwbc/statewave" />
+</a>
 
 ## Licensing
 

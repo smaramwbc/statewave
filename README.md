@@ -14,6 +14,10 @@ Statewave is the open-source memory runtime that gives AI agents reproducible, p
 
 > **v0.8.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)
 
+## 🎯 Try it
+
+The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
+
 ## The problem
 
 Most AI applications have no memory. Every conversation starts from scratch. Context is lost between sessions, decisions aren't remembered, and user history disappears the moment a session ends. Bolting on a vector database or dumping chat logs into a prompt doesn't solve this — it creates fragile, unstructured context that degrades as it scales.
@@ -35,22 +39,10 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 
 Statewave reads raw events, compiles them once per subject change into typed memories, and assembles a token-bounded context bundle on demand. Each bundle carries provenance back to its source episodes — the same query against the same subject at the same point in time always produces the same bytes. That determinism is what separates *compile-then-use* from query-time retrieval, where sampling noise leaks into every answer.
 
-```
-   Raw events                    Compiled memories             Context bundle
-   (append-only)                 (typed, deduped)              (ranked, capped)
-
-   ┌──────────────┐                                            ┌─────────────────┐
-   │ episode  #42 │ ─┐                                         │ • alice: pro    │
-   │ (slack)      │  │            ┌──────────────┐             │   tier (ep#42)  │
-   ├──────────────┤  │            │ memory       │             ├─────────────────┤
-   │ episode  #67 │  ├─ COMPILE ─►│ kind=fact    ├─ ASSEMBLE ─►│ • churn risk    │
-   │ (zendesk)    │  │            │ confidence=… │             │   (ep#67)       │
-   ├──────────────┤  │            │ provenance=… │             ├─────────────────┤
-   │ episode  #71 │ ─┘            └──────────────┘             │ • escalation    │
-   │ (gmail)      │                                            │   call (ep#71)  │
-   └──────────────┘                                            └─────────────────┘
-                                                               2,345 tokens · ranked
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-statewave-works-dark.png">
+  <img alt="How Statewave works: events → compiled memories → ranked, token-bounded context bundle with provenance" src="docs/img/how-statewave-works-light.png" width="100%">
+</picture>
 
 Idempotent at every step — recompiling a subject produces no duplicates; reassembling a bundle for the same task at the same point in time returns the same bytes.
 
@@ -75,10 +67,6 @@ The runtime essentials. [Full capability inventory →](docs/capabilities.md)
 - **You own the storage** — self-hosted, open source, no vendor lock-in. Episodes and compiled memories live in your Postgres. The default heuristic compiler runs fully local; choose an LLM compiler or hosted embeddings if you want them. See [Privacy & Data Flow](https://github.com/smaramwbc/statewave-docs/blob/main/architecture/privacy-and-data-flow.md).
 - **No GPU required** — the API process is CPU-only. GPUs only enter the picture if you self-host an LLM compiler or embedding model. See [Hardware & Scaling](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/hardware-and-scaling.md).
 - **Framework-neutral** — works with any AI stack, any language, via REST API or typed SDKs
-
-## 🎯 Try it
-
-The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
 
 ## Quickstart
 
@@ -334,12 +322,6 @@ The full community guide — categories, RFC process, moderation — lives in [s
 | [Examples](https://github.com/smaramwbc/statewave-examples) | Quickstarts, evals, benchmarks |
 | [Website + demo](https://github.com/smaramwbc/statewave-web) | Marketing website + embedded interactive demo ([statewave.ai](https://statewave.ai)) |
 | [Admin](https://github.com/smaramwbc/statewave-admin) | Operator console (read-only) |
-
-## Star history
-
-<a href="https://star-history.com/#smaramwbc/statewave&Date">
-  <img src="https://api.star-history.com/svg?repos=smaramwbc/statewave&type=Date" width="80%" alt="Star history of smaramwbc/statewave" />
-</a>
 
 ## Licensing
 

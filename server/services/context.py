@@ -69,6 +69,28 @@ _LEXICAL_BONUS_MAX = 4.0  # Additive bonus when query terms appear verbatim in
 # floor. Capped at 4.0 so it can't override a clearly dominant kind signal —
 # only break ties between similarly-ranked candidates.
 
+# Task-relevance gate (issue #116). The ranker always returns *something*
+# (kind priority + recency keep memories ranked even when nothing matches the
+# task), so an off-topic task — "What is the airline ticket price?" against a
+# weather subject — silently renders unrelated facts as if they were relevant.
+# We don't drop those facts (recall is still useful and the benchmark relies
+# on it), but when NOTHING clears a real task-relevance signal we prepend an
+# explicit caveat so the caller knows the context isn't task-specific.
+#
+# A candidate counts as task-relevant if EITHER:
+#   - semantic cosine similarity ≥ _SEMANTIC_RELEVANCE_FLOOR, or
+#   - it shares ≥1 meaningful (non-stopword) token with the task.
+# semantic_scores[id] = (1 - cosine_distance) * _SEMANTIC_MAX, so the cosine
+# similarity is semantic_scores[id] / _SEMANTIC_MAX. 0.25 is deliberately
+# conservative: unrelated sentence-embedding pairs typically sit ≤0.15 while
+# topically-related ones clear ~0.35+, so this only fires for clearly
+# off-topic tasks and never on the (always on-topic) benchmark queries.
+_SEMANTIC_RELEVANCE_FLOOR = 0.25
+_NO_TASK_CONTEXT_NOTE = (
+    "_No stored context is directly associated with this task. "
+    "The items below are this subject's general memory, not task-specific._"
+)
+
 # Support-agent-specific scoring signals
 _OPEN_ISSUE_BOOST = 4.0  # Bonus for episodes in sessions with open/unresolved issues
 _ACTION_STEP_BOOST = 2.0  # Bonus for agent/assistant/tool episodes (what was tried)
@@ -319,6 +341,11 @@ async def assemble_context(
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)
 
+    # Issue #116: track whether ANY candidate is genuinely task-relevant
+    # (semantic similarity above the floor, or a literal token overlap).
+    # Drives the no-task-context caveat below without altering ranking.
+    task_relevant = False
+
     scored: list[_ScoredItem] = []
     all_memory_rows = list(fact_rows) + list(procedure_rows) + list(summary_rows)
 
@@ -376,6 +403,18 @@ async def assemble_context(
             else:
                 relevance = _relevance_score(row.content, task_tokens)
                 lexical_bonus = 0.0
+
+            # Issue #116: does THIS memory actually relate to the task?
+            # Use the stopword-aware meaningful-overlap predicate (same one
+            # the lexical bonus uses) — raw word overlap would treat a shared
+            # "the"/"is" as relevance and never fire the caveat.
+            if not task_relevant and task_tokens:
+                if use_semantic and row.id in semantic_scores:
+                    cosine_sim = semantic_scores[row.id] / _SEMANTIC_MAX
+                    if cosine_sim >= _SEMANTIC_RELEVANCE_FLOOR or lexical_bonus > 0.0:
+                        task_relevant = True
+                elif _lexical_overlap_bonus(row.content, task_tokens) > 0.0:
+                    task_relevant = True
 
             breadcrumb_bonus = _breadcrumb_overlap_bonus(
                 memory_breadcrumbs.get(row.id, []),
@@ -464,10 +503,19 @@ async def assemble_context(
                 continue  # already represented by a summary
             ep_text = _short_episode_text(row.payload, row.source, row.type)
             content_text = extract_payload_text(row.payload)
+            ep_relevance = _relevance_score(content_text, task_tokens)
+            # Issue #116: a meaningful (non-stopword) token overlap with an
+            # episode also counts as the task being on-topic for this subject.
+            if (
+                not task_relevant
+                and task_tokens
+                and _lexical_overlap_bonus(content_text, task_tokens) > 0.0
+            ):
+                task_relevant = True
             score = (
                 _EPISODE_PRIORITY
                 + _recency_score(row.created_at, ep_ts_range)
-                + _relevance_score(content_text, task_tokens)
+                + ep_relevance
             )
             # Boost episodes belonging to the active session
             if session_id and getattr(row, "session_id", None) == session_id:
@@ -511,6 +559,13 @@ async def assemble_context(
     # -- Assemble within budget ---------------------------------------------
     task_header = f"## Task\n{task}\n"
     budget_used = len(enc.encode(task_header))
+
+    # Issue #116: if nothing cleared a real task-relevance signal, we still
+    # return the subject's memory (recall preserved) but prepend an explicit
+    # caveat. Reserve its tokens up front so the budget stays honored.
+    show_no_task_context = bool(task.strip()) and not task_relevant
+    if show_no_task_context:
+        budget_used += len(enc.encode(_NO_TASK_CONTEXT_NOTE + "\n"))
 
     included_facts: list[MemoryResponse] = []
     included_summaries: list[MemoryResponse] = []
@@ -558,6 +613,9 @@ async def assemble_context(
     # This mirrors how a human would brief someone: who is this person,
     # what do they need, what happened recently, raw detail if room.
     parts: list[str] = [task_header]
+    if show_no_task_context:
+        parts.append(_NO_TASK_CONTEXT_NOTE)
+        parts.append("")
     if section_lines["facts"]:
         parts.append("## About this user")
         parts.extend(section_lines["facts"])

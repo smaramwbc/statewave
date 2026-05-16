@@ -16,7 +16,6 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from server.core.config import settings
 from server.services.llm import litellm_api_key_configured
 
 logger = structlog.get_logger()

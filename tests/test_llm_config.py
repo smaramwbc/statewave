@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from server.core.config import Settings
 import server.services.llm as llm_module
 from server.services.llm import litellm_api_key_configured, warn_if_llm_compiler_missing_api_key

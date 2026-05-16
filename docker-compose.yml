@@ -23,7 +23,7 @@ services:
     image: statewavedev/statewave:${STATEWAVE_VERSION:-latest}
     build: .
     ports:
-      - "8100:8100"
+      - "${STATEWAVE_API_HOST_PORT:-8100}:8100"
     # Load STATEWAVE_LITELLM_*, STATEWAVE_API_KEY, etc. from the host's .env.
     # `.dockerignore` keeps .env OUT of the image — env_file injects values
     # at runtime so the docker-compose `environment:` block below remains

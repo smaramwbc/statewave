@@ -52,6 +52,70 @@ curl http://localhost:8100/healthz
 STATEWAVE_VERSION=0.7.0 docker compose up -d
 ```
 
+## Handling port conflicts
+
+Local deployments frequently encounter port conflicts if services like PostgreSQL or other applications already use ports 5432 (database) or 8080 (admin console). Override the host ports using environment variables:
+
+```sh
+# Use custom ports instead of defaults
+STATEWAVE_DB_HOST_PORT=5433 STATEWAVE_ADMIN_HOST_PORT=8081 docker compose up -d
+```
+
+Or set them in a `.env` file next to `docker-compose.yml`:
+
+```sh
+# .env
+STATEWAVE_DB_HOST_PORT=5433
+STATEWAVE_ADMIN_HOST_PORT=8081
+```
+
+Then start as usual:
+
+```sh
+docker compose up -d
+```
+
+### Service port reference
+
+| Service | Container port | Default host port | Override variable |
+|---------|---|---|---|
+| Database (PostgreSQL) | 5432 | 5432 | `STATEWAVE_DB_HOST_PORT` |
+| Admin console | 8080 | 8080 | `STATEWAVE_ADMIN_HOST_PORT` |
+| API | 8100 | 8100 | *(not configurable — reserved for internal use)* |
+
+### Troubleshooting port conflicts
+
+**Error: `bind: address already in use`**
+
+1. **Identify the conflicting process:**
+   ```sh
+   # On macOS/Linux
+   lsof -i :5432  # Check database port
+   lsof -i :8080  # Check admin port
+   ```
+
+2. **Choose one of:**
+   - **Kill the other process** (if it's not needed)
+   - **Change the Statewave port** (recommended for local dev) — set `DB_HOST_PORT` and/or `ADMIN_HOST_PORT`
+   - **Change the other service's port** (if you control it)
+
+3. **Start Statewave with the new ports:**
+   ```sh
+   STATEWAVE_DB_HOST_PORT=5433 STATEWAVE_ADMIN_HOST_PORT=8081 docker compose up -d
+   ```
+
+4. **Update your connection strings** if scripting against Statewave:
+   ```python
+   # Example: connect to database on custom port 5433
+   from sqlalchemy import create_engine
+   engine = create_engine("postgresql://statewave:statewave@localhost:5433/statewave")
+   ```
+
+### Environment variable precedence
+
+- Command-line variables override `.env` file variables: `STATEWAVE_DB_HOST_PORT=5433 docker compose up -d` takes precedence over `STATEWAVE_DB_HOST_PORT=5434` in `.env`
+- If neither is set, defaults are used (5432 for DB, 8080 for admin)
+
 ## Tags
 
 | Tag | Meaning |

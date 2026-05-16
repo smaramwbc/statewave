@@ -19,11 +19,37 @@ to `tests/integration/` where the per-session `create_all` / `drop_all`
 fixture already gives us a clean DB), the conditional skip below can be
 removed and the assertion can run unconditionally.
 """
-
+import os
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = pytest.mark.asyncio
+
+@pytest.fixture(autouse=True)
+async def _require_migrated_postgres():
+    """Skip when Postgres is missing or schema is behind the ORM (e.g. no occurred_at).
+    CI runs `alembic upgrade head` before pytest; a local dev DB that was never
+    migrated will otherwise fail every episode-ingestion test with a column error.
+    """
+    from server.core.config import settings
+    url = (
+        os.environ.get("STATEWAVE_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+        or settings.database_url
+    )
+    try:
+        engine = create_async_engine(url, pool_pre_ping=True)
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT occurred_at FROM episodes LIMIT 0"))
+        await engine.dispose()
+    except Exception as exc:
+        pytest.skip(
+            "Postgres schema not ready for admin subject tests "
+            f"({type(exc).__name__}: {exc}). "
+            "Run `alembic upgrade head` against STATEWAVE_DATABASE_URL."
+        )
 
 
 async def test_list_subjects_empty(client: AsyncClient):

@@ -72,8 +72,7 @@ async def test_check_queue_stuck_jobs():
 
 @pytest.mark.asyncio
 async def test_check_llm_not_configured():
-    with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.litellm_api_key = None
+    with patch("server.services.readiness.litellm_api_key_configured", return_value=False):
         result = await _check_llm()
         assert result.status == "ok"
         assert result.detail == "STATEWAVE_LITELLM_API_KEY is not set"
@@ -90,8 +89,7 @@ async def test_check_llm_empty_api_key_treated_as_not_set():
 async def test_run_readiness_all_ok():
     conn = _mock_conn_with_scalar(0)
 
-    with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.litellm_api_key = None
+    with patch("server.services.readiness.litellm_api_key_configured", return_value=False):
         result = await run_readiness_checks(conn)
 
     assert result.status == "ready"
@@ -103,8 +101,7 @@ async def test_run_readiness_db_fail():
     conn = AsyncMock()
     conn.execute = AsyncMock(side_effect=Exception("down"))
 
-    with patch("server.services.readiness.settings") as mock_settings:
-        mock_settings.litellm_api_key = None
+    with patch("server.services.readiness.litellm_api_key_configured", return_value=False):
         result = await run_readiness_checks(conn)
 
     assert result.status == "not_ready"

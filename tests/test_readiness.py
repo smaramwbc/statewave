@@ -6,11 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import server.services.readiness as readiness_module
 from server.services.readiness import (
     ReadinessResult,
     _check_db,
     _check_llm,
     _check_queue,
+    database_url_status,
     run_readiness_checks,
 )
 
@@ -122,3 +124,63 @@ async def test_run_readiness_db_fail():
 
     assert result.status == "not_ready"
     assert result.http_status == 503
+
+
+# ── #66: /readyz distinguishes DB not-set / unparseable / unreachable ───────
+
+
+def test_database_url_status_missing(monkeypatch):
+    monkeypatch.setattr(readiness_module.settings, "database_url", "")
+    state, detail = database_url_status()
+    assert state == "missing"
+    assert detail == "DATABASE_URL is not set"
+
+
+def test_database_url_status_unparseable(monkeypatch):
+    monkeypatch.setattr(readiness_module.settings, "database_url", "this is not a url")
+    state, detail = database_url_status()
+    assert state == "unparseable"
+    assert detail.startswith("DATABASE_URL is set but couldn't be parsed:")
+
+
+def test_database_url_status_ok(monkeypatch):
+    monkeypatch.setattr(
+        readiness_module.settings,
+        "database_url",
+        "postgresql+asyncpg://statewave:statewave@localhost:5432/statewave",
+    )
+    state, detail = database_url_status()
+    assert state == "ok"
+    assert detail is None
+
+
+@pytest.mark.asyncio
+async def test_run_readiness_conn_none_classifies_db_and_keeps_llm():
+    """conn=None → DB fails with the supplied detail, queue degraded,
+    LLM still evaluated (it's DB-independent)."""
+    with patch("server.services.readiness.litellm_api_key_configured", return_value=False):
+        result = await run_readiness_checks(
+            None, db_unavailable_detail="DATABASE_URL is not set"
+        )
+
+    by_name = {c.name: c for c in result.checks}
+    assert by_name["database"].status == "fail"
+    assert by_name["database"].detail == "DATABASE_URL is not set"
+    assert by_name["queue"].status == "degraded"
+    assert "llm" in by_name  # LLM check still ran
+    assert result.status == "not_ready"
+    assert result.http_status == 503
+
+
+@pytest.mark.asyncio
+async def test_readyz_http_reports_database_url_not_set(client, monkeypatch):
+    """End-to-end: an unset DB URL yields a clear, actionable 503 — and
+    does so deterministically regardless of whether CI has Postgres up
+    (we short-circuit before any engine/connection)."""
+    monkeypatch.setattr(readiness_module.settings, "database_url", "")
+    resp = await client.get("/readyz")
+    assert resp.status_code == 503
+    body = resp.json()
+    db = next(c for c in body["checks"] if c["name"] == "database")
+    assert db["status"] == "fail"
+    assert db["detail"] == "DATABASE_URL is not set"

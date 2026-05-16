@@ -221,10 +221,23 @@ def create_app() -> FastAPI:
         from fastapi.responses import JSONResponse
 
         from server.db.engine import get_engine
-        from server.services.readiness import run_readiness_checks
+        from server.services.readiness import database_url_status, run_readiness_checks
 
-        async with get_engine().connect() as conn:
-            result = await run_readiness_checks(conn)
+        # Classify the DB URL before touching the engine so a first-time
+        # deployer sees "not set" / "couldn't be parsed" / "unreachable"
+        # as distinct, actionable states instead of one generic error (#66).
+        url_state, url_detail = database_url_status()
+        if url_state != "ok":
+            result = await run_readiness_checks(None, db_unavailable_detail=url_detail)
+        else:
+            try:
+                async with get_engine().connect() as conn:
+                    result = await run_readiness_checks(conn)
+            except Exception as exc:
+                result = await run_readiness_checks(
+                    None,
+                    db_unavailable_detail=f"Postgres unreachable: {str(exc)[:200]}",
+                )
 
         body = {
             "status": result.status,

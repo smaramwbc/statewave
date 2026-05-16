@@ -14,8 +14,10 @@ from datetime import datetime, timedelta, timezone
 
 import structlog
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from server.core.config import settings
 from server.services.llm import litellm_api_key_configured, llm_requires_api_key
 
 logger = structlog.get_logger()
@@ -120,12 +122,56 @@ async def _check_llm() -> CheckResult:
         )
 
 
-async def run_readiness_checks(conn: AsyncConnection) -> ReadinessResult:
-    """Run all readiness checks and return aggregated result."""
-    db_check, queue_check = await asyncio.gather(
-        _check_db(conn),
-        _check_queue(conn),
-    )
+def database_url_status() -> tuple[str, str | None]:
+    """Classify the configured DB URL *before* a connection is attempted.
+
+    Lets `/readyz` tell a first-time deployer the difference between
+    "you never configured a database" and "the database is down" — the
+    most common early-setup confusion (#66). `get_engine()` builds the
+    engine from `settings.database_url`, so we classify exactly that.
+
+    Returns ``(status, detail)`` where status is ``"ok"`` (detail None),
+    ``"missing"``, or ``"unparseable"``.
+    """
+    url = (settings.database_url or "").strip()
+    if not url:
+        return "missing", "DATABASE_URL is not set"
+    try:
+        make_url(url)
+    except Exception as exc:
+        # SQLAlchemy's parse error is generic and does not echo the URL,
+        # so this is safe to surface (no credential leak).
+        return "unparseable", f"DATABASE_URL is set but couldn't be parsed: {str(exc)[:160]}"
+    return "ok", None
+
+
+async def run_readiness_checks(
+    conn: AsyncConnection | None,
+    *,
+    db_unavailable_detail: str | None = None,
+) -> ReadinessResult:
+    """Run all readiness checks and return aggregated result.
+
+    `conn` is None when the DB connection could not be established at all
+    (URL not set / unparseable / Postgres unreachable). In that case the
+    DB check fails with `db_unavailable_detail`, the queue check is
+    degraded (it needs a connection), and the LLM check still runs since
+    it is independent of the database.
+    """
+    if conn is None:
+        db_check = CheckResult(
+            name="database",
+            status="fail",
+            detail=db_unavailable_detail or "database connection unavailable",
+        )
+        queue_check = CheckResult(
+            name="queue", status="degraded", detail="skipped (no database connection)"
+        )
+    else:
+        db_check, queue_check = await asyncio.gather(
+            _check_db(conn),
+            _check_queue(conn),
+        )
 
     # LLM check is independent of the DB connection
     llm_check = await _check_llm()

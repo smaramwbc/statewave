@@ -19,6 +19,21 @@ EXPECTED_HEAD = "0019_per_tenant_bundles"
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"
 
 
+def resolve_database_url(explicit: str | None = None) -> str:
+    """Resolve DB URL: explicit arg, env vars, then settings (.env)."""
+    import os
+
+    if explicit is not None:
+        return explicit
+    if os.environ.get("STATEWAVE_DATABASE_URL"):
+        return os.environ["STATEWAVE_DATABASE_URL"]
+    if os.environ.get("DATABASE_URL"):
+        return os.environ["DATABASE_URL"]
+    from server.core.config import settings
+
+    return settings.database_url
+
+
 @dataclass
 class MigrationStatus:
     """Result of a migration state check."""
@@ -45,16 +60,10 @@ class MigrationStatus:
 
 def get_alembic_config() -> Config:
     """Build Alembic config from alembic.ini."""
-    import os
-
     cfg = Config(str(_ALEMBIC_INI))
-    # STATEWAVE_DATABASE_URL is the first-class config name (matches the
-    # rest of the STATEWAVE_-prefixed env surface and the docker-compose
-    # `environment:` block); DATABASE_URL is kept as a generic fallback
-    # for hosts that prefer that convention.
-    db_url = os.environ.get("STATEWAVE_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if db_url:
-        cfg.set_main_option("sqlalchemy.url", db_url)
+    url = resolve_database_url()
+    if url:
+        cfg.set_main_option("sqlalchemy.url", url)
     return cfg
 
 
@@ -79,18 +88,14 @@ async def check_migration_status(database_url: str | None = None) -> MigrationSt
     This creates its own connection (no dependency on the app engine)
     so it can be used in preflight scripts and startup guards.
     """
-    import os
-
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    url = (
-        database_url
-        or os.environ.get("STATEWAVE_DATABASE_URL")
-        or os.environ.get("DATABASE_URL", "")
-    )
+    url = resolve_database_url(database_url)
     if not url:
-        return MigrationStatus(error="STATEWAVE_DATABASE_URL / DATABASE_URL not set")
+        return MigrationStatus(
+            error="Database URL not set (STATEWAVE_DATABASE_URL or DATABASE_URL)"
+        )
 
     status = MigrationStatus()
 

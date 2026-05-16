@@ -68,9 +68,11 @@ services:
       # proxies API calls server-side, so this URL never leaves the compose
       # network.
       STATEWAVE_API_URL: http://api:8100
-      # Local dev placeholder — the api runs in STATEWAVE_DEBUG=true and
-      # accepts any X-API-Key value. Replace with a real key in production.
-      STATEWAVE_API_KEY: dev-local-placeholder
+      # Reads STATEWAVE_API_KEY from your environment / .env, falling back to
+      # a local dev placeholder so a fresh `docker compose up -d` works with
+      # no setup (the api runs STATEWAVE_DEBUG=true and accepts any
+      # X-API-Key value). Set STATEWAVE_API_KEY to a real key in production.
+      STATEWAVE_API_KEY: ${STATEWAVE_API_KEY:-dev-local-placeholder}
       NODE_ENV: production
       # Operator-console auth. The admin requires either a configured password
       # OR an explicit auth-disabled flag. We default to disabled here for the

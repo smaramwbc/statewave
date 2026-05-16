@@ -9,7 +9,7 @@ Run this BEFORE applying migrations to verify:
 
 Usage:
     python scripts/preflight.py
-    DATABASE_URL=postgresql+asyncpg://... python scripts/preflight.py
+    STATEWAVE_DATABASE_URL=postgresql+asyncpg://... python scripts/preflight.py
 
 Exit codes:
     0 — all clear, safe to migrate (or already up to date)

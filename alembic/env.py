@@ -1,7 +1,6 @@
 """Alembic env — async Postgres migrations."""
 
 import asyncio
-import os
 from logging.config import fileConfig
 
 from alembic import context
@@ -14,14 +13,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Override sqlalchemy.url from env. STATEWAVE_DATABASE_URL is the first-class
-# Statewave config name (used by the API + docker-compose); DATABASE_URL is
-# kept as a generic fallback for hosts that prefer that convention. Without
-# this, alembic falls back to the localhost URL hardcoded in alembic.ini and
-# crashes when run inside the Docker container.
-_db_url = os.environ.get("STATEWAVE_DATABASE_URL") or os.environ.get("DATABASE_URL")
-if _db_url:
-    config.set_main_option("sqlalchemy.url", _db_url)
+# Override sqlalchemy.url from env or settings (.env). Without this, alembic
+# falls back to the localhost URL hardcoded in alembic.ini.
+from server.services.migrations import resolve_database_url
+
+_url = resolve_database_url()
+if _url:
+    config.set_main_option("sqlalchemy.url", _url)
 
 target_metadata = Base.metadata
 

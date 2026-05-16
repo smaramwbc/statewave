@@ -90,8 +90,8 @@ async def _check_llm() -> CheckResult:
     Routes through the central LLM adapter — see server.services.llm.
     No direct litellm import here; the adapter owns the SDK choice.
     """
-    if not settings.litellm_api_key:
-        return CheckResult(name="llm", status="ok", detail="not configured (skip)")
+    if not settings.litellm_api_key and not settings.litellm_model.startswith("ollama"):
+        return CheckResult(name="llm", status="ok", detail="STATEWAVE_LITELLM_API_KEY is not set")
 
     import time
 

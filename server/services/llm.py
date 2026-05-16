@@ -78,6 +78,19 @@ def litellm_api_key_configured() -> bool:
     return bool(key and str(key).strip())
 
 
+def llm_requires_api_key() -> bool:
+    """False for providers that authenticate locally / need no API key.
+
+    A LiteLLM ``ollama/*`` (or ``ollama_chat/*``) model talks to a local
+    Ollama server with no credentials, so an unset
+    STATEWAVE_LITELLM_API_KEY is the *expected* configuration there — not a
+    misconfiguration. Without this, the missing-key warning and the
+    ``/readyz`` "key is not set" message both fire spuriously for every
+    local-Ollama operator (credit: @LPHuynh, #122).
+    """
+    return not settings.litellm_model.startswith("ollama")
+
+
 def warn_if_llm_compiler_missing_api_key() -> None:
     """Log a one-shot startup warning when LLM compiler is selected without credentials.
 
@@ -89,6 +102,9 @@ def warn_if_llm_compiler_missing_api_key() -> None:
     if settings.compiler_type != "llm":
         return
     if litellm_api_key_configured():
+        return
+    if not llm_requires_api_key():
+        # Local Ollama model — no key needed, nothing to warn about.
         return
     logger.warning(
         "llm_compiler_missing_api_key",

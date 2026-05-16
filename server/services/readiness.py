@@ -16,7 +16,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from server.services.llm import litellm_api_key_configured
+from server.services.llm import litellm_api_key_configured, llm_requires_api_key
 
 logger = structlog.get_logger()
 
@@ -90,10 +90,12 @@ async def _check_llm() -> CheckResult:
     Routes through the central LLM adapter — see server.services.llm.
     No direct litellm import here; the adapter owns the SDK choice.
     """
-    if not litellm_api_key_configured():
+    if llm_requires_api_key() and not litellm_api_key_configured():
         return CheckResult(
             name="llm", status="ok", detail="STATEWAVE_LITELLM_API_KEY is not set"
         )
+    # Local Ollama (no key required) falls through to the real probe below —
+    # if the local Ollama server is down, that *should* surface here.
 
     import time
 

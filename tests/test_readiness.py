@@ -86,6 +86,22 @@ async def test_check_llm_empty_api_key_treated_as_not_set():
 
 
 @pytest.mark.asyncio
+async def test_check_llm_ollama_without_key_probes_instead_of_skipping():
+    """Ollama needs no key — don't short-circuit with 'key not set'; actually
+    probe the local server (#122 follow-up, credit @LPHuynh)."""
+    with (
+        patch("server.services.readiness.litellm_api_key_configured", return_value=False),
+        patch("server.services.readiness.llm_requires_api_key", return_value=False),
+        patch("server.services.llm.aping", new=AsyncMock(return_value=None)) as aping,
+    ):
+        result = await _check_llm()
+
+    aping.assert_awaited_once()
+    assert result.status == "ok"
+    assert result.detail != "STATEWAVE_LITELLM_API_KEY is not set"
+
+
+@pytest.mark.asyncio
 async def test_run_readiness_all_ok():
     conn = _mock_conn_with_scalar(0)
 

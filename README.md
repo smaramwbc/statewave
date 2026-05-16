@@ -95,32 +95,20 @@ Plus four more — minimal quickstart, docs-grounded support, eval suite (55 ass
 ## Run the server
 
 ```bash
-# Start Postgres (pgvector)
-docker compose up db -d
-
-# Configure — copy the template, then set your LLM provider key.
-# Statewave reads .env automatically (env prefix STATEWAVE_).
-# Without a key the server still boots, but in demo mode: stub
-# hash-based embeddings + the heuristic compiler — no real
-# semantic search. For LLM-backed behaviour, set in .env:
-#   STATEWAVE_EMBEDDING_PROVIDER=litellm
-#   STATEWAVE_LITELLM_API_KEY=sk-...           # any LiteLLM provider
-#   STATEWAVE_LITELLM_MODEL=gpt-4o-mini
-#   STATEWAVE_LITELLM_EMBEDDING_MODEL=text-embedding-3-small
-cp .env.example .env
-
-# Create virtualenv and install
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,llm]"
-
-# Run migrations
-alembic upgrade head
-
-# Start the server
-uvicorn server.app:app --host 0.0.0.0 --port 8100
+git clone https://github.com/smaramwbc/statewave && cd statewave
+docker compose up -d
 ```
 
-The API is available at `http://localhost:8100`.
+Brings up Postgres (pgvector) + the API; migrations run automatically on container start. The API is available at `http://localhost:8100`.
+
+By default the server boots in demo mode — stub hash-based embeddings + the heuristic compiler, no real semantic search. For LLM-backed behaviour, add a `.env` next to `docker-compose.yml` and re-run `docker compose up -d` to pick it up:
+
+```bash
+STATEWAVE_EMBEDDING_PROVIDER=litellm
+STATEWAVE_LITELLM_API_KEY=sk-...            # any LiteLLM provider
+STATEWAVE_LITELLM_MODEL=gpt-4o-mini
+STATEWAVE_LITELLM_EMBEDDING_MODEL=text-embedding-3-small
+```
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -129,7 +117,7 @@ The API is available at `http://localhost:8100`.
 | `GET /healthz` or `GET /health` | Liveness check |
 | `GET /readyz` or `GET /ready` | Readiness check |
 
-Check `GET /readyz` to confirm your LLM key was picked up — if `llm` shows `"not configured (skip)"`, the key isn't being read (re-check `.env` is in this directory, the one you launched `uvicorn` from).
+Check `GET /readyz` to confirm your LLM key was picked up — if `llm` shows `"not configured (skip)"`, the key isn't being read (re-check `.env` sits next to `docker-compose.yml` and re-run `docker compose up -d`).
 
 See the full [getting started guide](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md) for step-by-step setup including environment configuration.
 

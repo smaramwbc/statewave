@@ -25,7 +25,6 @@ subject ids, counts, and pack ids only.
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +34,7 @@ import structlog
 from sqlalchemy import delete, func, select
 
 from server.core.config import settings
+from server.core.identifiers import SUBJECT_ID_CHARSET_DESC, SUBJECT_ID_RE
 from server.db import engine as engine_module
 from server.db.tables import EpisodeRow, MemoryRow
 
@@ -57,11 +57,12 @@ _STARTER_PACK_KIND = Literal["support_docs", "demo_agent"]
 
 _PACKS_ROOT = Path(__file__).resolve().parent.parent / "starter_packs"
 
-# Subject-id regex matches what the rest of Statewave already accepts: a
-# loose, URL-safe identifier. We pin a length cap and reject anything that
-# could collide with internal prefixes used by the marketing widget's
-# per-visitor subjects (`demo_web_*`).
-_SUBJECT_ID_RE = re.compile(r"^[A-Za-z0-9_.\-:]{1,128}$")
+# Subject-id contract is now defined once in server.core.identifiers and
+# enforced at every write/query ingress (issue #121) — reuse it here so the
+# pack path can never drift from the rest of the API. On top of the shared
+# charset we additionally reject the reserved prefixes used by the marketing
+# widget's per-visitor subjects (`demo_web_*`).
+_SUBJECT_ID_RE = SUBJECT_ID_RE
 _RESERVED_PREFIXES = ("demo_web_",)
 
 
@@ -94,8 +95,7 @@ def _validate_subject_id(
     """
     if not value or not _SUBJECT_ID_RE.match(value):
         raise StarterPackError(
-            f"{field!r} must be 1-128 characters of letters, digits, "
-            "underscore, dot, dash, or colon.",
+            f"{field!r} must be {SUBJECT_ID_CHARSET_DESC}.",
             status_code=400,
         )
     if not allow_reserved and any(value.startswith(p) for p in _RESERVED_PREFIXES):

@@ -7,9 +7,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from server.core.identifiers import SubjectId
+
 
 class CreateEpisodeRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     source: str = Field(..., min_length=1, max_length=256)
     type: str = Field(..., min_length=1, max_length=128)
     payload: dict[str, Any]
@@ -29,19 +31,19 @@ class BatchCreateEpisodesRequest(BaseModel):
 
 
 class CompileMemoriesRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     async_mode: bool = Field(default=False, alias="async")
 
 
 class SearchMemoriesRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     kind: str | None = None
     query: str | None = None
     limit: int = Field(20, ge=1, le=100)
 
 
 class GetContextRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     task: str = Field(..., min_length=1, max_length=4000)
     max_tokens: int | None = Field(None, ge=1, le=128000)
     session_id: str | None = Field(
@@ -94,7 +96,7 @@ class GetContextRequest(BaseModel):
 
 
 class CreateResolutionRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     session_id: str = Field(..., min_length=1, max_length=256)
     status: str = Field("open", pattern=r"^(open|resolved|unresolved)$")
     resolution_summary: str | None = Field(None, max_length=2000)
@@ -102,7 +104,7 @@ class CreateResolutionRequest(BaseModel):
 
 
 class HandoffRequest(BaseModel):
-    subject_id: str = Field(..., min_length=1, max_length=256)
+    subject_id: SubjectId
     session_id: str = Field(
         ..., min_length=1, max_length=256, description="Session being handed off"
     )

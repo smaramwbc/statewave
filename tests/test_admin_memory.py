@@ -247,7 +247,7 @@ def test_validate_subject_id_accepts_valid_ids():
     "bad",
     [
         "",  # empty
-        "x" * 200,  # too long
+        "x" * 257,  # too long (>256 — unified subject-id contract, #121)
         "has spaces",  # invalid char
         "weird/path",  # path separator
         "demo_web_abc",  # reserved prefix used by visitor subjects

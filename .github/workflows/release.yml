@@ -5,8 +5,14 @@ on:
     tags: ["v*"]
 
 jobs:
+  # Packages version independently per repo; the cross-repo compatibility axis
+  # is the /v1 API contract, not a shared number (smaramwbc/statewave#106).
+  # This gate therefore only verifies the SERVER / reference-impl version is
+  # self-consistent across its own surfaces + conceptual-doc banners. It does
+  # NOT assert SDK-package-number equality — check-versions.py reports
+  # independently-versioned surfaces without failing.
   verify-workspace-versions:
-    name: Verify workspace version consistency
+    name: Verify server/contract version self-consistency
     runs-on: ubuntu-latest
     steps:
       - name: Check out statewave
@@ -37,7 +43,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Verify mechanical version refs match statewave/pyproject.toml
+      - name: Verify server/contract surfaces match statewave/pyproject.toml
         run: python statewave-docs/tools/check-versions.py
 
   release:

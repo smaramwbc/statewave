@@ -10,6 +10,8 @@
 
 Statewave is the open-source memory runtime that gives AI agents reproducible, provenance-tagged context — without sampling-noise from query-time retrieval.
 
+_If Statewave is useful to you, a ⭐ on the repo helps others discover it._
+
 <!-- QUICKSTART GIF: docs/img/quickstart.gif landing in follow-up PR (issue #4) -->
 
 > **v0.9.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)

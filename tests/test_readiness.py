@@ -76,7 +76,14 @@ async def test_check_llm_not_configured():
         mock_settings.litellm_api_key = None
         result = await _check_llm()
         assert result.status == "ok"
-        assert "not configured" in result.detail
+        assert result.detail == "STATEWAVE_LITELLM_API_KEY is not set"
+
+
+@pytest.mark.asyncio
+async def test_check_llm_empty_api_key_treated_as_not_set():
+    with patch("server.services.readiness.litellm_api_key_configured", return_value=False):
+        result = await _check_llm()
+        assert result.detail == "STATEWAVE_LITELLM_API_KEY is not set"
 
 
 @pytest.mark.asyncio

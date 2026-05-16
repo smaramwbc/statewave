@@ -67,6 +67,43 @@ from server.core.config import settings
 
 logger = structlog.stdlib.get_logger()
 
+_GETTING_STARTED_TROUBLESHOOTING_URL = (
+    "https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md#troubleshooting"
+)
+
+
+def litellm_api_key_configured() -> bool:
+    """True when STATEWAVE_LITELLM_API_KEY is set to a non-empty value."""
+    key = settings.litellm_api_key
+    return bool(key and str(key).strip())
+
+
+def warn_if_llm_compiler_missing_api_key() -> None:
+    """Log a one-shot startup warning when LLM compiler is selected without credentials.
+
+    Operators often copy `.env.example` (compiler=llm, empty key) and assume
+    semantic search is live. Without a key, compilation cannot reach a provider
+    and the default hash embedding stub still produces non-semantic vectors —
+    the same degraded "demo mode" described in getting-started.md.
+    """
+    if settings.compiler_type != "llm":
+        return
+    if litellm_api_key_configured():
+        return
+    logger.warning(
+        "llm_compiler_missing_api_key",
+        missing_var="STATEWAVE_LITELLM_API_KEY",
+        fallback=(
+            "demo mode: regex-based extraction and hash-based embeddings "
+            "(no real semantic search)"
+        ),
+        advice=(
+            "Set STATEWAVE_LITELLM_API_KEY in .env (or deployment secrets) and "
+            "restart the API process."
+        ),
+        docs=_GETTING_STARTED_TROUBLESHOOTING_URL,
+    )
+
 
 # ─── Errors ──────────────────────────────────────────────────────────
 

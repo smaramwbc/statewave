@@ -117,6 +117,10 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("schema_check_skipped", reason=str(exc)[:200])
 
+    from server.services.llm import warn_if_llm_compiler_missing_api_key
+
+    warn_if_llm_compiler_missing_api_key()
+
     logger.info("app_startup", version=get_app_version(), debug=settings.debug)
     yield
     if cleanup_task:

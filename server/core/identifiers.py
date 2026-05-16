@@ -60,3 +60,29 @@ SubjectId = Annotated[
 def is_valid_subject_id(value: str) -> bool:
     """True iff `value` satisfies the canonical subject-id contract."""
     return bool(value) and SUBJECT_ID_RE.match(value) is not None
+
+
+# ── Session ids ────────────────────────────────────────────────────────────
+# A session_id has the *exact same* problem as a subject_id: it is used as a
+# URL path segment (e.g. GET /admin/subjects/{subject_id}/sessions/
+# {session_id}/timeline), so a `/` makes the route unmatchable and the
+# session unreachable — the #121 failure mode (tracked as #124). Same charset,
+# same cap. Kept as its own name so error messages say "session_id" and the
+# two can diverge later without churn.
+SESSION_ID_MAX_LEN = SUBJECT_ID_MAX_LEN
+SESSION_ID_RE = SUBJECT_ID_RE
+SESSION_ID_CHARSET_DESC = SUBJECT_ID_CHARSET_DESC
+
+SessionId = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=SESSION_ID_MAX_LEN,
+        pattern=rf"^[{SUBJECT_ID_CHARSET}]+$",
+    ),
+]
+
+
+def is_valid_session_id(value: str) -> bool:
+    """True iff `value` satisfies the canonical session-id contract."""
+    return bool(value) and SESSION_ID_RE.match(value) is not None

@@ -79,11 +79,11 @@ Rules:
 - Return ONLY the JSON array, no markdown fences or extra text.
 
 Temporal grounding:
-- If a message is prefixed with a bracketed timestamp like `[1:14 pm on 25 May, 2023]`, that timestamp marks WHEN the speaker said this — and by extension, when any event they describe in present/past tense happened.
-- For ANY memory you extract about a dated event, action, or state change (e.g. "ran a race", "attended a conference", "joined a group", "started a project", "moved cities", "got married"), the memory `content` MUST include the date.
-- Convert relative phrases against the message timestamp: "yesterday" -> the message timestamp minus 1 day; "last Saturday" -> the most recent Saturday before the message timestamp; "two days ago" -> message timestamp minus 2 days; "last year" -> the year before the message timestamp's year. Render the resolved date as ISO-like prose ("on 2023-05-24" or "on 24 May 2023") in the memory `content`.
-- If a message is itself stated as a present-tense event ("I'm running a charity race today"), use the message's own timestamp date.
-- If no timestamp is available and no absolute date is mentioned in the text, omit the date rather than guess.
+- Every episode block is prefixed with a header line `--- Episode N | recorded YYYY-MM-DD (Weekday) ---`. That `recorded` date is the authoritative reference timestamp for everything in that episode unless a specific message carries its own more precise timestamp.
+- If a message is prefixed with a bracketed timestamp like `[1:14 pm on 25 May, 2023]`, prefer that over the episode header for that message: it marks WHEN the speaker said this — and by extension, when any event they describe in present/past tense happened.
+- For ANY memory you extract about a dated event, action, or state change (e.g. "ran a race", "attended a conference", "joined a group", "started a project", "moved cities", "got married"), the memory `content` MUST include the resolved absolute date.
+- Resolve every relative phrase against the applicable reference date (a message's bracketed timestamp if present, otherwise the episode's `recorded` date): "today" / "this morning" / present tense -> the reference date itself; "yesterday" -> reference date minus 1 day; "last Saturday" -> the most recent Saturday before the reference date; "two days ago" -> reference date minus 2 days; "last year" -> the year before the reference date's year; "this weekend" / "the weekend" -> the Saturday–Sunday of the reference date's week. Render the resolved date as ISO-like prose ("on 2026-05-16" or "on 16 May 2026") in the memory `content`.
+- NEVER invent, guess, or default a date. Do not emit any date that cannot be derived from either an explicit date in the text or the applicable reference date. Only if there is genuinely no reference date AND no absolute date in the text, omit the date rather than guess.
 - This applies to BOTH profile_fact and episode_summary memories — a summary of a dated session should also lead with or include the session date.
 
 Granularity — extract DETAILS, not just headlines:
@@ -201,10 +201,20 @@ class LLMCompiler:
     ) -> list[MemoryRow]:
         """Process a batch of episodes in a single LLM call."""
         async with semaphore:
-            # Format the prompt with all episodes in this batch
+            # Format the prompt with all episodes in this batch. Each block
+            # is annotated with the episode's resolved reference timestamp
+            # (`episode_valid_from` — the same anchor used for the memory's
+            # `valid_from`), so the model resolves "today"/relative phrases
+            # against the real episode date instead of inventing one. Without
+            # this the model has no reference point and falls back to a
+            # plausible-looking default (commonly the LoCoMo sample's
+            # "25 May 2023") — see issue #115.
             episode_blocks = []
             for i, (ep, text) in enumerate(batch):
-                episode_blocks.append(f"--- Episode {i} ---\n{text}")
+                ref_label = episode_valid_from(ep).strftime("%Y-%m-%d (%A)")
+                episode_blocks.append(
+                    f"--- Episode {i} | recorded {ref_label} ---\n{text}"
+                )
             combined_text = "\n\n".join(episode_blocks)
 
             try:

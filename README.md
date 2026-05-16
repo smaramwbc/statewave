@@ -12,7 +12,7 @@ Statewave is the open-source memory runtime that gives AI agents reproducible, p
 
 <!-- QUICKSTART GIF: docs/img/quickstart.gif landing in follow-up PR (issue #4) -->
 
-> **v0.8.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)
+> **v0.9.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)
 
 ## 🎯 Try it
 
@@ -269,7 +269,7 @@ pytest tests/ -v
 
 ## Current limitations
 
-Statewave is in active development (v0.8.0). Honest status:
+Statewave is in active development (v0.9.0). Honest status:
 
 - **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
 - **Multi-tenant is app-layer** — query-scoped data isolation (v0.5) + per-tenant config / policy bundles / receipts (v0.8) layered on top, but no Postgres RLS yet

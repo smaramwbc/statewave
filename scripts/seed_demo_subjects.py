@@ -1,5 +1,12 @@
 """Re-seed the website demo subjects with rich many-to-one provenance.
 
+NOT the demo-agent setup path. This produces deliberately MINIMAL data
+(~10 episodes/persona) tuned for the statewave-web hero visualization.
+For the full demo personas (~44 episodes each, bundled packs) use
+`python -m scripts.bootstrap_demo_packs` or the admin UI's "Import demo
+agent memories" — a fresh server now auto-imports those on boot.
+
+
 The website hero visualization in statewave-web reads the production demo
 subjects via /v1/timeline. Earlier seeds produced 1:1 memories (each memory
 citing exactly one episode), which makes the visualization look like a
@@ -385,6 +392,18 @@ def main() -> int:
         help="Wipe ALL subjects (not just the demo ones) before seeding — full reset",
     )
     args = parser.parse_args()
+
+    sys.stderr.write(
+        "\n"
+        "  ┌──────────────────────────────────────────────────────────────────┐\n"
+        "  │  NOTE: this seeds the MINIMAL statewave-web hero visualization     │\n"
+        "  │  data (~10 episodes/persona) — NOT the full demo agents.           │\n"
+        "  │  For full demo personas (~44 episodes) use the bundled packs:      │\n"
+        "  │    python -m scripts.bootstrap_demo_packs                          │\n"
+        "  │  (or admin UI → Import demo agent memories). A fresh server         │\n"
+        "  │  auto-imports them on boot unless STATEWAVE_BOOTSTRAP_DEMO_PACKS=false│\n"
+        "  └──────────────────────────────────────────────────────────────────┘\n\n"
+    )
 
     if not API_KEY:
         print("ERROR: STATEWAVE_API_KEY env var required", file=sys.stderr)

@@ -187,5 +187,42 @@ else
     echo "Auto-update: STATEWAVE_AUTO_UPDATE_SUPPORT_PACK=false — support pack will not auto-reseed."
 fi
 
+# ─── Auto-bootstrap: demo-agent starter packs ───────────────────────────
+#
+# A fresh server has no demo data, so an operator has nothing to play
+# with out of the box and the demo-persona dropdown is empty. This seeds
+# the five bundled demo-agent packs onto their canonical `demo-<persona>`
+# subjects via the same admin starter-pack import the operator UI uses
+# (the CORRECT full-pack path — ~44 episodes each, not the minimal
+# statewave-web hero seed from scripts/seed_demo_subjects.py).
+#
+# Idempotent: scripts.bootstrap_demo_packs skips any demo subject that
+# already has episodes, so this is safe on every container restart
+# (fresh installs seed; restarts no-op; other subjects untouched). Set
+# STATEWAVE_BOOTSTRAP_DEMO_PACKS=false to disable.
+BOOTSTRAP_DEMO="${STATEWAVE_BOOTSTRAP_DEMO_PACKS:-true}"
+if [ "$BOOTSTRAP_DEMO" = "true" ]; then
+    echo "Auto-bootstrap: demo packs will seed (or no-op) after API is ready."
+    (
+        set +e
+        for i in $(seq 1 60); do
+            if curl -sS -m 2 -o /dev/null http://127.0.0.1:8100/healthz 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        STATEWAVE_URL="http://127.0.0.1:8100" \
+            python -m scripts.bootstrap_demo_packs
+        rc=$?
+        case "$rc" in
+            0) echo "Auto-bootstrap: demo-agent packs seeded." ;;
+            2) echo "Auto-bootstrap: demo packs already populated — skipped." ;;
+            *) echo "Auto-bootstrap: demo-pack bootstrap exited $rc (server still serving)." >&2 ;;
+        esac
+    ) &
+else
+    echo "Auto-bootstrap: STATEWAVE_BOOTSTRAP_DEMO_PACKS=false — demo packs will not auto-seed."
+fi
+
 echo "Starting Statewave server..."
 exec uvicorn server.app:app --host 0.0.0.0 --port 8100

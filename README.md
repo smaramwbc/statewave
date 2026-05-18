@@ -42,6 +42,8 @@ Statewave is **not** a chatbot framework, a vector database, a RAG pipeline, or 
 Statewave reads raw events, compiles them once per subject change into typed memories, and assembles a token-bounded context bundle on demand. Each bundle carries provenance back to its source episodes — the same query against the same subject at the same point in time always produces the same bytes. That determinism is what separates *compile-then-use* from query-time retrieval, where sampling noise leaks into every answer.
 
 <picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="docs/img/how-statewave-works-mobile-dark.png">
+  <source media="(max-width: 600px)" srcset="docs/img/how-statewave-works-mobile-light.png">
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-statewave-works-dark.png">
   <img alt="How Statewave works: events → compiled memories → ranked, token-bounded context bundle with provenance" src="docs/img/how-statewave-works-light.png" width="100%">
 </picture>

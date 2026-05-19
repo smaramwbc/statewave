@@ -20,7 +20,7 @@ _If Statewave is useful to you, a ⭐ on the repo helps others discover it._
 
 The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
 
-## [🚀 Skip to Quickstart →](#quickstart)
+## [🚀 Skip to Getting Started →](#documentation)
 
 ## The problem
 

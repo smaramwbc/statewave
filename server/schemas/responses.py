@@ -56,6 +56,13 @@ class CompileMemoriesResponse(BaseModel):
     subject_id: str
     memories_created: int
     memories: list[MemoryResponse]
+    # Drain signal (issue #134). `has_more` is True when more uncompiled
+    # episodes remain after this call returned; `remaining_episodes` is
+    # the count of those episodes. Sync callers loop on `has_more`; async
+    # mode (`async: true`) drains internally and always returns
+    # `has_more=False` once the job reaches `completed`.
+    has_more: bool = False
+    remaining_episodes: int = 0
 
 
 class SearchMemoriesResponse(BaseModel):

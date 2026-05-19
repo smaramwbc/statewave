@@ -128,6 +128,21 @@ async def mark_failed_durable(job_id: str, error: str) -> None:
     mark_failed(job_id, error)
 
 
+async def update_progress_durable(job_id: str, memories_created: int) -> None:
+    """Bump the durable `memories_created` count mid-job.
+
+    Used by the async compile drain loop (issue #134) so operators see
+    real progress while a large subject is processed batch by batch.
+    Status stays `running` — only the count is updated.
+    """
+    from server.services.compile_jobs_durable import update_progress as _durable_update
+
+    await _durable_update(job_id, memories_created)
+    job = _jobs.get(job_id)
+    if job:
+        job.memories_created = memories_created
+
+
 # ---------------------------------------------------------------------------
 # In-memory primitives
 #

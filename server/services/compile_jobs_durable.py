@@ -131,6 +131,23 @@ async def mark_completed(
         await session.commit()
 
 
+async def update_progress(job_id: str, memories_created: int) -> None:
+    """Update the cumulative `memories_created` count on a running job.
+
+    Called once per batch by the async drain loop (issue #134) so that
+    operators polling `/v1/memories/compile/{job_id}` see growing
+    progress while a large subject is being drained, rather than a
+    static `0` until the job completes minutes or hours later.
+    """
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.id == job_id)
+            .values(memories_created=memories_created)
+        )
+        await session.commit()
+
+
 async def mark_failed(job_id: str, error: str) -> None:
     """Mark job as failed with error message. Raises on DB failure."""
     async with get_session_factory()() as session:

@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     # Compile job retention (hours, 0 = no cleanup)
     compile_job_retention_hours: int = 168  # 7 days
 
+    # Compile pagination & drain (issue #134)
+    # Each call to `POST /v1/memories/compile` processes at most
+    # `compile_batch_size` uncompiled episodes — bounded per-call latency
+    # keeps the sync route from timing out on large backlogs. The response
+    # carries `has_more` and `remaining_episodes` so sync clients can loop.
+    # Async mode (`async: true`) drains the subject by looping internally,
+    # up to `compile_max_iterations` batches per job (defensive cap
+    # against a runaway compiler that fails to advance `last_compiled_at`).
+    compile_batch_size: int = 500
+    compile_max_iterations: int = 2000
+
     # ── Memory TTL / expiry policies ────────────────────────────────
     # Per-kind expiry windows. Keys are MemoryKind values
     # ("profile_fact", "episode_summary", "procedure", "artifact_ref");

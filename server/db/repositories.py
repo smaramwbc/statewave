@@ -88,7 +88,11 @@ async def list_uncompiled_episodes(
     tenant_id: str | None = None,
     limit: int = 500,
 ) -> Sequence[EpisodeRow]:
-    """Fetch episodes that have never been compiled."""
+    """Fetch episodes that have never been compiled.
+
+    The compile route paginates with `settings.compile_batch_size`; this
+    `limit` default is only the floor for ad-hoc callers (tests, scripts).
+    """
     stmt = (
         select(EpisodeRow)
         .where(EpisodeRow.subject_id == subject_id)
@@ -99,6 +103,28 @@ async def list_uncompiled_episodes(
     stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.scalars().all()
+
+
+async def count_uncompiled_episodes(
+    session: AsyncSession,
+    subject_id: str,
+    *,
+    tenant_id: str | None = None,
+) -> int:
+    """Count episodes for a subject that have not been compiled yet.
+
+    Powers the `remaining_episodes` / `has_more` drain signal on
+    `CompileMemoriesResponse` (issue #134). Bare `COUNT(*)` — no cap;
+    the count is authoritative and reflects the real backlog.
+    """
+    stmt = (
+        select(func.count())
+        .select_from(EpisodeRow)
+        .where(EpisodeRow.subject_id == subject_id)
+        .where(EpisodeRow.last_compiled_at.is_(None))
+    )
+    stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
+    return await session.scalar(stmt) or 0
 
 
 async def mark_episodes_compiled(

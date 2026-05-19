@@ -32,81 +32,135 @@ logger = structlog.stdlib.get_logger()
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
 
+async def _compile_one_batch(
+    session: AsyncSession, subject_id: str, tenant_id: str | None, batch_size: int
+) -> tuple[list[MemoryResponse], int, int]:
+    """Compile ONE batch of uncompiled episodes for `subject_id`.
+
+    Returns `(memory_responses, memories_created, remaining_episodes)`.
+    `remaining_episodes` is the count of still-uncompiled episodes AFTER
+    this batch was marked compiled — feeds `has_more` in the response and
+    the drain loop in `_run_compile`.
+
+    Does its own commit so each batch is durable independently — if the
+    process dies mid-drain, no episode is lost or double-counted.
+    """
+    episodes = await repo.list_uncompiled_episodes(
+        session, subject_id, tenant_id=tenant_id, limit=batch_size
+    )
+    if not episodes:
+        return [], 0, 0
+
+    compiler = get_compiler()
+    if hasattr(compiler, "compile_async"):
+        new_rows = await compiler.compile_async(list(episodes))
+    else:
+        loop = asyncio.get_running_loop()
+        new_rows = await loop.run_in_executor(
+            None, functools.partial(compiler.compile, list(episodes))
+        )
+
+    for row in new_rows:
+        row.tenant_id = tenant_id
+        session.add(row)
+    await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
+
+    superseded_ids = await resolve_conflicts(session, subject_id)
+    if superseded_ids:
+        logger.info("conflicts_resolved", superseded=len(superseded_ids))
+
+    await session.commit()
+    for row in new_rows:
+        await session.refresh(row)
+
+    schedule_embedding_backfill(
+        [row.id for row in new_rows],
+        [row.content for row in new_rows],
+    )
+
+    await webhooks.fire(
+        "memories.compiled",
+        {
+            "subject_id": subject_id,
+            "memories_created": len(new_rows),
+        },
+    )
+
+    remaining = await repo.count_uncompiled_episodes(
+        session, subject_id, tenant_id=tenant_id
+    )
+    return [_to_response(r) for r in new_rows], len(new_rows), remaining
+
+
 async def _run_compile(
     subject_id: str, job_id: str | None = None, tenant_id: str | None = None
 ) -> CompileMemoriesResponse:
-    """Core compilation logic — used by both sync and async paths."""
+    """Async compile path — drains the subject batch by batch (issue #134).
+
+    The async caller asked us not to block them. In return we promise the
+    job actually finishes the work: we loop `_compile_one_batch` until
+    `remaining_episodes == 0`, accumulate `memories_created`, and update
+    the durable job row each iteration so polling clients see progress.
+    Bounded by `settings.compile_max_iterations` so a misbehaving compiler
+    can't burn forever.
+    """
+    from server.core.config import settings
     from server.db.engine import get_session_factory
 
     if job_id:
         await compile_jobs.mark_running_durable(job_id)
 
+    total_created = 0
+    last_batch_responses: list[MemoryResponse] = []
+    last_remaining = 0
     try:
         async with get_session_factory()() as session:
-            episodes = await repo.list_uncompiled_episodes(session, subject_id, tenant_id=tenant_id)
-            if not episodes:
-                result = CompileMemoriesResponse(
-                    subject_id=subject_id, memories_created=0, memories=[]
+            for iteration in range(settings.compile_max_iterations):
+                batch_responses, created, remaining = await _compile_one_batch(
+                    session, subject_id, tenant_id, settings.compile_batch_size
                 )
-                if job_id:
-                    await compile_jobs.mark_completed_durable(job_id, 0, [])
-                return result
+                total_created += created
+                last_batch_responses = batch_responses
+                last_remaining = remaining
 
-            compiler = get_compiler()
-            if hasattr(compiler, "compile_async"):
-                new_rows = await compiler.compile_async(list(episodes))
+                if job_id and (created or iteration == 0):
+                    await compile_jobs.update_progress_durable(job_id, total_created)
+
+                # Drain on `remaining` alone — an empty `batch_responses`
+                # with `remaining > 0` means the compiler produced no rows
+                # this batch (rare but possible: all episodes filtered by
+                # the compiler), and we should keep going. The iteration
+                # cap below guards against a compiler that never advances.
+                if remaining == 0:
+                    break
             else:
-                loop = asyncio.get_running_loop()
-                new_rows = await loop.run_in_executor(
-                    None, functools.partial(compiler.compile, list(episodes))
+                # Loop exhausted without draining — surface, don't silently
+                # hide it. The job completes (we did compile a lot) but the
+                # log entry tells the operator they hit the iteration cap.
+                logger.warning(
+                    "compile_drain_iteration_cap_hit",
+                    subject_id=subject_id,
+                    iterations=settings.compile_max_iterations,
+                    total_created=total_created,
+                    remaining=last_remaining,
                 )
 
-            for row in new_rows:
-                row.tenant_id = tenant_id
-                session.add(row)
-            await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
+        result = CompileMemoriesResponse(
+            subject_id=subject_id,
+            memories_created=total_created,
+            memories=last_batch_responses,
+            has_more=last_remaining > 0,
+            remaining_episodes=last_remaining,
+        )
 
-            superseded_ids = await resolve_conflicts(session, subject_id)
-            if superseded_ids:
-                logger.info("conflicts_resolved", superseded=len(superseded_ids))
-
-            await session.commit()
-            for row in new_rows:
-                await session.refresh(row)
-
-            # Backfill embeddings in the background. Without this the
-            # async compile path leaves every freshly-compiled memory
-            # with `embedding=NULL`, which silently breaks semantic
-            # retrieval (`search_memories(semantic=True)` returns 0,
-            # `assemble_context` falls back to lexical + heuristic
-            # ranking only). The sync compile route below already
-            # schedules this; the async route used to skip it.
-            schedule_embedding_backfill(
-                [row.id for row in new_rows],
-                [row.content for row in new_rows],
+        if job_id:
+            await compile_jobs.mark_completed_durable(
+                job_id,
+                total_created,
+                [m.model_dump(mode="json") for m in last_batch_responses],
             )
 
-            await webhooks.fire(
-                "memories.compiled",
-                {
-                    "subject_id": subject_id,
-                    "memories_created": len(new_rows),
-                },
-            )
-
-            memory_responses = [_to_response(r) for r in new_rows]
-            result = CompileMemoriesResponse(
-                subject_id=subject_id,
-                memories_created=len(new_rows),
-                memories=memory_responses,
-            )
-
-            if job_id:
-                await compile_jobs.mark_completed_durable(
-                    job_id, len(new_rows), [m.model_dump(mode="json") for m in memory_responses]
-                )
-
-            return result
+        return result
 
     except Exception as exc:
         logger.error("compile_failed", subject_id=subject_id, exc_info=True)
@@ -123,11 +177,19 @@ async def compile_memories(
 ):
     """Compile new memories from unprocessed episodes.
 
-    Pass `"async": true` to return immediately with a job_id for polling.
+    Sync mode processes at most `STATEWAVE_COMPILE_BATCH_SIZE` (default
+    500) uncompiled episodes per call and returns `has_more=True` plus
+    `remaining_episodes` whenever the backlog isn't drained. Clients can
+    loop until `has_more` is False, or pass `"async": true` and let the
+    server drain the whole subject in a durable background job.
     """
+    from server.core.config import settings
+
     with span("compile_memories", {"subject_id": body.subject_id, "async": body.async_mode}):
         if body.async_mode:
-            # Async mode — return job_id immediately, compile in background (durable)
+            # Async mode — return job_id immediately, compile in background (durable).
+            # The background task drains the subject; the client polls
+            # `/v1/memories/compile/{job_id}` for completion.
             job = await compile_jobs.submit_job_durable(body.subject_id, tenant_id=tenant_id)
             asyncio.create_task(_run_compile(body.subject_id, job.id, tenant_id=tenant_id))
             return JSONResponse(
@@ -139,57 +201,19 @@ async def compile_memories(
                 },
             )
 
-        # Sync mode — block until compilation is done (backward compatible)
-        episodes = await repo.list_uncompiled_episodes(
-            session, body.subject_id, tenant_id=tenant_id
+        # Sync mode — bounded per-call: process at most one batch, then
+        # report `has_more` so the caller knows whether to loop. Bounded
+        # latency is the trade-off for not surprising long-standing
+        # sync clients with multi-minute compile calls.
+        memory_responses, created, remaining = await _compile_one_batch(
+            session, body.subject_id, tenant_id, settings.compile_batch_size
         )
-        if not episodes:
-            return CompileMemoriesResponse(
-                subject_id=body.subject_id, memories_created=0, memories=[]
-            )
-
-        compiler = get_compiler()
-        if hasattr(compiler, "compile_async"):
-            new_rows = await compiler.compile_async(list(episodes))
-        else:
-            loop = asyncio.get_running_loop()
-            new_rows = await loop.run_in_executor(
-                None, functools.partial(compiler.compile, list(episodes))
-            )
-
-        for row in new_rows:
-            row.tenant_id = tenant_id
-            session.add(row)
-        await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
-
-        superseded_ids = await resolve_conflicts(session, body.subject_id)
-        if superseded_ids:
-            logger.info("conflicts_resolved", superseded=len(superseded_ids))
-
-        await session.commit()
-        for row in new_rows:
-            await session.refresh(row)
-
-        # Generate embeddings in background (don't block response). The
-        # shared scheduler also serves the starter-pack import path so
-        # both write paths populate embeddings consistently.
-        schedule_embedding_backfill(
-            [row.id for row in new_rows],
-            [row.content for row in new_rows],
-        )
-
-        await webhooks.fire(
-            "memories.compiled",
-            {
-                "subject_id": body.subject_id,
-                "memories_created": len(new_rows),
-            },
-        )
-
         return CompileMemoriesResponse(
             subject_id=body.subject_id,
-            memories_created=len(new_rows),
-            memories=[_to_response(r) for r in new_rows],
+            memories_created=created,
+            memories=memory_responses,
+            has_more=remaining > 0,
+            remaining_episodes=remaining,
         )
 
 

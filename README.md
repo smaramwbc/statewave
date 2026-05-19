@@ -20,6 +20,8 @@ _If Statewave is useful to you, a ⭐ on the repo helps others discover it._
 
 The interactive comparison demo is embedded directly in the website at **[statewave.ai](https://statewave.ai)** — open the chat widget to see two identical AI agents answer the same question, one stateless and one backed by Statewave.
 
+## [🚀 Skip to Quickstart →](#quickstart)
+
 ## The problem
 
 Most AI applications have no memory. Every conversation starts from scratch. Context is lost between sessions, decisions aren't remembered, and user history disappears the moment a session ends. Bolting on a vector database or dumping chat logs into a prompt doesn't solve this — it creates fragile, unstructured context that degrades as it scales.

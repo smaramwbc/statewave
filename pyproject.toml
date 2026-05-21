@@ -15,7 +15,7 @@ dependencies = [
     "alembic>=1.13,<2",
     "pgvector>=0.4.2,<1",
     "tiktoken>=0.12.0,<1",
-    "structlog>=24.1,<26",
+    "structlog>=25.5.0,<26",
     "pyyaml>=6,<7",
 ]
 

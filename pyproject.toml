@@ -7,7 +7,7 @@ license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.136.1,<1",
-    "uvicorn[standard]>=0.29,<1",
+    "uvicorn[standard]>=0.47.0,<1",
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.14.1,<3",
     "sqlalchemy[asyncio]>=2.0,<3",

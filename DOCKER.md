@@ -31,8 +31,10 @@ services:
     ports: ["8100:8100"]
     environment:
       STATEWAVE_DATABASE_URL: postgresql+asyncpg://statewave:statewave@db:5432/statewave
-      # LLM provider — pick one and set the matching key.
-      STATEWAVE_LITELLM_API_KEY: sk-...
+      # Optional. With no key, Statewave runs in demo mode (local regex
+      # compiler, no external calls). Set a key for real LLM extraction
+      # and semantic search — see the Getting Started guide linked below.
+      # STATEWAVE_LITELLM_API_KEY: sk-...
     depends_on:
       db:
         condition: service_healthy
@@ -43,8 +45,12 @@ volumes:
 
 ```sh
 docker compose up -d
-curl http://localhost:8100/healthz
+curl http://localhost:8100/healthz   # → {"status":"ok"}
+curl http://localhost:8100/readyz    # → {"status":"ready", ...}
 ```
+
+New to Statewave? The [Getting Started guide](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md)
+walks through clone → run → store and retrieve your first memory in about 5 minutes.
 
 ## Pin a version
 

@@ -123,7 +123,7 @@ STATEWAVE_LITELLM_EMBEDDING_MODEL=text-embedding-3-small
 | `GET /healthz` or `GET /health` | Liveness check |
 | `GET /readyz` or `GET /ready` | Readiness check |
 
-Check `GET /readyz` to confirm your LLM key was picked up — if `llm` shows `"not configured (skip)"`, the key isn't being read (re-check `.env` sits next to `docker-compose.yml` and re-run `docker compose up -d`).
+Check `GET /readyz` to confirm your LLM key was picked up — if the `llm` check shows `"detail":"STATEWAVE_LITELLM_API_KEY is not set"`, the key isn't being read (re-check that `.env` sits next to `docker-compose.yml` and re-run `docker compose up -d`).
 
 See the full [getting started guide](https://github.com/smaramwbc/statewave-docs/blob/main/getting-started.md) for step-by-step setup including environment configuration.
 

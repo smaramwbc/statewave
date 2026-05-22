@@ -86,7 +86,11 @@ async def lifespan(app: FastAPI):
     # Configure webhooks
     from server.services import webhooks
 
-    webhooks.configure(url=settings.webhook_url, timeout=settings.webhook_timeout)
+    webhooks.configure(
+        url=settings.webhook_url,
+        timeout=settings.webhook_timeout,
+        events=settings.webhook_event_filter,
+    )
     await webhooks.start_worker()
 
     # Start background cleanup (snapshots + compile job retention + rate limit + memory TTL)

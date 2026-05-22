@@ -1,0 +1,31 @@
+id: account-onboarding
+version: 1
+title: Account / tenant onboarding context
+description: >-
+  The starting context for a new account or tenant — who they are, what
+  they bought, their goals, and key contacts. Grounds an agent's first
+  interactions with a fresh customer.
+episode_type: account.onboarding
+fields:
+  - name: account
+    type: string
+    required: true
+    description: The account or tenant name.
+  - name: plan
+    type: string
+    required: false
+    description: The plan or tier they are on.
+  - name: goals
+    type: text
+    required: true
+    description: What the customer is trying to achieve with the product.
+  - name: key_contacts
+    type: text
+    required: false
+    description: Primary contacts and their roles.
+content_template: |-
+  Account onboarding — {account} ({plan}).
+
+  Goals: {goals}
+
+  Key contacts: {key_contacts}

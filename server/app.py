@@ -207,6 +207,10 @@ def create_app() -> FastAPI:
 
     app.include_router(receipts_router)
 
+    from server.api.templates import router as templates_router
+
+    app.include_router(templates_router)
+
     # -- Ops endpoints -------------------------------------------------------
     @app.get("/healthz", tags=["ops"], summary="Liveness check")
     @app.get("/health", tags=["ops"], summary="Liveness check (alias)", include_in_schema=False)

@@ -1,0 +1,33 @@
+id: project-decision
+version: 1
+title: Project decision log entry
+description: >-
+  A decision taken on a project — the choice, the options weighed, and the
+  reasoning behind it. A lightweight ADR-style record for agent and team
+  memory.
+episode_type: project.decision
+fields:
+  - name: decision
+    type: text
+    required: true
+    description: The decision that was made.
+  - name: context
+    type: text
+    required: true
+    description: The situation or problem that prompted the decision.
+  - name: alternatives
+    type: text
+    required: false
+    description: Other options considered, and why they were not chosen.
+  - name: decided_by
+    type: string
+    required: false
+    description: Who made or owns the decision.
+content_template: |-
+  Project decision: {decision}
+
+  Context: {context}
+
+  Alternatives considered: {alternatives}
+
+  Decided by: {decided_by}

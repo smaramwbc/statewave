@@ -30,6 +30,18 @@ class BatchCreateEpisodesRequest(BaseModel):
     episodes: list[CreateEpisodeRequest] = Field(..., min_length=1, max_length=100)
 
 
+class ApplyTemplateRequest(BaseModel):
+    """Body for POST /v1/memory-templates/{template_id}/apply.
+
+    `values` maps template field names to their (string) values; it is
+    validated against the template's field schema server-side.
+    """
+
+    subject_id: SubjectId
+    values: dict[str, Any] = Field(default_factory=dict)
+    session_id: SessionId | None = None
+
+
 class CompileMemoriesRequest(BaseModel):
     subject_id: SubjectId
     async_mode: bool = Field(default=False, alias="async")

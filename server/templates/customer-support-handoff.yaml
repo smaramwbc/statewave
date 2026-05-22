@@ -1,0 +1,33 @@
+id: customer-support-handoff
+version: 1
+title: Customer support handoff
+description: >-
+  A structured escalation note for when a support conversation moves to
+  another agent, team, or shift. Captures who the customer is, the active
+  issue, what has already been tried, and who is taking over.
+episode_type: support.handoff_note
+fields:
+  - name: customer
+    type: string
+    required: true
+    description: The customer or account being handed off.
+  - name: issue
+    type: text
+    required: true
+    description: The active issue, in the customer's own terms.
+  - name: steps_taken
+    type: text
+    required: false
+    description: Troubleshooting already attempted, and its outcome.
+  - name: next_owner
+    type: string
+    required: false
+    description: The agent or team picking the conversation up.
+content_template: |-
+  Customer support handoff — {customer}.
+
+  Active issue: {issue}
+
+  Steps already taken: {steps_taken}
+
+  Handed to: {next_owner}

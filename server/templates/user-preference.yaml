@@ -1,0 +1,24 @@
+id: user-preference
+version: 1
+title: User preference
+description: >-
+  A single durable preference a user has expressed — a channel, a format,
+  a working style — that an agent should respect in future interactions.
+episode_type: profile.preference
+fields:
+  - name: subject
+    type: string
+    required: true
+    description: What the preference is about (notifications, language, tone, ...).
+  - name: preference
+    type: text
+    required: true
+    description: The preference itself, stated plainly.
+  - name: rationale
+    type: text
+    required: false
+    description: Why the user holds this preference, if they said.
+content_template: |-
+  User preference — {subject}: {preference}
+
+  Rationale: {rationale}

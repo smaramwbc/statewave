@@ -1,0 +1,39 @@
+id: incident-summary
+version: 1
+title: Troubleshooting / incident summary
+description: >-
+  A post-incident summary — what broke, the user-visible impact, how it
+  was resolved, and the follow-up. Useful for repeat-issue detection and
+  for grounding handoffs.
+episode_type: incident.summary
+fields:
+  - name: title
+    type: string
+    required: true
+    description: A short name for the incident.
+  - name: symptoms
+    type: text
+    required: true
+    description: What was observed — the user-visible impact.
+  - name: root_cause
+    type: text
+    required: false
+    description: The underlying cause, once known.
+  - name: resolution
+    type: text
+    required: false
+    description: How the incident was resolved or mitigated.
+  - name: follow_up
+    type: text
+    required: false
+    description: Outstanding follow-up actions.
+content_template: |-
+  Incident — {title}.
+
+  Symptoms: {symptoms}
+
+  Root cause: {root_cause}
+
+  Resolution: {resolution}
+
+  Follow-up: {follow_up}

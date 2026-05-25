@@ -1,15 +1,20 @@
-"""State-assembly receipts read API.
+"""State-assembly receipts read API + v0.9 replay.
 
-Only two endpoints in v1:
-
-  * `GET /v1/receipts/{receipt_id}` — point lookup.
-  * `GET /v1/receipts` — list for a subject in a time window with
+  * `GET  /v1/receipts/{receipt_id}` — point lookup.
+  * `GET  /v1/receipts/{receipt_id}/verify` — HMAC verification (v0.9 #157).
+  * `GET  /v1/receipts` — list for a subject in a time window with
     cursor-based pagination.
+  * `POST /v1/receipts/{receipt_id}/replay` — as-of-replay (v0.9 #159):
+    re-runs the original assembly against current memories using the
+    original policy bundle captured in the receipt's snapshot, emits a
+    new ``mode="as_of_replay"`` receipt, and returns the diff envelope.
 
-Both are tenant-scoped via the existing `X-Statewave-Tenant` header.
-Receipts are read-only on the wire — issue #49's accountability
-guarantee depends on the audit log being immutable, so no
-write/update/delete endpoints are exposed.
+Tenant-scoped via the existing `X-Statewave-Tenant` header.
+
+Receipts themselves remain immutable: replay does not modify the
+original, it only emits a *new* receipt with `parent_receipt_id`
+pointing back at the source. Issue #49's accountability guarantee is
+preserved end-to-end.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.core.dependencies import get_tenant_id
@@ -95,6 +101,81 @@ def _row_to_response(row) -> dict[str, Any]:
     if row.tombstoned_at is not None:
         out["tombstoned_at"] = row.tombstoned_at.isoformat()
     return out
+
+
+class ReplayResponse(BaseModel):
+    """Response shape for POST /v1/receipts/{id}/replay."""
+
+    original_receipt_id: str
+    replay_receipt_id: str | None
+    diff: dict[str, Any]
+
+
+@router.post(
+    "/v1/receipts/{receipt_id}/replay",
+    response_model=ReplayResponse,
+    summary="Re-run the original assembly with the receipt's snapshot policy (v0.9 #159)",
+    responses={
+        404: {"description": "Receipt not found"},
+        422: {
+            "description": (
+                "Receipt cannot be replayed. The standard error envelope "
+                "carries `error.code = unreplayable.<reason>` where reason "
+                "is one of `missing_policy_snapshot`, `nested_replay`, "
+                "`invalid_snapshot`."
+            )
+        },
+    },
+)
+async def replay_receipt_endpoint(
+    receipt_id: str,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
+) -> ReplayResponse:
+    """Replay a v0.9+ receipt against the *current* memory state using
+    the *original* policy bundle from the receipt's ``policy_snapshot``.
+
+    Semantic: current code + original policy. Replay is NOT
+    byte-for-byte reproduction — see docs/replay.md for the design
+    rationale. The response carries a structural diff (added/removed
+    selected_entries, added/removed policy filters, context_hash
+    change) so an auditor can pinpoint what shifted between original
+    emission and now.
+
+    A fresh receipt is emitted with ``mode="as_of_replay"`` and
+    ``parent_receipt_id`` set to the source ULID. The original receipt
+    is never modified.
+
+    Refusal codes (HTTP 422):
+
+      * ``missing_policy_snapshot`` — pre-v0.9 receipt, no snapshot.
+      * ``nested_replay`` — already a replay; replay the original parent.
+      * ``invalid_snapshot`` — snapshot YAML corrupt / unparseable.
+    """
+    from server.services.replay import ReplayError, replay_receipt
+
+    try:
+        result = await replay_receipt(session, receipt_id=receipt_id, tenant_id=tenant_id)
+    except ReplayError as exc:
+        if exc.reason == "not_found":
+            raise HTTPException(status_code=404, detail="receipt not found") from exc
+        # The global error handler unwraps `code` + `message` from dict
+        # details into the standard `{error: {...}}` envelope. We use
+        # `unreplayable.<reason>` so machine consumers can switch on
+        # the code without parsing the message body.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": f"unreplayable.{exc.reason}",
+                "message": exc.detail or exc.reason,
+            },
+        ) from exc
+
+    return ReplayResponse(
+        original_receipt_id=result.original_receipt_id,
+        replay_receipt_id=result.replay_receipt_id,
+        diff=result.diff,
+    )
 
 
 @router.get(

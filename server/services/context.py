@@ -145,6 +145,16 @@ async def assemble_context(
     parent_receipt_id: str | None = None,
     caller_id: str | None = None,
     caller_type: str | None = None,
+    # v0.9 (#159) — replay knobs. Both are private contract between
+    # `services.replay` and this function; the public `/v1/context`
+    # route never sets them. The bundle override forces evaluation
+    # against a specific PolicyBundle (loaded from a receipt's
+    # snapshot) instead of resolving the live `policy_bundles` row.
+    # The mode override stamps the emitted receipt as
+    # ``as_of_replay`` rather than ``retrieval``.
+    _policy_bundle_override: "policy_service.PolicyBundle | None" = None,
+    _use_policy_bundle_override: bool = False,
+    _mode_override: str | None = None,
 ) -> ContextBundleResponse:
     """Build a deterministic, token-bounded, ranked context bundle.
 
@@ -197,9 +207,8 @@ async def assemble_context(
             # provider round-trip exactly once cluster-wide. Falls through
             # to the provider transparently on miss / DB error.
             from server.db.engine import get_session_factory
-            task_embedding = await cached_embed_query(
-                get_session_factory(), provider, task
-            )
+
+            task_embedding = await cached_embed_query(get_session_factory(), provider, task)
             # Top 100 memories by cosine distance — this set is the SEMANTIC
             # contribution to the candidate pool below, in addition to being
             # used as a score lookup during ranking.
@@ -283,21 +292,27 @@ async def assemble_context(
     # (the default) no row is removed — the decisions are still recorded
     # into the receipt so tenants can audit what *would* be filtered before
     # flipping to enforce.
-    tenant_config = await receipts_service.load_tenant_receipt_config(
-        session, tenant_id
-    )
+    tenant_config = await receipts_service.load_tenant_receipt_config(session, tenant_id)
     policy_mode = (tenant_config or {}).get("policy_mode", "log_only")
     policy_enforce = policy_mode == "enforce"
-    active_bundle = await policy_service.resolve_active_bundle(session, tenant_id)
+    # Replay path injects the historical snapshot bundle so the
+    # decision matrix matches the original assembly's, even if the
+    # live `policy_bundles` row has since been overwritten or
+    # removed. The override flag is intentionally separate from the
+    # value being non-None: a snapshot that captured "no bundle was
+    # active" replays correctly by passing
+    # `_use_policy_bundle_override=True, _policy_bundle_override=None`.
+    if _use_policy_bundle_override:
+        active_bundle = _policy_bundle_override
+    else:
+        active_bundle = await policy_service.resolve_active_bundle(session, tenant_id)
     policy_context = policy_service.PolicyContext(
         caller_id=caller_id,
         caller_type=caller_type,
         tenant_id=tenant_id,
     )
 
-    all_memory_rows_pre_policy = (
-        list(fact_rows) + list(procedure_rows) + list(summary_rows)
-    )
+    all_memory_rows_pre_policy = list(fact_rows) + list(procedure_rows) + list(summary_rows)
     policy_decisions: dict[Any, policy_service.MemoryPolicyDecision] = {}
     for row in all_memory_rows_pre_policy:
         decision = policy_service.evaluate_memory(
@@ -312,9 +327,7 @@ async def assemble_context(
         # Filter the per-kind buckets so the rest of the assembly path
         # never sees a denied row. Redact is applied in place by
         # apply_decisions and the row is kept.
-        kept_facts, _ = policy_service.apply_decisions(
-            fact_rows, policy_decisions, enforce=True
-        )
+        kept_facts, _ = policy_service.apply_decisions(fact_rows, policy_decisions, enforce=True)
         kept_procs, _ = policy_service.apply_decisions(
             procedure_rows, policy_decisions, enforce=True
         )
@@ -324,12 +337,8 @@ async def assemble_context(
         fact_rows = kept_facts
         procedure_rows = kept_procs
         summary_rows = kept_summaries
-        denied_count = sum(
-            1 for d in policy_decisions.values() if d.action == "deny"
-        )
-        redacted_count = sum(
-            1 for d in policy_decisions.values() if d.action == "redact"
-        )
+        denied_count = sum(1 for d in policy_decisions.values() if d.action == "deny")
+        redacted_count = sum(1 for d in policy_decisions.values() if d.action == "redact")
         logger.info(
             "policy_enforced",
             tenant_id=tenant_id,
@@ -367,9 +376,7 @@ async def assemble_context(
             needed_episode_ids.add(sid)
     if needed_episode_ids:
         try:
-            src_episodes = await repo.get_episodes_by_ids(
-                session, list(needed_episode_ids)
-            )
+            src_episodes = await repo.get_episodes_by_ids(session, list(needed_episode_ids))
             ep_breadcrumb_by_id: dict[uuid.UUID, str] = {}
             for ep in src_episodes:
                 payload = ep.payload or {}
@@ -512,11 +519,7 @@ async def assemble_context(
                 and _lexical_overlap_bonus(content_text, task_tokens) > 0.0
             ):
                 task_relevant = True
-            score = (
-                _EPISODE_PRIORITY
-                + _recency_score(row.created_at, ep_ts_range)
-                + ep_relevance
-            )
+            score = _EPISODE_PRIORITY + _recency_score(row.created_at, ep_ts_range) + ep_relevance
             # Boost episodes belonging to the active session
             if session_id and getattr(row, "session_id", None) == session_id:
                 score += _SESSION_BOOST
@@ -699,7 +702,7 @@ async def assemble_context(
         query_id=query_id,
         task_id=task_id,
         parent_receipt_id=parent_receipt_id,
-        mode="retrieval",
+        mode=_mode_override or "retrieval",
         caller_id=caller_id,
         caller_type=caller_type,
         tenant_config=tenant_config,
@@ -752,9 +755,7 @@ async def _maybe_emit_receipt(
     share this routine — keeping the decision logic and the write path
     in a single place avoids divergence as the schema grows."""
     if tenant_config is None:
-        tenant_config = await receipts_service.load_tenant_receipt_config(
-            session, tenant_id
-        )
+        tenant_config = await receipts_service.load_tenant_receipt_config(session, tenant_id)
     decision = receipts_service.decide_emission(
         request_flag=emit_receipt,
         tenant_config=tenant_config,
@@ -772,9 +773,7 @@ async def _maybe_emit_receipt(
     context_hash, context_size_bytes = receipts_service.canonicalize_context(assembled)
     policy_decisions = policy_decisions or {}
     filters_applied = policy_service.build_filters_applied(policy_decisions)
-    filters_skipped = policy_service.build_filters_skipped(
-        policy_decisions, policy_bundle
-    )
+    filters_skipped = policy_service.build_filters_skipped(policy_decisions, policy_bundle)
 
     selected_memories = [
         receipts_service.SelectedMemory(
@@ -801,6 +800,17 @@ async def _maybe_emit_receipt(
     ]
 
     receipt_id = receipts_service.new_ulid()
+    # v0.9 #159 — embed the active bundle's YAML on every receipt so
+    # the replay engine can re-evaluate against the same rule set the
+    # original assembly saw, even if the live `policy_bundles` row
+    # was later deleted or overwritten. When no bundle is active we
+    # still stamp a snapshot envelope with null fields so replay can
+    # distinguish "no policy was active" (replayable) from
+    # "pre-v0.9 receipt, no snapshot exists" (NOT replayable).
+    policy_snapshot = receipts_service.build_policy_snapshot(
+        bundle_hash=policy_bundle.bundle_hash if policy_bundle else None,
+        bundle_yaml=policy_bundle.yaml_content if policy_bundle else None,
+    )
     body = receipts_service.build_receipt_body(
         receipt_id=receipt_id,
         mode=mode,
@@ -822,6 +832,7 @@ async def _maybe_emit_receipt(
         filters_skipped=filters_skipped,
         caller_id=caller_id,
         caller_type=caller_type,
+        policy_snapshot=policy_snapshot,
     )
     written_id = await receipts_service.write_receipt(
         session, receipt_body=body, as_of=as_of, tenant_config=tenant_config
@@ -839,9 +850,7 @@ async def _maybe_emit_receipt(
         episode_count=len(selected_episodes),
         context_size_bytes=context_size_bytes,
         policy_filters_applied=len(filters_applied),
-        policy_bundle_hash=(
-            policy_bundle.bundle_hash if policy_bundle else None
-        ),
+        policy_bundle_hash=(policy_bundle.bundle_hash if policy_bundle else None),
     )
     return written_id, True
 
@@ -971,10 +980,7 @@ def _breadcrumb_overlap_bonus(
     # Strip punctuation that _tokenize_for_relevance leaves attached
     # (e.g. "GPU?" → "gpu") so task tokens match cleanly against the
     # breadcrumb tokens we compute below.
-    task_meaningful = {
-        t.strip("?.,:;()[]{}'\"")
-        for t in task_tokens
-    }
+    task_meaningful = {t.strip("?.,:;()[]{}'\"") for t in task_tokens}
     task_meaningful = {t for t in task_meaningful if t and t not in _BREADCRUMB_STOPWORDS}
     if not task_meaningful:
         return 0.0

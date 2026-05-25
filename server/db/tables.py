@@ -254,6 +254,12 @@ class ReceiptRow(Base):
     receipt_signature_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     receipt_signature_algorithm: Mapped[str | None] = mapped_column(String(64), nullable=True)
     body: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # Embedded policy bundle YAML + hash captured at emission (issue #159).
+    # Self-contained — replay can re-evaluate without consulting the live
+    # `policy_bundles` row (which may have been deleted or overwritten).
+    # NULL for pre-v0.9 receipts; the replay endpoint refuses those with
+    # 422 ``missing_policy_snapshot``. See docs/replay.md.
+    policy_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -242,6 +242,7 @@ def build_receipt_body(
     caller_id: str | None = None,
     caller_type: str | None = None,
     region: str | None = None,
+    policy_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Render the strict-superset receipt body. Pure function — same
     inputs always produce the same JSON-serializable dict."""
@@ -305,6 +306,10 @@ def build_receipt_body(
             "filters_skipped": list(filters_skipped or []),
             "mode": policy_mode,
         },
+        # v0.9 (#159): self-contained bundle YAML + hash for replay.
+        # See `build_policy_snapshot()`. Pre-v0.9 receipts have this
+        # column NULL — the replay endpoint refuses those.
+        "policy_snapshot": policy_snapshot,
         "output": {
             "context_hash": context_hash,
             "context_size_bytes": context_size_bytes,
@@ -313,6 +318,38 @@ def build_receipt_body(
         },
         "region": region,
         "receipt_signature": None,
+    }
+
+
+def build_policy_snapshot(
+    *,
+    bundle_hash: str | None,
+    bundle_yaml: str | None,
+) -> dict[str, Any]:
+    """Compose the snapshot envelope embedded into every v0.9 receipt.
+
+    Shape:
+        {"bundle_hash": "<sha256>" | null,
+         "bundle_yaml": "<verbatim YAML>" | null,
+         "captured_at": "<ISO-8601 UTC>"}
+
+    A null inner pair (``bundle_hash`` AND ``bundle_yaml`` both null)
+    records "no policy bundle was active at emission" — which is a
+    valid, replayable state. The replay path treats it as the
+    no-policy fallback (all memories allowed). The column being
+    NULL on the row, by contrast, marks "pre-v0.9 receipt, no
+    snapshot was ever captured" — the replay endpoint refuses
+    those with 422 ``missing_policy_snapshot``.
+
+    ``captured_at`` is recorded so an operator inspecting a receipt
+    weeks later can see when the YAML was frozen, which may differ
+    from the receipt's own ``created_at`` if the same bundle had been
+    active long before the receipt fired.
+    """
+    return {
+        "bundle_hash": bundle_hash,
+        "bundle_yaml": bundle_yaml,
+        "captured_at": _iso(datetime.now(timezone.utc)),
     }
 
 
@@ -367,6 +404,11 @@ async def write_receipt(
             receipt_signature_key_id=receipt_body.get("receipt_signature_key_id"),
             receipt_signature_algorithm=receipt_body.get("receipt_signature_algorithm"),
             body=receipt_body,
+            # Mirror the snapshot onto the dedicated column too — the
+            # body field is authoritative (signed) but the column lets
+            # the replay engine + admin list-views filter without
+            # rummaging through JSONB. Both reads should agree.
+            policy_snapshot=receipt_body.get("policy_snapshot"),
             as_of=as_of,
         )
         await repo.insert_receipt(session, row)

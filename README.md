@@ -96,7 +96,7 @@ Three runnable examples in [statewave-examples](https://github.com/smaramwbc/sta
 - **[Long-running coding agent](https://github.com/smaramwbc/statewave-examples/tree/main/coding-agent-python)** — multi-session project memory: tech stack, preferences, architecture decisions persist between conversations. *(Python · TypeScript)*
 - **[Stateless vs memory-powered agent (live LLM)](https://github.com/smaramwbc/statewave-examples/tree/main/support-agent-llm)** — full loop with a real LLM (any LiteLLM provider) running side by side with and without Statewave so you can A/B the difference yourself. *(Python)*
 
-Plus four more — minimal quickstart, docs-grounded support, eval suite (55 assertions across 23 tests), and a benchmark — in the [examples repo](https://github.com/smaramwbc/statewave-examples).
+Plus the minimal quickstart, docs-grounded support, eval suite (55 assertions across 23 tests), a benchmark, and **drop-in framework integrations** — [LangChain](https://github.com/smaramwbc/statewave-examples/tree/main/langchain-quickstart), [CrewAI](https://github.com/smaramwbc/statewave-examples/tree/main/crewai-quickstart), and [AutoGen](https://github.com/smaramwbc/statewave-examples/tree/main/autogen-quickstart) — in the [examples repo](https://github.com/smaramwbc/statewave-examples).
 
 ## Run the server
 

@@ -13,6 +13,7 @@ The lead [README](../README.md#capabilities) lists the top 8 capabilities most r
 - **Memory conflict resolution** — auto-supersede older overlapping memories.
 - **Provenance** — every memory traces back to its source episodes; bundles carry the chain.
 - **Subject management** — list subjects with episode/memory counts, inspect timelines, hard-delete all data per subject.
+- **Memory templates** — declarative, versioned YAML scaffolds for recurring information patterns (support handoff, decision log, incident summary, …). `GET /v1/memory-templates` lists the bundled set with full field schemas; `POST /v1/memory-templates/{id}/apply` validates field values and ingests a normal episode with `template_id` / `template_version` provenance. See [`memory-templates.md`](memory-templates.md).
 
 ## Governance & audit
 

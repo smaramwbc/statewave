@@ -72,7 +72,9 @@ a `MemoryRow` derived from that text will be stamped with:
 `sensitivity_labels` stays empty unless an operator promotes the
 suggestions or the tenant set them explicitly.
 
-## Reviewing suggestions
+## Reviewing and promoting suggestions
+
+### Review queue
 
 ```http
 GET /admin/memories/with-suggested-labels
@@ -113,6 +115,66 @@ Response shape:
 
 The filter is GIN-indexed (migration 0022), so the `label=` overlap
 path is cheap even on millions of memories.
+
+### Promote a suggestion (v0.9 #160)
+
+```http
+POST /admin/memories/{memory_id}/promote-labels
+    ?tenant_id=<id>           # optional, defence-in-depth
+Content-Type: application/json
+
+{"labels": ["pii.email"]}
+```
+
+Closes the auto-labeling loop. Every label in the request body MUST
+currently be on the memory's `suggested_labels` — promotion is
+strictly review-driven; the endpoint is not a backdoor for ad-hoc
+tenant-side label writes. (Use the SDK for direct writes.)
+
+On success (200) the response carries the new state:
+
+```json
+{
+  "memory_id": "...",
+  "promoted":            ["pii.email"],
+  "sensitivity_labels":  ["legal.contract", "pii.email"],  // pre-existing preserved
+  "suggested_labels":    ["pii.phone"]                     // promoted labels dropped
+}
+```
+
+The promoted labels are:
+
+1. Appended to `sensitivity_labels` (deduped + sorted; pre-existing
+   tenant-set labels survive).
+2. Removed from `suggested_labels` so the review queue does not
+   re-surface them.
+3. Recorded in an append-only audit entry on
+   `memory.metadata.label_promotions`:
+
+```json
+{
+  "labels":       ["pii.email"],
+  "promoted_at":  "2026-05-25T21:30:42.123Z",
+  "promoted_by":  null
+}
+```
+
+`promoted_by` is `null` in v0.9 — no admin identity layer exists
+yet. The TODO is tracked at the field level so when admin identity
+lands the column populates without an audit schema break. Time and
+what-was-promoted are captured today.
+
+**Refusal codes (HTTP 422, standard error envelope):**
+
+| `error.code`                         | When                                                          |
+|--------------------------------------|---------------------------------------------------------------|
+| `promote_labels.empty`               | Request `labels` is empty                                     |
+| `promote_labels.duplicate_labels`    | Request `labels` contains duplicates                          |
+| `promote_labels.not_suggested`       | One or more labels are not on the memory's `suggested_labels` |
+
+A 404 means the memory ID is unknown OR (with `tenant_id` set) belongs
+to a different tenant — the two cases are indistinguishable on the
+wire so a misconfigured caller cannot probe cross-tenant.
 
 ## What auto-labeling does **NOT** do (v0.9)
 

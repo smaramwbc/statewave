@@ -274,3 +274,232 @@ async def test_admin_list_pagination(client: AsyncClient, session_factory):
     assert len(body["memories"]) == 2
     assert body["limit"] == 2
     assert body["offset"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Promote suggested → sensitivity labels (v0.9 #160)
+# ---------------------------------------------------------------------------
+
+
+async def _read_memory(session_factory, memory_id: uuid.UUID) -> MemoryRow:
+    from sqlalchemy import select
+
+    async with session_factory() as session:
+        return (
+            await session.execute(select(MemoryRow).where(MemoryRow.id == memory_id))
+        ).scalar_one()
+
+
+@pytest.mark.anyio
+async def test_promote_labels_moves_suggested_to_sensitivity(client: AsyncClient, session_factory):
+    """Happy path: a label currently in suggested_labels lands in
+    sensitivity_labels and is removed from suggested_labels."""
+    s = f"promote-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory,
+        subject_id=s,
+        tenant_id=None,
+        suggested=["pii.email", "pii.phone"],
+    )
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        json={"labels": ["pii.email"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["memory_id"] == str(mid)
+    assert body["promoted"] == ["pii.email"]
+    assert body["sensitivity_labels"] == ["pii.email"]
+    # `pii.phone` stays in suggested_labels — only `pii.email` was promoted.
+    assert body["suggested_labels"] == ["pii.phone"]
+
+    # DB matches the response and an audit entry was stamped.
+    row = await _read_memory(session_factory, mid)
+    assert "pii.email" in row.sensitivity_labels
+    assert "pii.email" not in row.suggested_labels
+    promotions = row.metadata_.get("label_promotions") or []
+    assert len(promotions) == 1
+    assert promotions[0]["labels"] == ["pii.email"]
+    assert promotions[0]["promoted_at"]
+    # promoted_by is null in v0.9 — admin identity TODO lands later
+    assert promotions[0]["promoted_by"] is None
+
+
+@pytest.mark.anyio
+async def test_promote_labels_preserves_existing_sensitivity_labels(
+    client: AsyncClient, session_factory
+):
+    """Pre-existing sensitivity_labels (from explicit tenant SDK writes)
+    must survive a promotion — the endpoint merges, never overwrites."""
+    s = f"merge-{uuid.uuid4().hex[:8]}"
+    mid = uuid.uuid4()
+    async with session_factory() as session:
+        session.add(
+            MemoryRow(
+                id=mid,
+                subject_id=s,
+                tenant_id=None,
+                kind="profile_fact",
+                content="alice@example.com",
+                summary="x",
+                confidence=1.0,
+                valid_from=datetime.now(timezone.utc),
+                source_episode_ids=[],
+                metadata_={},
+                status="active",
+                sensitivity_labels=["legal.contract"],  # tenant-set
+                suggested_labels=["pii.email"],
+            )
+        )
+        await session.commit()
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        json={"labels": ["pii.email"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Result is sorted + deduped, tenant's existing label preserved.
+    assert body["sensitivity_labels"] == ["legal.contract", "pii.email"]
+
+
+@pytest.mark.anyio
+async def test_promote_labels_rejects_unsuggested_label(client: AsyncClient, session_factory):
+    """Ad-hoc promotion is rejected — every label in the request must
+    currently be in suggested_labels. This is the load-bearing
+    constraint that keeps the endpoint review-only and prevents it
+    from becoming a backdoor write surface."""
+    s = f"reject-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory, subject_id=s, tenant_id=None, suggested=["pii.email"]
+    )
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        json={"labels": ["financial.card"]},  # never suggested on this memory
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "promote_labels.not_suggested"
+
+
+@pytest.mark.anyio
+async def test_promote_labels_empty_request_rejected(client: AsyncClient, session_factory):
+    s = f"empty-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory, subject_id=s, tenant_id=None, suggested=["pii.email"]
+    )
+
+    resp = await client.post(f"/admin/memories/{mid}/promote-labels", json={"labels": []})
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "promote_labels.empty"
+
+
+@pytest.mark.anyio
+async def test_promote_labels_duplicate_in_request_rejected(client: AsyncClient, session_factory):
+    """Duplicates inside the request body are rejected — keeps the
+    audit entry honest (a single API call promotes a unique set)."""
+    s = f"dupe-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory, subject_id=s, tenant_id=None, suggested=["pii.email"]
+    )
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        json={"labels": ["pii.email", "pii.email"]},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "promote_labels.duplicate_labels"
+
+
+@pytest.mark.anyio
+async def test_promote_labels_404_for_unknown_memory(client: AsyncClient):
+    bogus = uuid.uuid4()
+    resp = await client.post(
+        f"/admin/memories/{bogus}/promote-labels", json={"labels": ["pii.email"]}
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_promote_labels_400_for_invalid_uuid(client: AsyncClient):
+    resp = await client.post(
+        "/admin/memories/not-a-uuid/promote-labels", json={"labels": ["pii.email"]}
+    )
+    assert resp.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_promote_labels_idempotent_rejects_second_call(client: AsyncClient, session_factory):
+    """After the first promotion, the label is no longer in
+    suggested_labels, so a second call with the same label hits the
+    not_suggested guard. This is the desired idempotency contract —
+    re-running converges silently from the caller's side: the row is
+    in the right state, and the audit entry from the first call is
+    preserved."""
+    s = f"idem-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory, subject_id=s, tenant_id=None, suggested=["pii.email"]
+    )
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels", json={"labels": ["pii.email"]}
+    )
+    assert resp.status_code == 200
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels", json={"labels": ["pii.email"]}
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "promote_labels.not_suggested"
+
+    # Single audit entry survived.
+    row = await _read_memory(session_factory, mid)
+    promotions = row.metadata_.get("label_promotions") or []
+    assert len(promotions) == 1
+
+
+@pytest.mark.anyio
+async def test_promote_labels_tenant_scoped(client: AsyncClient, session_factory):
+    """Passing a tenant_id that doesn't own the memory returns 404 —
+    defence in depth against a misconfigured admin caller."""
+    s = f"tenant-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory, subject_id=s, tenant_id="tenant-a", suggested=["pii.email"]
+    )
+
+    resp = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        params={"tenant_id": "tenant-b"},
+        json={"labels": ["pii.email"]},
+    )
+    assert resp.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_promote_labels_appends_subsequent_audit_entries(
+    client: AsyncClient, session_factory
+):
+    """Two promotions of different labels on the same memory produce
+    two distinct audit entries, in chronological order."""
+    s = f"audit-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory,
+        subject_id=s,
+        tenant_id=None,
+        suggested=["pii.email", "pii.phone"],
+    )
+
+    r1 = await client.post(f"/admin/memories/{mid}/promote-labels", json={"labels": ["pii.email"]})
+    assert r1.status_code == 200
+    r2 = await client.post(f"/admin/memories/{mid}/promote-labels", json={"labels": ["pii.phone"]})
+    assert r2.status_code == 200
+
+    row = await _read_memory(session_factory, mid)
+    promotions = row.metadata_.get("label_promotions") or []
+    assert len(promotions) == 2
+    assert promotions[0]["labels"] == ["pii.email"]
+    assert promotions[1]["labels"] == ["pii.phone"]
+    assert promotions[0]["promoted_at"] <= promotions[1]["promoted_at"]
+    assert set(row.sensitivity_labels) == {"pii.email", "pii.phone"}
+    assert row.suggested_labels == []

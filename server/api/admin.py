@@ -943,6 +943,165 @@ async def list_memories_with_suggested_labels(
         )
 
 
+# ─── Promote suggested labels → authoritative sensitivity_labels (v0.9 #160) ─
+
+
+class PromoteLabelsRequest(BaseModel):
+    labels: list[str]
+    """Subset of the memory's current ``suggested_labels`` to promote.
+    Every label in this list MUST already be present on the memory —
+    promotion is strictly review-driven; the endpoint is not a backdoor
+    for ad-hoc tenant-side label writes."""
+
+
+class PromoteLabelsResponse(BaseModel):
+    memory_id: str
+    promoted: list[str]
+    """Labels that moved from suggested → sensitivity on this call."""
+    sensitivity_labels: list[str]
+    """Memory's authoritative labels AFTER the promotion."""
+    suggested_labels: list[str]
+    """Memory's remaining suggestions AFTER the promotion (promoted
+    labels are dropped from this list so they don't re-appear in
+    the review queue)."""
+
+
+@router.post(
+    "/memories/{memory_id}/promote-labels",
+    response_model=PromoteLabelsResponse,
+)
+async def promote_suggested_labels(
+    memory_id: str,
+    req: PromoteLabelsRequest,
+    tenant_id: str | None = Query(None, description="Filter by tenant (defence-in-depth)"),
+):
+    """Promote a subset of a memory's ``suggested_labels`` into the
+    authoritative ``sensitivity_labels`` column (v0.9 #160).
+
+    Closes the loop on the auto-labeling story (#158): detectors
+    stamp suggestions, an operator reviews them in the admin UI,
+    and this endpoint is the explicit *commit* action that moves a
+    suggestion into the column the policy evaluator actually reads.
+
+    Contract:
+
+      * Every label in ``req.labels`` MUST currently be in the
+        memory's ``suggested_labels``. Ad-hoc label writes via this
+        endpoint are rejected with 422 — the SDK is the path for
+        tenant-side direct writes; this endpoint is review-only.
+      * Promoted labels are appended to ``sensitivity_labels``
+        (deduped + sorted) and REMOVED from ``suggested_labels`` so
+        the review queue doesn't re-surface them. Idempotency: a
+        second call with the same labels returns 422
+        ``no_pending_suggestions``.
+      * An audit entry is appended to ``memory.metadata.label_promotions``:
+        ``{labels, promoted_at, promoted_by: null}``. ``promoted_by``
+        is null in v0.9 — no admin identity layer exists yet; the
+        TODO is tracked on the field. Time and what-was-promoted are
+        captured today, who-promoted lands when admin identity does.
+
+    Tenant scoped via the optional ``tenant_id`` query — defence in
+    depth on top of the memory_id lookup so a misconfigured admin
+    cookie can't cross-tenant-promote.
+    """
+    import uuid as uuid_module
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    # Validate the request body before touching the DB.
+    if not req.labels:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "promote_labels.empty",
+                "message": "`labels` must be a non-empty list",
+            },
+        )
+    if len(req.labels) != len(set(req.labels)):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "promote_labels.duplicate_labels",
+                "message": "`labels` must not contain duplicates",
+            },
+        )
+
+    try:
+        memory_uuid = uuid_module.UUID(memory_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid memory_id format")
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = select(MemoryRow).where(MemoryRow.id == memory_uuid)
+        if tenant_id:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        memory = result.scalar_one_or_none()
+        if memory is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+
+        current_suggested = list(memory.suggested_labels or [])
+        missing = [lbl for lbl in req.labels if lbl not in current_suggested]
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "promote_labels.not_suggested",
+                    "message": (
+                        f"label(s) {sorted(missing)} are not in this memory's "
+                        "suggested_labels; promotion is review-only — use the "
+                        "SDK for direct tenant-side label writes"
+                    ),
+                },
+            )
+
+        # Compute the new state. Append + dedupe + sort so multiple
+        # promotions converge to a stable list shape.
+        new_sensitivity = sorted(set(memory.sensitivity_labels or []) | set(req.labels))
+        new_suggested = sorted(set(current_suggested) - set(req.labels))
+
+        # Audit trail in metadata. Append-only — never overwrite. Each
+        # entry is self-contained so reading the row years later still
+        # tells the full promotion history without joins. `promoted_by`
+        # is null in v0.9; once admin identity lands (separate work)
+        # the API will populate it.
+        new_metadata = dict(memory.metadata_ or {})
+        promotions = list(new_metadata.get("label_promotions") or [])
+        promotions.append(
+            {
+                "labels": sorted(req.labels),
+                "promoted_at": datetime.now(timezone.utc).isoformat(),
+                "promoted_by": None,  # TODO: populate from admin identity once available
+            }
+        )
+        new_metadata["label_promotions"] = promotions
+
+        memory.sensitivity_labels = new_sensitivity
+        memory.suggested_labels = new_suggested
+        memory.metadata_ = new_metadata
+        await session.commit()
+        await session.refresh(memory)
+
+        logger.info(
+            "suggested_labels_promoted",
+            memory_id=str(memory.id),
+            tenant_id=memory.tenant_id,
+            subject_id=memory.subject_id,
+            promoted=sorted(req.labels),
+        )
+
+        return PromoteLabelsResponse(
+            memory_id=str(memory.id),
+            promoted=sorted(req.labels),
+            sensitivity_labels=list(memory.sensitivity_labels or []),
+            suggested_labels=list(memory.suggested_labels or []),
+        )
+
+
 # ─── Memory Evolution / Related Memories ─────────────────────────────────────
 
 

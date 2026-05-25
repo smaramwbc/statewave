@@ -50,3 +50,6 @@ line-length = 100
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 testpaths = ["tests"]
+markers = [
+    "smoke: live-stack smoke tests (require docker compose; see make test-cold)",
+]

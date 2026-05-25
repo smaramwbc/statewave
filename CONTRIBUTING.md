@@ -32,6 +32,33 @@ pytest tests/ -v
 
 Please run `ruff` and the test suite locally before opening a PR.
 
+## Verifying a cold install
+
+To validate the full fresh-user path (wipe volumes → compose up → readiness → smoke
+checks), use the root Makefile target:
+
+```bash
+cp .env.example .env   # if you have not already
+pip install -e ".[dev]"
+make test-cold
+```
+
+`make test-cold` will:
+
+1. `docker compose down -v` (wipe persisted state)
+2. `docker compose up -d`
+3. Poll `GET /readyz` until `status` is `ready` (60s timeout by default)
+4. Run the smoke suite: `pytest tests/smoke/ -m smoke`
+5. Print **time-to-first-ready** in seconds
+
+Override defaults if needed:
+
+```bash
+API_URL=http://127.0.0.1:8100 READYZ_TIMEOUT=90 make test-cold
+```
+
+Requires Docker, `curl`, and Python dev dependencies (`httpx`, `pytest`).
+
 ## Discussing changes before opening a PR
 
 Use the lightest-weight venue that fits the change:

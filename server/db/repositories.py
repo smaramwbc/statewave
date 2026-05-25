@@ -629,6 +629,7 @@ async def list_receipts(
     until: datetime | None = None,
     cursor: str | None = None,
     limit: int = 50,
+    include_tombstoned: bool = False,
 ) -> Sequence[ReceiptRow]:
     """List receipts for a subject, newest first.
 
@@ -636,6 +637,11 @@ async def list_receipts(
     creation time, so the cursor is simply the last `receipt_id` from
     the previous page. Offset pagination is unsafe for an append-only
     audit log where rows are continuously inserted.
+
+    ``include_tombstoned`` defaults to False so the list returns the
+    active audit trail. Tombstoned (retention-retired) receipts remain
+    individually addressable via `get_receipt_by_id` for forensic
+    lookup of "a receipt with id X was emitted and later retired."
     """
     stmt = (
         select(ReceiptRow)
@@ -650,6 +656,8 @@ async def list_receipts(
         stmt = stmt.where(ReceiptRow.created_at <= until)
     if cursor is not None:
         stmt = stmt.where(ReceiptRow.receipt_id < cursor)
+    if not include_tombstoned:
+        stmt = stmt.where(ReceiptRow.status == "active")
     result = await session.execute(stmt)
     return result.scalars().all()
 

@@ -38,6 +38,7 @@ async def _cleanup_loop():
     from server.services.compile_jobs_durable import cleanup_old_jobs
     from server.services.ratelimit import cleanup_expired_windows
     from server.services.memory_ttl import cleanup_expired_memories
+    from server.services.receipts import cleanup_expired_receipts
 
     while True:
         await asyncio.sleep(3600)  # every hour
@@ -78,6 +79,22 @@ async def _cleanup_loop():
             except Exception as exc:
                 logger.warning("memory_ttl_cleanup_error", error=str(exc))
 
+        # Receipt retention (v0.9, issue #156) — tombstones receipts past
+        # their tenant's `receipt_retention_days`. Soft-delete only; rows
+        # persist with `status='tombstoned'` for the audit trail of "this
+        # receipt was emitted and later retired." Gated INSIDE the worker
+        # by per-tenant config (no settings-level switch) so admin-set
+        # retention starts taking effect on the next tick without a
+        # restart.
+        try:
+            async with get_session_factory()() as session:
+                tombstoned = await cleanup_expired_receipts(session)
+                await session.commit()
+            if tombstoned:
+                logger.info("receipts_retention_cleanup_done", tombstoned=tombstoned)
+        except Exception as exc:
+            logger.warning("receipts_retention_cleanup_error", error=str(exc))
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -93,16 +110,14 @@ async def lifespan(app: FastAPI):
     )
     await webhooks.start_worker()
 
-    # Start background cleanup (snapshots + compile job retention + rate limit + memory TTL)
-    cleanup_task = None
-    needs_cleanup = (
-        settings.enable_snapshots
-        or settings.compile_job_retention_hours > 0
-        or (settings.rate_limit_rpm > 0 and settings.rate_limit_strategy == "distributed")
-        or bool(settings.kind_ttl_days)
-    )
-    if needs_cleanup:
-        cleanup_task = asyncio.create_task(_cleanup_loop())
+    # Background cleanup — runs once per hour, short-circuits each block
+    # when its feature isn't configured. v0.9 added per-tenant receipt
+    # retention (issue #156), which can be enabled/disabled at runtime
+    # via the admin endpoint — gating the loop on a settings-time check
+    # would mean a restart to start picking up tenant retention changes.
+    # Always-on is cheap (one sleep + a handful of conditional skips per
+    # hour on minimal deployments) and removes that footgun.
+    cleanup_task = asyncio.create_task(_cleanup_loop())
 
     # Schema compatibility check
     try:

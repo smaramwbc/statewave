@@ -43,7 +43,25 @@ async def get_receipt(
     row = await repo.get_receipt_by_id(session, receipt_id, tenant_id=tenant_id)
     if row is None:
         raise HTTPException(status_code=404, detail="receipt not found")
-    return row.body
+    return _row_to_response(row)
+
+
+def _row_to_response(row) -> dict[str, Any]:
+    """Merge row-level lifecycle metadata into the receipt body for the wire.
+
+    The body itself is the immutable audit artifact (never updated on
+    disk after emission). `status` and `tombstoned_at` are row-level
+    state — when the retention worker tombstones a receipt, those are
+    the only columns that change. They surface as siblings of the body
+    fields on the response so a client can tell "this audit record is
+    still active" vs "this was retired by retention" without parsing a
+    separate metadata blob.
+    """
+    out = dict(row.body)
+    out["status"] = row.status
+    if row.tombstoned_at is not None:
+        out["tombstoned_at"] = row.tombstoned_at.isoformat()
+    return out
 
 
 @router.get(
@@ -63,6 +81,15 @@ async def list_receipts(
         ),
     ),
     limit: int = Query(50, ge=1, le=200),
+    include_tombstoned: bool = Query(
+        False,
+        description=(
+            "Include receipts that the retention worker has tombstoned. "
+            "Default `false` — tombstoned rows persist for forensic lookup "
+            "via `GET /v1/receipts/{id}` but are filtered out of the list "
+            "view unless explicitly requested."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ) -> dict[str, Any]:
@@ -77,9 +104,10 @@ async def list_receipts(
         until=until,
         cursor=cursor,
         limit=limit,
+        include_tombstoned=include_tombstoned,
     )
     next_cursor = rows[-1].receipt_id if len(rows) == limit else None
     return {
-        "receipts": [row.body for row in rows],
+        "receipts": [_row_to_response(row) for row in rows],
         "next_cursor": next_cursor,
     }

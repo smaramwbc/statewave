@@ -31,14 +31,15 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 import structlog
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
-from server.db.tables import ReceiptRow
+from server.db.tables import ReceiptRow, TenantConfigRow
 
 logger = structlog.stdlib.get_logger()
 
@@ -408,3 +409,67 @@ async def load_tenant_receipt_config(
     if row is None:
         return {}
     return row.config or {}
+
+
+# ---------------------------------------------------------------------------
+# Retention worker — v0.9 (issue #156)
+# ---------------------------------------------------------------------------
+
+
+async def cleanup_expired_receipts(session: AsyncSession) -> int:
+    """Tombstone receipts past their tenant's retention window.
+
+    v0.8 shipped the configurable surface (``tenant_configs.config ->>
+    'receipt_retention_days'``) but no worker. This function is that
+    worker — called once an hour from `_cleanup_loop` in `server.app`.
+
+    Walks every tenant with a positive integer ``receipt_retention_days``
+    in its config and issues one ``UPDATE`` per tenant transitioning
+    ``status='active'`` receipts older than ``now() - retention_days``
+    into ``status='tombstoned'``. Soft-delete only — the rows persist so
+    a forensic lookup ("a receipt with id X was emitted and later
+    retired") still works.
+
+    Idempotent — re-running against the same DB state is a no-op (no
+    active rows past the cutoff remain to transition).
+
+    Tenant isolation is structural: each ``UPDATE`` is scoped to a
+    single ``tenant_id``, so misconfiguring tenant A cannot tombstone
+    tenant B's receipts.
+
+    Caller is responsible for committing the session.
+    """
+    # Find tenants with retention configured. JSONB `->>` returns NULL
+    # for missing keys; the `IS NOT NULL` lets non-configured tenants
+    # short-circuit without paying for a full ReceiptRow scan.
+    stmt = select(TenantConfigRow.tenant_id, TenantConfigRow.config).where(
+        TenantConfigRow.config.op("->>")("receipt_retention_days").isnot(None)
+    )
+    result = await session.execute(stmt)
+    tenants = result.all()
+    if not tenants:
+        return 0
+
+    now = datetime.now(timezone.utc)
+    total = 0
+    for tenant_id, config in tenants:
+        days = (config or {}).get("receipt_retention_days")
+        # Defensive: the per-tenant config endpoint validates the type
+        # at write time, but a SQL-shell write or pre-v0.9 garbage
+        # entry could land non-int values. Skip silently — we don't
+        # want one bad tenant config to halt the whole purge tick.
+        if not isinstance(days, int) or isinstance(days, bool) or days <= 0:
+            continue
+        cutoff = now - timedelta(days=days)
+        update_stmt = (
+            update(ReceiptRow)
+            .where(ReceiptRow.tenant_id == tenant_id)
+            .where(ReceiptRow.status == "active")
+            .where(ReceiptRow.created_at < cutoff)
+            .values(status="tombstoned", tombstoned_at=now)
+        )
+        r = await session.execute(update_stmt)
+        total += r.rowcount or 0
+    if total:
+        logger.info("receipts_retention_tombstoned", count=total)
+    return total

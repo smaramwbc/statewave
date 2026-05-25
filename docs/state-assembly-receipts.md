@@ -103,10 +103,15 @@ deployments should additionally grant the service role
 from v1 of this feature).
 
 Retention is tenant-controlled via
-`tenant_configs.config.receipt_retention_days`. `0` (default) means
-forever; positive integers enable a future scheduled purge worker.
-v1 ships the *surface*, not the worker — receipts accumulate
-indefinitely unless the operator runs a manual purge.
+`tenant_configs.config.receipt_retention_days`. Absent or `null` means
+forever (the default); positive integers enable the scheduled purge
+worker (v0.9). Once a receipt is past its tenant's retention window,
+the worker transitions its row to `status = "tombstoned"` (soft delete
+— rows persist for forensic lookup of "an audit record existed and was
+retired"). The default list endpoint hides tombstoned rows; pass
+`?include_tombstoned=true` to surface them. Detail lookup
+(`GET /v1/receipts/{id}`) always returns tombstoned rows with the
+`status` and `tombstoned_at` fields populated.
 
 ## Failure mode
 
@@ -164,4 +169,3 @@ assembly internals:
 - Receipt-driven replay / time-travel debugging tooling.
 - Cross-tenant receipt aggregation / fleet-wide audit views.
 - HMAC signing of receipt bodies (column reserved, no signing path).
-- Scheduled retention-purge worker (config field accepted, no worker).

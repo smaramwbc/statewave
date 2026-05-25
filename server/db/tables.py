@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -242,6 +242,16 @@ class ReceiptRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Row-level lifecycle state. `active` for fresh receipts; the v0.9
+    # retention worker (`cleanup_expired_receipts`) transitions rows to
+    # `tombstoned` once `created_at + tenant.receipt_retention_days` has
+    # passed. Soft-delete only — the row persists for audit lookup.
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, server_default="active"
+    )
+    tombstoned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     __table_args__ = (
         Index(
@@ -249,6 +259,16 @@ class ReceiptRow(Base):
             "tenant_id",
             "subject_id",
             "created_at",
+        ),
+        # Partial index — only active rows are visited by the retention
+        # worker. Created in the alembic migration with raw SQL because
+        # alembic 1.13's `op.create_index` doesn't surface the partial
+        # `WHERE` clause; declared here for ORM parity.
+        Index(
+            "ix_receipts_active_tenant_created",
+            "tenant_id",
+            "created_at",
+            postgresql_where=text("status = 'active'"),
         ),
     )
 

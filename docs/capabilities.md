@@ -27,7 +27,7 @@ The lead [README](../README.md#capabilities) lists the top 8 capabilities most r
 - **Authentication** — optional API key via `X-API-Key` header.
 - **Rate limiting** — per-IP fixed-window, distributed (Postgres-backed) or in-memory.
 - **Multi-tenant** — optional `X-Tenant-ID` header with real query-scoped data isolation across all reads and writes.
-- **Webhooks** — persistent HTTP callbacks with retries and dead-letter on episode, compile, and delete events.
+- **Webhooks** — persistent HTTP callbacks with retries and dead-letter on episode, compile, and delete events; an optional event-type allowlist (`STATEWAVE_WEBHOOK_EVENTS`) restricts delivery to specific event types.
 - **OpenTelemetry tracing** — optional spans on key operations (requires `[otel]` extra).
 - **Structured logging** — `structlog` with JSON output in production, console in development.
 - **Structured errors** — consistent JSON error format with request-ID correlation.

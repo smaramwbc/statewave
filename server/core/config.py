@@ -7,6 +7,8 @@ import json
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
+from server.core.webhook_events import parse_webhook_event_filter
+
 
 class Settings(BaseSettings):
     """Central configuration — populated from env vars or .env file."""
@@ -147,6 +149,32 @@ class Settings(BaseSettings):
     # Webhooks (empty = disabled)
     webhook_url: str | None = None
     webhook_timeout: float = 5.0
+    # Event-type allowlist for webhook delivery, comma-separated. Empty =
+    # deliver every event (the backward-compatible default). Example:
+    #   STATEWAVE_WEBHOOK_EVENTS=memories.compiled,subject.deleted
+    # Kept as the raw string so the env var is plain comma-separated;
+    # read the parsed, validated list via the `webhook_event_filter`
+    # property.
+    webhook_events: str = ""
+
+    @field_validator("webhook_events")
+    @classmethod
+    def _validate_webhook_events(cls, value: str) -> str:
+        """Validate the event-type allowlist at construction.
+
+        An unknown event type fails fast at startup instead of silently
+        dropping every webhook weeks later. The raw string is returned
+        unchanged; `parse_webhook_event_filter` does the checking."""
+        parse_webhook_event_filter(value)
+        return value
+
+    @property
+    def webhook_event_filter(self) -> list[str]:
+        """Parsed + validated webhook event-type allowlist.
+
+        An empty list means no filter is configured — every event is
+        delivered. See `parse_webhook_event_filter`."""
+        return parse_webhook_event_filter(self.webhook_events)
 
     # Multi-tenant (empty = single-tenant mode)
     tenant_header: str = "X-Tenant-ID"

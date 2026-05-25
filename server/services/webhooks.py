@@ -38,13 +38,36 @@ _webhook_url: str | None = None
 _timeout: float = 5.0
 _worker_task: asyncio.Task | None = None
 _poll_interval: float = 5.0  # seconds between queue checks
+# Event-type allowlist. An empty set means "no filter — deliver every
+# event" (the backward-compatible default). When non-empty, only events
+# whose type is in the set are enqueued.
+_event_filter: frozenset[str] = frozenset()
 
 
-def configure(url: str | None, timeout: float = 5.0) -> None:
-    """Set the global webhook URL. Called at app startup."""
-    global _webhook_url, _timeout
+def configure(
+    url: str | None,
+    timeout: float = 5.0,
+    events: list[str] | None = None,
+) -> None:
+    """Set the global webhook URL, timeout, and event filter.
+
+    Called at app startup with values from `Settings`. `events` is the
+    event-type allowlist (`STATEWAVE_WEBHOOK_EVENTS`): an empty or None
+    value disables filtering so every event is delivered.
+    """
+    global _webhook_url, _timeout, _event_filter
     _webhook_url = url
     _timeout = timeout
+    _event_filter = frozenset(events) if events else frozenset()
+
+
+def event_filter() -> frozenset[str]:
+    """Return the active event-type allowlist.
+
+    An empty set means no filter is configured — every event type is
+    delivered. Exposed for tests and operator introspection.
+    """
+    return _event_filter
 
 
 async def start_worker() -> None:
@@ -75,10 +98,20 @@ async def fire(
 ) -> uuid.UUID | None:
     """Enqueue a webhook event for delivery.
 
-    If no webhook URL is configured, returns None (no-op).
-    The event is persisted immediately and delivered asynchronously.
+    If no webhook URL is configured, returns None (no-op). If an event
+    filter is configured and `event` is not in the allowlist, the event
+    is dropped before it reaches the delivery queue and None is
+    returned. Otherwise the event is persisted immediately and delivered
+    asynchronously.
     """
     if not _webhook_url:
+        return None
+
+    # Event-type allowlist (STATEWAVE_WEBHOOK_EVENTS). An empty filter
+    # means "deliver everything"; a filtered-out event is never enqueued,
+    # so it costs nothing in storage or delivery attempts.
+    if _event_filter and event not in _event_filter:
+        logger.debug("webhook_event_filtered", event_type=event)
         return None
 
     event_id = uuid.uuid4()

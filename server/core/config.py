@@ -176,6 +176,93 @@ class Settings(BaseSettings):
         delivered. See `parse_webhook_event_filter`."""
         return parse_webhook_event_filter(self.webhook_events)
 
+    # Receipt HMAC signing (v0.9, issue #157) — operator-provided keys
+    # per key_id. Set via env (JSON object):
+    #
+    #     STATEWAVE_RECEIPT_SIGNING_KEYS='{"key-2026-01":"<base64-32B>",...}'
+    #
+    # Per-tenant active key_id is in tenant_configs.config.receipt_signing_key_id.
+    # The server NEVER persists raw signing keys to the database — they
+    # live only in this process's in-memory config, sourced from
+    # env / secret-manager mount. The field is excluded from __repr__ so
+    # an accidental settings dump can't leak the keys.
+    receipt_signing_keys: dict[str, bytes] = Field(default_factory=dict, repr=False)
+
+    @field_validator("receipt_signing_keys", mode="before")
+    @classmethod
+    def _parse_receipt_signing_keys(cls, value):
+        """Parse + validate the signing-key map at startup. Failures here
+        fail the server boot — better than a silent fallback to unsigned
+        receipts because a base64 typo went unnoticed.
+
+        Accepts (a) a real dict (in-process tests / env-decoded), (b) a
+        JSON-encoded string (defensive — pydantic-settings does the
+        JSON decode itself for complex env fields, but this branch
+        keeps programmatic construction symmetrical with the env path),
+        or (c) None/"" for no signing. Per-key value can be either
+        base64 (env path) or raw `bytes` (in-process tests)."""
+        import base64
+        import json as _json
+
+        if value is None or value == "":
+            return {}
+        if isinstance(value, dict):
+            parsed = value
+        elif isinstance(value, str):
+            try:
+                parsed = _json.loads(value)
+            except _json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"STATEWAVE_RECEIPT_SIGNING_KEYS is not valid JSON: {exc.msg}"
+                ) from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "STATEWAVE_RECEIPT_SIGNING_KEYS must decode to a JSON "
+                    f"object of key_id -> base64 key (got {type(parsed).__name__})"
+                )
+        else:
+            raise ValueError(
+                "STATEWAVE_RECEIPT_SIGNING_KEYS must be a JSON object or dict, "
+                f"got {type(value).__name__}"
+            )
+
+        clean: dict[str, bytes] = {}
+        for key_id, raw in parsed.items():
+            if not isinstance(key_id, str) or not key_id:
+                raise ValueError(
+                    "STATEWAVE_RECEIPT_SIGNING_KEYS: every key_id must be a "
+                    f"non-empty string (got {key_id!r})"
+                )
+            if isinstance(raw, (bytes, bytearray)):
+                key_bytes = bytes(raw)
+            elif isinstance(raw, str):
+                try:
+                    # validate=True rejects non-base64 chars; raises on bad input.
+                    key_bytes = base64.b64decode(raw, validate=True)
+                except Exception as exc:
+                    raise ValueError(
+                        f"STATEWAVE_RECEIPT_SIGNING_KEYS[{key_id!r}] is not "
+                        "valid base64 (operator config should base64-encode "
+                        "the raw secret bytes)"
+                    ) from exc
+            else:
+                raise ValueError(
+                    f"STATEWAVE_RECEIPT_SIGNING_KEYS[{key_id!r}] must be a "
+                    "base64 string or raw bytes, got "
+                    f"{type(raw).__name__}"
+                )
+            if len(key_bytes) < 32:
+                # HMAC-SHA256 best practice: key length ≥ output length.
+                # Refuse weaker keys at config-load rather than allow
+                # weak signatures into production.
+                raise ValueError(
+                    f"STATEWAVE_RECEIPT_SIGNING_KEYS[{key_id!r}] is too "
+                    f"short: {len(key_bytes)} bytes (minimum 32 for "
+                    "HMAC-SHA256)."
+                )
+            clean[key_id] = key_bytes
+        return clean
+
     # Multi-tenant (empty = single-tenant mode)
     tenant_header: str = "X-Tenant-ID"
     require_tenant: bool = False

@@ -26,6 +26,8 @@ docs/state-assembly-receipts.md.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
 import secrets
 import time
@@ -330,11 +332,25 @@ async def write_receipt(
     *,
     receipt_body: dict[str, Any],
     as_of: datetime,
+    tenant_config: dict[str, Any] | None = None,
 ) -> str | None:
     """Persist a receipt. Returns the receipt_id on success, None on
     failure. **Never raises** — receipt write failure must not break
-    agent serving (see docs/state-assembly-receipts.md → Failure mode)."""
+    agent serving (see docs/state-assembly-receipts.md → Failure mode).
+
+    When ``tenant_config`` carries ``receipt_signing_key_id`` AND the
+    referenced key is configured in ``settings.receipt_signing_keys``,
+    the body is signed via HMAC-SHA256 over its canonical v1 form
+    before persistence (v0.9 / issue #157). If signing is configured
+    but the key is unavailable, the receipt emits unsigned and a
+    `receipt_signing_key_unavailable` warning is logged — agent
+    serving is never blocked by audit infra."""
     try:
+        # In-place stamp `receipt_signature`, `receipt_signature_key_id`,
+        # and `receipt_signature_algorithm` on the body if signing
+        # applies. No-op for tenants without signing configured.
+        _apply_signature(receipt_body, tenant_config or {})
+
         row = ReceiptRow(
             receipt_id=receipt_body["receipt_id"],
             parent_receipt_id=receipt_body.get("parent_receipt_id"),
@@ -348,6 +364,8 @@ async def write_receipt(
             policy_bundle_hash=receipt_body["policy"].get("policy_bundle_hash"),
             region=receipt_body.get("region"),
             receipt_signature=receipt_body.get("receipt_signature"),
+            receipt_signature_key_id=receipt_body.get("receipt_signature_key_id"),
+            receipt_signature_algorithm=receipt_body.get("receipt_signature_algorithm"),
             body=receipt_body,
             as_of=as_of,
         )
@@ -473,3 +491,226 @@ async def cleanup_expired_receipts(session: AsyncSession) -> int:
     if total:
         logger.info("receipts_retention_tombstoned", count=total)
     return total
+
+
+# ---------------------------------------------------------------------------
+# HMAC signing & verification — v0.9 (issue #157)
+#
+# Receipts are immutable per-retrieval audit artifacts. v0.8 stored a
+# SHA-256 of the assembled context bytes inside the body, but the body
+# itself wasn't tamper-evident. v0.9 signs the body with HMAC-SHA256
+# under a tenant-scoped operator-provided key.
+#
+# Algorithm string is `hmac-sha256-canonical-v1` — algorithm + canonical
+# form version baked into one slot so a future migration (RFC 8785 JCS,
+# or asymmetric signing) lands as a new string without a schema break.
+#
+# The `receipt_signature` field is excluded from canonicalization
+# (signing a body that contains its own signature is circular). All
+# other fields — including `receipt_signature_key_id` and
+# `receipt_signature_algorithm` — are inside the signature's coverage,
+# so an attacker can't tell the verifier "this was signed by a
+# different key" without invalidating the signature.
+#
+# Keys never persist in the database. The dict lives in
+# `settings.receipt_signing_keys`, sourced from operator env / secret
+# manager at process startup, with the field marked `repr=False` so a
+# stray `print(settings)` cannot leak them.
+# ---------------------------------------------------------------------------
+
+
+#: The only signature algorithm + canonicalization variant v0.9 emits.
+#: Verify accepts the same. Future bumps (`-v2`, JCS, ed25519) extend
+#: this constant and the verify dispatch without a schema migration.
+SUPPORTED_SIGNATURE_ALGORITHM = "hmac-sha256-canonical-v1"
+
+#: Body fields excluded from canonicalization (the signature signs
+#: everything else). Wrapped in a frozenset for fast lookup.
+_UNSIGNED_BODY_FIELDS = frozenset({"receipt_signature"})
+
+
+def canonicalize_receipt_body_v1(body: dict[str, Any]) -> bytes:
+    """Stable byte representation of a receipt body for HMAC signing.
+
+    v1 = ``json.dumps(body_minus_signature, sort_keys=True,
+    separators=(",", ":"), ensure_ascii=False)`` UTF-8 encoded. Sorted
+    keys keep the bytes deterministic across Python dict-ordering
+    quirks; the compact separators eliminate whitespace ambiguity;
+    ``ensure_ascii=False`` keeps multi-byte content as its UTF-8
+    representation rather than \\uXXXX escapes (the body already
+    contains user content that may include non-ASCII).
+
+    The version string is baked into the algorithm tag stored on each
+    receipt, so a future move to RFC 8785 JCS or another canonical form
+    lands as ``canonicalize_receipt_body_v2`` + a new algorithm string,
+    with v1 still verifying historical receipts.
+    """
+    sanitized = {k: v for k, v in body.items() if k not in _UNSIGNED_BODY_FIELDS}
+    return json.dumps(
+        sanitized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def sign_receipt_body(body: dict[str, Any], key: bytes) -> str:
+    """Compute HMAC-SHA256 over the canonical v1 form of ``body``.
+
+    Returns the signature as a lowercase hex string (64 chars). The
+    raw key bytes are passed directly to ``hmac.new`` — never logged,
+    never serialised, never returned by any caller-visible surface.
+    """
+    canonical = canonicalize_receipt_body_v1(body)
+    return hmac.new(key, canonical, hashlib.sha256).hexdigest()
+
+
+def _apply_signature(
+    receipt_body: dict[str, Any],
+    tenant_config: dict[str, Any],
+) -> None:
+    """Sign ``receipt_body`` in place if the tenant has a key id configured
+    AND the key is resolvable from ``settings.receipt_signing_keys``.
+
+    Three terminal states:
+
+    - **Signed** — body gains ``receipt_signature``,
+      ``receipt_signature_key_id``, ``receipt_signature_algorithm``.
+    - **Configured but key unavailable** — body left unsigned; a
+      ``receipt_signing_key_unavailable`` warning is emitted with the
+      key_id only (never the key bytes). The verifier later reports
+      ``valid: null, reason: "key_unavailable"`` for this receipt.
+    - **Unconfigured** — body untouched. The verifier reports
+      ``valid: null, reason: "no_signature"``.
+
+    Signing failures past key resolution (an unlikely Python-level
+    error inside ``sign_receipt_body``) are swallowed with a warning
+    so the receipt still emits unsigned — agent serving must not be
+    blocked by audit infra.
+    """
+    key_id = tenant_config.get("receipt_signing_key_id") if tenant_config else None
+    if not key_id:
+        return  # tenant hasn't opted in
+
+    # Lazy import keeps the receipts module testable without booting
+    # the full Settings object.
+    from server.core.config import settings
+
+    keys_map = settings.receipt_signing_keys or {}
+    key = keys_map.get(key_id)
+    if key is None:
+        logger.warning(
+            "receipt_signing_key_unavailable",
+            tenant_id=receipt_body.get("tenant_id"),
+            key_id=key_id,
+        )
+        return
+
+    # Stamp the metadata BEFORE computing the signature so the key_id
+    # and algorithm are covered by the HMAC — an attacker who swaps
+    # them on a stored receipt then has to also rewrite the signature.
+    # On signing failure we roll back the stamps so the body persists
+    # in a consistent unsigned state.
+    receipt_body["receipt_signature_key_id"] = key_id
+    receipt_body["receipt_signature_algorithm"] = SUPPORTED_SIGNATURE_ALGORITHM
+    try:
+        signature = sign_receipt_body(receipt_body, key)
+    except Exception:
+        # Defensive: a hash computation should never fail at runtime,
+        # but if it does we emit unsigned + warn rather than fail the
+        # whole assembly.
+        receipt_body.pop("receipt_signature_key_id", None)
+        receipt_body.pop("receipt_signature_algorithm", None)
+        logger.warning(
+            "receipt_signing_failed",
+            tenant_id=receipt_body.get("tenant_id"),
+            key_id=key_id,
+            exc_info=True,
+        )
+        return
+
+    receipt_body["receipt_signature"] = signature
+
+
+def verify_receipt(
+    row: ReceiptRow,
+    *,
+    keys_map: dict[str, bytes] | None = None,
+) -> dict[str, Any]:
+    """Verify the HMAC signature on a stored receipt row.
+
+    Returns a dict with the shape documented in ``api/v1-contract.md``:
+
+        { "valid": True | False | None,
+          "key_id": "..." | None,
+          "algorithm": "..." | None,
+          "reason": "ok" | "signature_mismatch" | "key_unavailable"
+                    | "no_signature" | "unsupported_algorithm" }
+
+    ``valid: null`` covers the "cannot determine" cases (key was
+    removed from operator config, no signature present, or the
+    algorithm string names a variant this binary doesn't implement).
+    ``valid: false`` is reserved for "we checked the math and the
+    signature doesn't cover the body."
+
+    Comparison uses ``hmac.compare_digest`` for constant-time
+    behaviour against timing attacks. The signing key bytes never
+    appear in the response.
+
+    ``keys_map`` defaults to ``settings.receipt_signing_keys``;
+    overridable for tests.
+    """
+    # No-signature path — pre-v0.9 receipts or tenants that didn't
+    # opt in to signing. Distinct from `key_unavailable`: the receipt
+    # was never signed in the first place.
+    if not row.receipt_signature or not row.receipt_signature_key_id:
+        return {
+            "valid": None,
+            "key_id": None,
+            "algorithm": None,
+            "reason": "no_signature",
+        }
+
+    algorithm = row.receipt_signature_algorithm or SUPPORTED_SIGNATURE_ALGORITHM
+    if algorithm != SUPPORTED_SIGNATURE_ALGORITHM:
+        # Future-proofing: a receipt signed under `canonical-v2` or
+        # `ed25519-canonical-v1` on a newer server would land here on
+        # a v0.9 binary. Report explicitly rather than misleading the
+        # caller with `signature_mismatch`.
+        return {
+            "valid": None,
+            "key_id": row.receipt_signature_key_id,
+            "algorithm": algorithm,
+            "reason": "unsupported_algorithm",
+        }
+
+    if keys_map is None:
+        from server.core.config import settings
+
+        keys_map = settings.receipt_signing_keys or {}
+
+    key = keys_map.get(row.receipt_signature_key_id)
+    if key is None:
+        # Key rotated out of operator config; historical receipt is
+        # no longer verifiable on this binary. Never a 500.
+        return {
+            "valid": None,
+            "key_id": row.receipt_signature_key_id,
+            "algorithm": algorithm,
+            "reason": "key_unavailable",
+        }
+
+    expected = sign_receipt_body(row.body, key)
+    if hmac.compare_digest(expected, row.receipt_signature):
+        return {
+            "valid": True,
+            "key_id": row.receipt_signature_key_id,
+            "algorithm": algorithm,
+            "reason": "ok",
+        }
+    return {
+        "valid": False,
+        "key_id": row.receipt_signature_key_id,
+        "algorithm": algorithm,
+        "reason": "signature_mismatch",
+    }

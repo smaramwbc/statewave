@@ -131,6 +131,72 @@ response so callers can detect the gap.
 `POST /v1/llm/complete` does not embed memory and so does not emit
 receipts.
 
+## HMAC signing (v0.9)
+
+Receipts can be tamper-evidently signed under an operator-provided
+HMAC-SHA256 key. The body's `receipt_signature` slot (reserved in
+v0.8) is populated when:
+
+1. The operator has configured a non-empty
+   `STATEWAVE_RECEIPT_SIGNING_KEYS` map at process startup —
+   `{"<key_id>": "<base64-of-32-or-more-bytes>"}`. The server **never
+   persists raw signing keys to the database**; they live only in
+   this process's in-memory config, sourced from env or a
+   secret-manager mount.
+2. The tenant's `tenant_configs.config.receipt_signing_key_id`
+   names a `key_id` that's present in that map.
+
+When both are true, the body's canonical form (sorted keys, no
+whitespace, UTF-8, `receipt_signature` excluded; tagged as
+`hmac-sha256-canonical-v1`) is HMAC-SHA256-signed and the signature
+stored alongside `receipt_signature_key_id` and
+`receipt_signature_algorithm`. Both metadata fields are inside the
+signature's coverage, so an attacker who swaps the key_id or
+algorithm on a stored receipt invalidates the signature too.
+
+**Failure modes are fail-open** — agent serving must never be
+blocked by audit infrastructure:
+
+- Invalid config at startup (bad JSON, key shorter than 32 bytes,
+  base64 corruption) **fails the server boot**. Operators see the
+  problem before any unsigned receipt slips out.
+- Runtime signing failure (tenant points at a `key_id` the operator
+  hasn't loaded in this process, or an unlikely hash error) **emits
+  the receipt unsigned** with a structured warning
+  (`receipt_signing_key_unavailable` or `receipt_signing_failed`).
+  Verify reports `valid: null, reason: "key_unavailable"` for the
+  former; `no_signature` for the latter.
+
+**Rotation** works by adding a new `key_id` to operator config
+alongside the old one, then updating
+`tenant_configs.config.receipt_signing_key_id` to the new id. New
+receipts sign with the new key; historical receipts remain
+verifiable as long as the old `key_id` stays loaded. Removing the
+old `key_id` flips its receipts to `valid: null, reason:
+"key_unavailable"` — they're still inspectable, just not
+re-verifiable on this binary.
+
+`GET /v1/receipts/{id}/verify` returns:
+
+```json
+{
+  "valid": true | false | null,
+  "key_id": "<operator key_id>" | null,
+  "algorithm": "hmac-sha256-canonical-v1" | null,
+  "reason": "ok" | "signature_mismatch" | "key_unavailable" | "no_signature" | "unsupported_algorithm"
+}
+```
+
+`valid: null` is the "we couldn't determine" verdict (no signature
+on the row, or the key isn't loaded, or the algorithm string names
+a variant this binary doesn't implement). `valid: false` is reserved
+for "we checked the math and the signature doesn't cover the body."
+The response **never** returns the key bytes, a hash of them, or a
+length hint.
+
+Pre-v0.9 receipts have no signature columns populated and verify
+cleanly as `{valid: null, reason: "no_signature"}` — never a 500.
+
 ## Read API
 
 | Method + Path | Purpose |
@@ -168,4 +234,6 @@ assembly internals:
 - Review-time redaction UI.
 - Receipt-driven replay / time-travel debugging tooling.
 - Cross-tenant receipt aggregation / fleet-wide audit views.
-- HMAC signing of receipt bodies (column reserved, no signing path).
+- KMS / Vault-backed signing (architecture is compatible — a future PR swaps the key resolver behind the same `receipt_signing_keys` settings field; v0.9 reads keys from env / secret-manager mount).
+- Asymmetric signatures (the `algorithm` field reserves space for `ed25519-canonical-v1` etc.; v0.9 ships HMAC only).
+- Bulk re-signing of pre-v0.9 receipts (forward-only signing — they verify as `no_signature`).

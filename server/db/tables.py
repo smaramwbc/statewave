@@ -237,6 +237,17 @@ class ReceiptRow(Base):
     policy_bundle_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     receipt_signature: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # v0.9 (issue #157): HMAC signing metadata. Key bytes never persist
+    # in the DB — these columns reference what's in operator config.
+    # Both nullable: pre-v0.9 receipts and unsigned-by-policy v0.9
+    # receipts leave them null; the verifier reports `valid: null` /
+    # `reason: "no_signature"` for those.
+    receipt_signature_key_id: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    receipt_signature_algorithm: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
     body: Mapped[dict] = mapped_column(JSONB, nullable=False)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -256,6 +256,7 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_WEBHOOK_URL` | — | Webhook callback URL (empty = disabled) |
 | `STATEWAVE_WEBHOOK_TIMEOUT` | `5.0` | Webhook HTTP timeout in seconds |
 | `STATEWAVE_WEBHOOK_EVENTS` | — | Comma-separated event-type allowlist (empty = deliver every event) |
+| `STATEWAVE_RECEIPT_SIGNING_KEYS` | — | JSON `{"<key_id>": "<base64>"}` map of HMAC keys for receipt signing (≥32 bytes each). Never persisted to the DB; per-tenant active key id set via `tenant_configs.config.receipt_signing_key_id`. |
 | `STATEWAVE_TENANT_HEADER` | `X-Tenant-ID` | Header for multi-tenant isolation |
 | `STATEWAVE_REQUIRE_TENANT` | `false` | Reject requests without tenant header |
 | `STATEWAVE_DEFAULT_MAX_CONTEXT_TOKENS` | `4000` | Default token budget for context assembly |

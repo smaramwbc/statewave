@@ -414,7 +414,7 @@ async def _maybe_emit_handoff_receipt(
         caller_type=caller_type,
     )
     written_id = await receipts_service.write_receipt(
-        session, receipt_body=body, as_of=as_of
+        session, receipt_body=body, as_of=as_of, tenant_config=tenant_config
     )
     return (written_id, written_id is not None)
 

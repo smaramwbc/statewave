@@ -46,6 +46,39 @@ async def get_receipt(
     return _row_to_response(row)
 
 
+@router.get(
+    "/v1/receipts/{receipt_id}/verify",
+    summary="Verify the HMAC signature on a state-assembly receipt",
+)
+async def verify_receipt_endpoint(
+    receipt_id: str,
+    session: AsyncSession = Depends(get_session),
+    tenant_id: str | None = Depends(get_tenant_id),
+) -> dict[str, Any]:
+    """Verify the HMAC signature stored on a receipt (v0.9, issue #157).
+
+    Returns the verification verdict — `valid: true | false | null` —
+    plus the `key_id` and `algorithm` used. Never echoes the signing
+    key or any derivative on the response.
+
+    `valid: null` distinguishes "we couldn't determine" cases
+    (`no_signature`, `key_unavailable`, `unsupported_algorithm`) from
+    `valid: false` ("we checked the math and the signature doesn't
+    cover the body"). `key_unavailable` keeps historical receipts
+    forensically inspectable when keys rotate out of operator config —
+    never a 500.
+
+    404 if the receipt doesn't exist (or belongs to a different tenant —
+    indistinguishable on the wire, same as the detail endpoint)."""
+    # Lazy import to keep this module's import graph shallow.
+    from server.services.receipts import verify_receipt
+
+    row = await repo.get_receipt_by_id(session, receipt_id, tenant_id=tenant_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="receipt not found")
+    return verify_receipt(row)
+
+
 def _row_to_response(row) -> dict[str, Any]:
     """Merge row-level lifecycle metadata into the receipt body for the wire.
 

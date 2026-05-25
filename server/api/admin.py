@@ -2499,6 +2499,46 @@ async def admin_get_receipt(receipt_id: str):
     return row.body
 
 
+@router.post("/receipts/{receipt_id}/replay")
+async def admin_replay_receipt(receipt_id: str):
+    """Admin-facing replay endpoint (v0.9 #160 admin app shim).
+
+    Mirrors ``POST /v1/receipts/{id}/replay`` but is reachable through
+    the admin proxy's ``/admin/*`` allowlist. The admin proxy is the
+    only path the admin app talks to upstream — surfacing replay there
+    keeps the proxy's allowlist tight (`/admin/*` only) instead of
+    expanding it to ``/v1/`` for one operation.
+
+    Cross-tenant by design: admin views are not tenant-scoped on the
+    list endpoint either (see ``/admin/receipts`` above). The
+    underlying service call passes ``tenant_id=None``, which means a
+    receipt is looked up by id alone. Same response shape and same
+    422 refusal codes as the public endpoint.
+    """
+    from server.db import engine as engine_module
+    from server.services.replay import ReplayError, replay_receipt
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            result = await replay_receipt(session, receipt_id=receipt_id, tenant_id=None)
+        except ReplayError as exc:
+            if exc.reason == "not_found":
+                raise HTTPException(status_code=404, detail="receipt not found") from exc
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": f"unreplayable.{exc.reason}",
+                    "message": exc.detail or exc.reason,
+                },
+            ) from exc
+
+    return {
+        "original_receipt_id": result.original_receipt_id,
+        "replay_receipt_id": result.replay_receipt_id,
+        "diff": result.diff,
+    }
+
+
 # ─── Sensitivity-label policy (issue #50) ──────────────────────────────────
 #
 # v1 surface: upload a YAML/JSON bundle, list bundles, set the active

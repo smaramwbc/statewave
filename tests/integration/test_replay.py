@@ -267,3 +267,48 @@ async def test_invalid_snapshot_yaml_returns_422(
 async def test_replay_404_for_unknown_receipt(client: AsyncClient):
     r = await client.post(f"/v1/receipts/{uuid.uuid4().hex[:26].upper()}/replay")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Admin replay shim (v0.9 #160 admin-app prep)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_admin_replay_shim_returns_same_shape(client: AsyncClient, subject_id: str):
+    """`POST /admin/receipts/{id}/replay` mirrors the public endpoint
+    so the admin app can call replay through the `/admin/*`-only proxy
+    allowlist without forwarding `/v1/`."""
+    await _seed(client, subject_id)
+    original_id = await _emit_receipt(client, subject_id)
+
+    r = await client.post(f"/admin/receipts/{original_id}/replay")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["original_receipt_id"] == original_id
+    assert body["replay_receipt_id"]
+    assert body["replay_receipt_id"] != original_id
+    assert "diff" in body
+    assert "selected_entries" in body["diff"]
+
+
+@pytest.mark.anyio
+async def test_admin_replay_shim_surfaces_422_codes(
+    client: AsyncClient, subject_id: str, session_factory
+):
+    """Refusal codes round-trip identically through the admin shim."""
+    await _seed(client, subject_id)
+    original_id = await _emit_receipt(client, subject_id)
+    replay_resp = await client.post(f"/v1/receipts/{original_id}/replay")
+    assert replay_resp.status_code == 200
+    replay_id = replay_resp.json()["replay_receipt_id"]
+
+    r = await client.post(f"/admin/receipts/{replay_id}/replay")
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "unreplayable.nested_replay"
+
+
+@pytest.mark.anyio
+async def test_admin_replay_shim_404(client: AsyncClient):
+    r = await client.post(f"/admin/receipts/{uuid.uuid4().hex[:26].upper()}/replay")
+    assert r.status_code == 404

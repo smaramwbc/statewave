@@ -116,9 +116,7 @@ class Settings(BaseSettings):
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError as exc:
-                raise ValueError(
-                    f"STATEWAVE_KIND_TTL_DAYS is not valid JSON: {exc.msg}"
-                ) from exc
+                raise ValueError(f"STATEWAVE_KIND_TTL_DAYS is not valid JSON: {exc.msg}") from exc
             if not isinstance(parsed, dict):
                 raise ValueError(
                     "STATEWAVE_KIND_TTL_DAYS must decode to a JSON object "
@@ -262,6 +260,30 @@ class Settings(BaseSettings):
                 )
             clean[key_id] = key_bytes
         return clean
+
+    # Auto-labeling (v0.9, issue #158) — heuristic detectors that stamp
+    # advisory `suggested_labels` on memories at compile time. OFF by default
+    # so the v0.9 → existing-tenant upgrade is a no-op until an operator opts
+    # in. When enabled, the pipeline runs after MemoryRow construction and
+    # writes to `memories.suggested_labels` only. The policy evaluator does
+    # not read this column; promotion into authoritative `sensitivity_labels`
+    # is a deliberate, audited operator action (admin UI / SDK call).
+    #
+    # `auto_labeling_provider` is forward-looking: in v0.9 the only supported
+    # value is `heuristic` (regex + Luhn detectors). Future LLM-based
+    # classifiers land as new provider strings without an API break.
+    auto_labeling_enabled: bool = False
+    auto_labeling_provider: str = "heuristic"  # "heuristic" only in v0.9
+
+    @field_validator("auto_labeling_provider")
+    @classmethod
+    def _validate_auto_labeling_provider(cls, value: str) -> str:
+        allowed = {"heuristic"}
+        if value not in allowed:
+            raise ValueError(
+                f"STATEWAVE_AUTO_LABELING_PROVIDER must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
     # Multi-tenant (empty = single-tenant mode)
     tenant_header: str = "X-Tenant-ID"

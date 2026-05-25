@@ -93,6 +93,35 @@ class MemoryListResponse(BaseModel):
     offset: int
 
 
+class SuggestedLabelMemoryItem(BaseModel):
+    """Memory row enriched with its auto-labeling suggestions.
+
+    Surface for the admin review endpoint that powers the
+    "promote suggested labels into authoritative sensitivity_labels"
+    operator workflow (v0.9, issue #158). `sensitivity_labels` is
+    included so the UI can show what's already authoritative next to
+    what the detectors propose adding.
+    """
+
+    id: str
+    subject_id: str
+    tenant_id: str | None
+    kind: str
+    content: str
+    summary: str
+    suggested_labels: list[str]
+    sensitivity_labels: list[str]
+    created_at: str
+
+
+class SuggestedLabelsListResponse(BaseModel):
+    memories: list[SuggestedLabelMemoryItem]
+    total: int
+    limit: int
+    offset: int
+    catalogue: list[dict[str, str]]
+
+
 class EpisodeListItem(BaseModel):
     id: str
     session_id: str | None
@@ -828,6 +857,92 @@ async def list_citing_memories(
         )
 
 
+# ─── Suggested-label review (auto-labeling, v0.9 #158) ───────────────────────
+
+
+@router.get(
+    "/memories/with-suggested-labels",
+    response_model=SuggestedLabelsListResponse,
+)
+async def list_memories_with_suggested_labels(
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+    subject_id: str | None = Query(None, description="Filter by subject"),
+    label: str | None = Query(
+        None,
+        description=(
+            "Filter to memories carrying this specific suggested label "
+            "(e.g. `pii.email`). When omitted, lists every memory with at "
+            "least one suggestion."
+        ),
+    ),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """List memories with at least one auto-derived suggested label.
+
+    Read-only review surface for the v0.9 auto-labeling pipeline (#158).
+    The endpoint exists so operators can audit detector output and
+    decide which suggestions to promote into authoritative
+    ``sensitivity_labels``. v0.9 ships review only — promotion lands
+    in a follow-up PR; the SDK / direct DB write path is the
+    interim escape hatch.
+
+    The endpoint does not require the feature flag to be enabled: an
+    operator can flip the flag off, leave existing suggestions in
+    place, and still see them here to triage.
+    """
+    from sqlalchemy import func, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+    from server.services.auto_labeling.detectors import label_catalogue
+
+    async with engine_module.get_session_factory()() as session:
+        # `array_length(col, 1) IS NOT NULL` is the cheap pg-native way to
+        # filter to "non-empty array". The GIN index from migration 0022
+        # makes the `&&`-overlap path that follows a millisecond hop.
+        base = select(MemoryRow).where(func.array_length(MemoryRow.suggested_labels, 1).isnot(None))
+        if tenant_id:
+            base = base.where(MemoryRow.tenant_id == tenant_id)
+        if subject_id:
+            base = base.where(MemoryRow.subject_id == subject_id)
+        if label:
+            # Use the GIN-indexed overlap operator so a label filter
+            # stays cheap even on millions of memories. We pass a
+            # one-element list because `overlap` accepts an array.
+            base = base.where(MemoryRow.suggested_labels.overlap([label]))
+
+        count_stmt = select(func.count()).select_from(base.subquery())
+        total = await session.scalar(count_stmt) or 0
+
+        stmt = base.order_by(MemoryRow.created_at.desc()).limit(limit).offset(offset)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+        memories = [
+            SuggestedLabelMemoryItem(
+                id=str(m.id),
+                subject_id=m.subject_id,
+                tenant_id=m.tenant_id,
+                kind=m.kind,
+                content=m.content,
+                summary=m.summary,
+                suggested_labels=list(m.suggested_labels or []),
+                sensitivity_labels=list(m.sensitivity_labels or []),
+                created_at=m.created_at.isoformat(),
+            )
+            for m in rows
+        ]
+
+        return SuggestedLabelsListResponse(
+            memories=memories,
+            total=total,
+            limit=limit,
+            offset=offset,
+            catalogue=label_catalogue(),
+        )
+
+
 # ─── Memory Evolution / Related Memories ─────────────────────────────────────
 
 
@@ -1313,9 +1428,7 @@ async def list_compile_jobs(
 
 @router.delete("/jobs")
 async def purge_compile_jobs(
-    status: str | None = Query(
-        None, description="Filter by terminal status: completed or failed"
-    ),
+    status: str | None = Query(None, description="Filter by terminal status: completed or failed"),
     subject_id: str | None = Query(None, description="Filter by subject"),
     tenant_id: str | None = Query(None, description="Filter by tenant"),
 ):
@@ -1328,9 +1441,7 @@ async def purge_compile_jobs(
     from server.services.compile_jobs_durable import purge_jobs
 
     try:
-        deleted = await purge_jobs(
-            status=status, subject_id=subject_id, tenant_id=tenant_id
-        )
+        deleted = await purge_jobs(status=status, subject_id=subject_id, tenant_id=tenant_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"deleted": deleted}
@@ -1552,11 +1663,7 @@ def _filter_is_empty(f: BulkDeleteFilter) -> bool:
     """
     if f.match_all:
         return False
-    return (
-        not f.subject_id_prefix
-        and f.older_than_days is None
-        and not f.tenant_id
-    )
+    return not f.subject_id_prefix and f.older_than_days is None and not f.tenant_id
 
 
 async def _matching_subjects(
@@ -1577,15 +1684,12 @@ async def _matching_subjects(
     async with engine_module.get_session_factory()() as session:
         # Aggregate per (subject_id, tenant_id) from episodes — this is the
         # authoritative grouping used elsewhere in admin.
-        ep_stmt = (
-            select(
-                EpisodeRow.subject_id,
-                EpisodeRow.tenant_id,
-                func.count().label("ep_count"),
-                func.max(EpisodeRow.created_at).label("last_episode_at"),
-            )
-            .group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
-        )
+        ep_stmt = select(
+            EpisodeRow.subject_id,
+            EpisodeRow.tenant_id,
+            func.count().label("ep_count"),
+            func.max(EpisodeRow.created_at).label("last_episode_at"),
+        ).group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
         if f.subject_id_prefix:
             ep_stmt = ep_stmt.where(EpisodeRow.subject_id.like(f"{f.subject_id_prefix}%"))
         if f.tenant_id:
@@ -1649,12 +1753,8 @@ async def delete_subject_admin(
     from server.db import repositories as repo
 
     async with engine_module.get_session_factory()() as session:
-        ep_count = await repo.delete_episodes_by_subject(
-            session, subject_id, tenant_id=tenant_id
-        )
-        mem_count = await repo.delete_memories_by_subject(
-            session, subject_id, tenant_id=tenant_id
-        )
+        ep_count = await repo.delete_episodes_by_subject(session, subject_id, tenant_id=tenant_id)
+        mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
         await session.commit()
 
     if ep_count == 0 and mem_count == 0:
@@ -1869,7 +1969,6 @@ async def trigger_cleanup(
 
     count = await cleanup_ephemeral_subjects(prefix=prefix, max_age_hours=max_age_hours)
     return {"subjects_cleaned": count}
-
 
 
 # ─── Memory portability ───
@@ -2292,9 +2391,7 @@ async def upload_policy_bundle(req: UploadPolicyBundleRequest):
         if req.tenant_id is None:
             existing_stmt = existing_stmt.where(PolicyBundleRow.tenant_id.is_(None))
         else:
-            existing_stmt = existing_stmt.where(
-                PolicyBundleRow.tenant_id == req.tenant_id
-            )
+            existing_stmt = existing_stmt.where(PolicyBundleRow.tenant_id == req.tenant_id)
         existing = await session.execute(existing_stmt)
         existing_row = existing.scalar_one_or_none()
         if existing_row is None:
@@ -2317,9 +2414,7 @@ async def upload_policy_bundle(req: UploadPolicyBundleRequest):
             if req.tenant_id is None:
                 scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id.is_(None))
             else:
-                scope_stmt = scope_stmt.where(
-                    PolicyBundleRow.tenant_id == req.tenant_id
-                )
+                scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id == req.tenant_id)
             scope_stmt = scope_stmt.values(active=False)
             await session.execute(scope_stmt)
             # Activate ONLY the row for this (tenant, hash) — without
@@ -2330,13 +2425,9 @@ async def upload_policy_bundle(req: UploadPolicyBundleRequest):
                 PolicyBundleRow.bundle_hash == bundle.bundle_hash
             )
             if req.tenant_id is None:
-                activate_stmt = activate_stmt.where(
-                    PolicyBundleRow.tenant_id.is_(None)
-                )
+                activate_stmt = activate_stmt.where(PolicyBundleRow.tenant_id.is_(None))
             else:
-                activate_stmt = activate_stmt.where(
-                    PolicyBundleRow.tenant_id == req.tenant_id
-                )
+                activate_stmt = activate_stmt.where(PolicyBundleRow.tenant_id == req.tenant_id)
             await session.execute(activate_stmt.values(active=True))
             await session.commit()
             policy_service.invalidate_bundle_cache()
@@ -2395,9 +2486,7 @@ async def get_policy_bundle(bundle_hash: str, tenant_id: str | None = Query(None
     from server.services import policy as policy_service
 
     async with engine_module.get_session_factory()() as session:
-        stmt = select(PolicyBundleRow).where(
-            PolicyBundleRow.bundle_hash == bundle_hash
-        )
+        stmt = select(PolicyBundleRow).where(PolicyBundleRow.bundle_hash == bundle_hash)
         if tenant_id is not None:
             stmt = stmt.where(PolicyBundleRow.tenant_id == tenant_id)
             result = await session.execute(stmt)
@@ -2469,15 +2558,11 @@ async def activate_policy_bundle(req: ActivateBundleRequest):
     from server.services import policy as policy_service
 
     async with engine_module.get_session_factory()() as session:
-        target_stmt = select(PolicyBundleRow).where(
-            PolicyBundleRow.bundle_hash == req.bundle_hash
-        )
+        target_stmt = select(PolicyBundleRow).where(PolicyBundleRow.bundle_hash == req.bundle_hash)
         if req.tenant_id is None:
             target_stmt = target_stmt.where(PolicyBundleRow.tenant_id.is_(None))
         else:
-            target_stmt = target_stmt.where(
-                PolicyBundleRow.tenant_id == req.tenant_id
-            )
+            target_stmt = target_stmt.where(PolicyBundleRow.tenant_id == req.tenant_id)
         result = await session.execute(target_stmt)
         target = result.scalar_one_or_none()
         if target is None:
@@ -2487,9 +2572,7 @@ async def activate_policy_bundle(req: ActivateBundleRequest):
         # bundle, same tenant). Using target.id rather than
         # bundle_hash here is the load-bearing precision: we want to
         # leave the same-hash-different-tenant rows untouched.
-        scope_stmt = sa_update(PolicyBundleRow).where(
-            PolicyBundleRow.id != target.id
-        )
+        scope_stmt = sa_update(PolicyBundleRow).where(PolicyBundleRow.id != target.id)
         if target.tenant_id is None:
             scope_stmt = scope_stmt.where(PolicyBundleRow.tenant_id.is_(None))
         else:
@@ -2497,9 +2580,7 @@ async def activate_policy_bundle(req: ActivateBundleRequest):
         scope_stmt = scope_stmt.values(active=False)
         await session.execute(scope_stmt)
         await session.execute(
-            sa_update(PolicyBundleRow)
-            .where(PolicyBundleRow.id == target.id)
-            .values(active=True)
+            sa_update(PolicyBundleRow).where(PolicyBundleRow.id == target.id).values(active=True)
         )
         await session.commit()
 
@@ -2579,9 +2660,7 @@ async def admin_set_memory_labels(
     from server.db import engine as engine_module
     from server.db.tables import MemoryRow
 
-    normalized = sorted(
-        {lbl.strip().lower() for lbl in req.sensitivity_labels if lbl.strip()}
-    )
+    normalized = sorted({lbl.strip().lower() for lbl in req.sensitivity_labels if lbl.strip()})
     if len(normalized) > 32:
         raise HTTPException(status_code=400, detail="too many labels (max 32)")
 
@@ -2716,8 +2795,7 @@ async def patch_tenant_config(tenant_id: str, patch: TenantConfigPatch):
                 raise HTTPException(
                     status_code=409,
                     detail=(
-                        f"version mismatch: expected {expected_version}, "
-                        f"got 0 (no row exists yet)"
+                        f"version mismatch: expected {expected_version}, got 0 (no row exists yet)"
                     ),
                 )
             new_config = dict(incoming)
@@ -2730,10 +2808,7 @@ async def patch_tenant_config(tenant_id: str, patch: TenantConfigPatch):
             await session.commit()
             await session.refresh(row)
         else:
-            if (
-                expected_version is not None
-                and expected_version != existing.version
-            ):
+            if expected_version is not None and expected_version != existing.version:
                 raise HTTPException(
                     status_code=409,
                     detail=(

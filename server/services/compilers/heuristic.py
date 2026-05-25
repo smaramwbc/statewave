@@ -16,6 +16,7 @@ from typing import Sequence
 
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
+from server.services.auto_labeling import apply_suggestions
 from server.services.memory_ttl import compute_valid_to
 
 
@@ -26,6 +27,12 @@ class HeuristicCompiler:
         memories: list[MemoryRow] = []
         for ep in episodes:
             memories.extend(self._compile_episode(ep))
+        # Auto-labeling runs post-construction: detectors only need
+        # `content`, and running them once at the end keeps a single
+        # apply path that's easy to test in isolation. Gated on the
+        # global flag so a v0.9 upgrade is a no-op for existing tenants.
+        if settings.auto_labeling_enabled and memories:
+            apply_suggestions(memories)
         return memories
 
     def _compile_episode(self, ep: EpisodeRow) -> list[MemoryRow]:

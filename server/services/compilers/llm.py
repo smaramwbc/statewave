@@ -30,6 +30,7 @@ import structlog
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
+from server.services.auto_labeling import apply_suggestions
 from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
 
@@ -159,6 +160,13 @@ class LLMCompiler:
         for result in batch_results:
             memories.extend(result)
 
+        # Auto-labeling runs post-extraction so a single code path stamps
+        # `suggested_labels` regardless of whether the LLM batch was a
+        # single or multi-episode call. Gated globally — a v0.9 upgrade
+        # is a no-op for existing tenants until they opt in.
+        if settings.auto_labeling_enabled and memories:
+            apply_suggestions(memories)
+
         logger.info("compile_complete", total_memories=len(memories))
         return memories
 
@@ -212,9 +220,7 @@ class LLMCompiler:
             episode_blocks = []
             for i, (ep, text) in enumerate(batch):
                 ref_label = episode_valid_from(ep).strftime("%Y-%m-%d (%A)")
-                episode_blocks.append(
-                    f"--- Episode {i} | recorded {ref_label} ---\n{text}"
-                )
+                episode_blocks.append(f"--- Episode {i} | recorded {ref_label} ---\n{text}")
             combined_text = "\n\n".join(episode_blocks)
 
             try:

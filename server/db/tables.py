@@ -80,6 +80,15 @@ class MemoryRow(Base):
     sensitivity_labels: Mapped[list[str]] = mapped_column(
         ARRAY(String()), nullable=False, default=list
     )
+    # Heuristic-derived label hints (issue #158). Populated automatically by
+    # the auto-labeling pipeline at ingest time. ORTHOGONAL to sensitivity_labels:
+    # the policy evaluator does not read this column and no destructive behaviour
+    # (retention, redaction, refusal) keys off it. It exists so operators can
+    # surface and promote suggestions into authoritative labels deliberately.
+    # See migration 0022 for the GIN index backing the admin review endpoint.
+    suggested_labels: Mapped[list[str]] = mapped_column(
+        ARRAY(String()), nullable=False, default=list
+    )
     # Stored as pgvector `vector(EMBEDDING_DIMENSIONS)` since migration 0013.
     # Reads/writes happen as `list[float]` — the pgvector SQLAlchemy adapter
     # serializes/deserializes transparently. Cosine search uses the SQL `<=>`
@@ -242,12 +251,8 @@ class ReceiptRow(Base):
     # Both nullable: pre-v0.9 receipts and unsigned-by-policy v0.9
     # receipts leave them null; the verifier reports `valid: null` /
     # `reason: "no_signature"` for those.
-    receipt_signature_key_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
-    receipt_signature_algorithm: Mapped[str | None] = mapped_column(
-        String(64), nullable=True
-    )
+    receipt_signature_key_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    receipt_signature_algorithm: Mapped[str | None] = mapped_column(String(64), nullable=True)
     body: Mapped[dict] = mapped_column(JSONB, nullable=False)
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -257,12 +262,8 @@ class ReceiptRow(Base):
     # retention worker (`cleanup_expired_receipts`) transitions rows to
     # `tombstoned` once `created_at + tenant.receipt_retention_days` has
     # passed. Soft-delete only — the row persists for audit lookup.
-    status: Mapped[str] = mapped_column(
-        String(32), nullable=False, server_default="active"
-    )
-    tombstoned_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="active")
+    tombstoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index(
@@ -319,9 +320,7 @@ class PolicyBundleRow(Base):
 
     __tablename__ = "policy_bundles"
 
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     bundle_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     yaml_content: Mapped[str] = mapped_column(Text, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -354,12 +353,8 @@ class QueryEmbeddingCacheRow(Base):
 
     text_key: Mapped[str] = mapped_column(Text, primary_key=True)
     model: Mapped[str] = mapped_column(Text, primary_key=True)
-    embedding: Mapped[list[float]] = mapped_column(
-        Vector(EMBEDDING_DIMENSIONS), nullable=False
-    )
-    expires_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False
-    )
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

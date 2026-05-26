@@ -36,7 +36,10 @@ extension without a schema break.
 
 1. **Emission** — every v0.9+ receipt carries
    `policy_snapshot`, a JSONB envelope embedded both inside the
-   signed body and into a denormalised column for fast indexing:
+   signed body and into a denormalised column for fast indexing.
+   This applies to both retrieval receipts (`/v1/context`) and
+   handoff receipts (`/v1/handoff`) — both paths are replayable
+   symmetrically.
 
    ```json
    {

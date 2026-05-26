@@ -381,6 +381,17 @@ async def _maybe_emit_handoff_receipt(
         )
 
     receipt_id = receipts_service.new_ulid()
+    # v0.9 #159 — stamp the same policy snapshot the /v1/context path
+    # writes so handoff receipts are replayable by /v1/receipts/{id}/replay
+    # without a separate code path. Empty-bundle snapshots (null inner
+    # pair) replay against the no-policy fallback. The fix landed
+    # after #159 shipped — pre-fix handoff receipts will return 422
+    # ``unreplayable.missing_policy_snapshot``, same contract as
+    # pre-v0.9 retrieval receipts.
+    policy_snapshot = receipts_service.build_policy_snapshot(
+        bundle_hash=policy_bundle.bundle_hash if policy_bundle else None,
+        bundle_yaml=policy_bundle.yaml_content if policy_bundle else None,
+    )
     body = receipts_service.build_receipt_body(
         receipt_id=receipt_id,
         mode="retrieval",
@@ -402,6 +413,7 @@ async def _maybe_emit_handoff_receipt(
         filters_skipped=filters_skipped,
         caller_id=caller_id,
         caller_type=caller_type,
+        policy_snapshot=policy_snapshot,
         # v0.9 #161 — same residency stamp as the context path uses;
         # handoff receipts also record where the decision was made.
         region=settings.region,

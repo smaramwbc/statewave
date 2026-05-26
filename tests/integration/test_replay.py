@@ -312,3 +312,106 @@ async def test_admin_replay_shim_surfaces_422_codes(
 async def test_admin_replay_shim_404(client: AsyncClient):
     r = await client.post(f"/admin/receipts/{uuid.uuid4().hex[:26].upper()}/replay")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Handoff receipts carry the snapshot too (post-fix symmetry with retrieval)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_handoff(client: AsyncClient, subject_id: str, session_id: str) -> str:
+    """Record episodes + emit a handoff receipt. Returns the receipt id."""
+    r = await client.post(
+        "/v1/episodes",
+        json={
+            "subject_id": subject_id,
+            "source": "user",
+            "type": "message",
+            "payload": {"text": "system is down, urgent"},
+            "session_id": session_id,
+        },
+    )
+    assert r.status_code == 201, r.text
+    r = await client.post("/v1/memories/compile", json={"subject_id": subject_id})
+    assert r.status_code == 200
+    r = await client.post(
+        "/v1/handoff",
+        json={
+            "subject_id": subject_id,
+            "session_id": session_id,
+            "reason": "escalation",
+            "emit_receipt": True,
+        },
+    )
+    assert r.status_code == 200, r.text
+    receipt_id = r.json().get("receipt_id")
+    assert receipt_id, "handoff did not emit a receipt"
+    return receipt_id
+
+
+@pytest.mark.anyio
+async def test_handoff_receipt_carries_policy_snapshot(
+    client: AsyncClient, subject_id: str, session_factory
+):
+    """The handoff receipt path stamps the same policy_snapshot
+    envelope as the /v1/context path so handoff receipts are
+    replayable. Pre-fix handoff receipts had no snapshot — the
+    replay endpoint refused them with 422; post-fix they replay
+    cleanly."""
+    receipt_id = await _seed_handoff(client, subject_id, "sess-1")
+
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(ReceiptRow).where(ReceiptRow.receipt_id == receipt_id))
+        ).scalar_one()
+
+    # The envelope itself is always present in v0.9+ (null inner pair
+    # when no bundle is active, the YAML when one is).
+    assert row.policy_snapshot is not None
+    assert "bundle_hash" in row.policy_snapshot
+    assert "bundle_yaml" in row.policy_snapshot
+    assert "captured_at" in row.policy_snapshot
+    # Body and column agree (body is signed, column is denormalised).
+    assert row.body.get("policy_snapshot") == row.policy_snapshot
+    # And the task is unambiguously a handoff — we're not accidentally
+    # asserting on a retrieval receipt that happened to land first.
+    assert row.body.get("task", "").startswith("handoff:")
+
+
+@pytest.mark.anyio
+async def test_handoff_receipt_is_replayable(client: AsyncClient, subject_id: str):
+    """Confirm the full loop end-to-end: a handoff receipt replays
+    through POST /v1/receipts/{id}/replay and the response carries
+    the diff envelope. This is the load-bearing test for the fix —
+    it would have failed pre-fix with 422 unreplayable."""
+    receipt_id = await _seed_handoff(client, subject_id, "sess-handoff-replay")
+
+    r = await client.post(f"/v1/receipts/{receipt_id}/replay")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["original_receipt_id"] == receipt_id
+    assert body["replay_receipt_id"]
+    assert body["replay_receipt_id"] != receipt_id
+    # Diff envelope shape, not values — replay semantics are tested
+    # elsewhere; here we only assert symmetry with /v1/context receipts.
+    diff = body["diff"]
+    assert "context_hash" in diff
+    assert "selected_entries" in diff
+    assert "filters_applied" in diff
+
+
+@pytest.mark.anyio
+async def test_handoff_replay_verify_still_works(client: AsyncClient, subject_id: str):
+    """The HMAC verify path covers the canonicalised body. Adding the
+    snapshot to the body must not change whether ``verify`` reports a
+    sensible result. With no signing key configured, the receipt
+    emits unsigned and verify returns ``valid: null, reason: no_signature``
+    — same answer pre- and post-fix."""
+    receipt_id = await _seed_handoff(client, subject_id, "sess-handoff-verify")
+
+    r = await client.get(f"/v1/receipts/{receipt_id}/verify")
+    assert r.status_code == 200
+    body = r.json()
+    # Unsigned in the test fixture (no STATEWAVE_RECEIPT_SIGNING_KEYS).
+    assert body["valid"] is None
+    assert body["reason"] == "no_signature"

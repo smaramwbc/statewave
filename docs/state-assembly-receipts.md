@@ -26,14 +26,14 @@ feature ships with the policy fields present but the policy input
 
 Receipts use a **strict-superset** shape — every field is always
 present, optional fields are nullable. A `mode` discriminator
-(`"retrieval"` in v1, future values reserved for `as_of_replay` and
-`eval_run`) means new assembly modes can extend the schema without a
-union break.
+(`"retrieval"` for `/v1/context` + `/v1/handoff`, `"as_of_replay"`
+for v0.9 replay receipts, future values reserved for `eval_run`)
+means new assembly modes can extend the schema without a union break.
 
 ```yaml
 receipt_id:            # ULID — addressable, chainable
-parent_receipt_id:     # nullable ULID — chains multi-step tasks
-mode:                  # "retrieval" (v1) | reserved future values
+parent_receipt_id:     # nullable ULID — chains multi-step tasks (set on replay receipts)
+mode:                  # "retrieval" | "as_of_replay" | reserved future values
 query_id:              # caller-supplied or generated UUID
 task_id:               # optional, for multi-call tasks
 tenant_id:             # tenant the assembly ran under
@@ -228,12 +228,20 @@ assembly internals:
    `output.context_hash` recomputed from `assembled_context` mismatches
    the stored hash.
 
-## Out of scope for v1
+## Shipped after this doc was written
 
-- Sensitivity-label / policy layer ([#50](https://github.com/smaramwbc/statewave/issues/50)) — receipt fields exist, policy input returns "no opinion".
-- Review-time redaction UI.
-- Receipt-driven replay / time-travel debugging tooling.
-- Cross-tenant receipt aggregation / fleet-wide audit views.
+- **Sensitivity-label / policy layer** ([#50](https://github.com/smaramwbc/statewave/issues/50)) — shipped v0.8. `receipt.policy.filters_applied/skipped` populates from the active bundle; `policy_mode` toggles `log_only` vs `enforce` per tenant.
+- **HMAC signing** ([#157](https://github.com/smaramwbc/statewave/issues/157)) — shipped v0.9. See HMAC signing section above.
+- **Scheduled retention worker** ([#156](https://github.com/smaramwbc/statewave/issues/156)) — shipped v0.9. `cleanup_expired_receipts` tombstones rows past `tenant_configs.receipt_retention_days`; partial index keeps it cheap.
+- **Receipt-driven replay** ([#159](https://github.com/smaramwbc/statewave/issues/159)) — shipped v0.9. `mode: "as_of_replay"` receipts emitted by `POST /v1/receipts/{id}/replay`; design + diff envelope in [`docs/replay.md`](replay.md).
+- **Auto-labeling** ([#158](https://github.com/smaramwbc/statewave/issues/158)) — shipped v0.9. Heuristic detectors stamp advisory `suggested_labels` on memories; the policy evaluator never reads them. Operator review + promote via the admin app (#160). See [`docs/auto-labeling.md`](auto-labeling.md).
+- **Per-tenant residency** ([#161](https://github.com/smaramwbc/statewave/issues/161)) — shipped v0.9. `STATEWAVE_REGION` + `tenant_configs.config.region` enforced at the application layer. See [`docs/residency.md`](residency.md).
+
+## Still out of scope (v0.9)
+
+- Review-time redaction UI for receipts.
+- Cross-tenant receipt aggregation / fleet-wide audit views. Single-tenant audit ships; federated cross-region audit is an explicit future surface, not implicit access (see `docs/residency.md`).
 - KMS / Vault-backed signing (architecture is compatible — a future PR swaps the key resolver behind the same `receipt_signing_keys` settings field; v0.9 reads keys from env / secret-manager mount).
 - Asymmetric signatures (the `algorithm` field reserves space for `ed25519-canonical-v1` etc.; v0.9 ships HMAC only).
 - Bulk re-signing of pre-v0.9 receipts (forward-only signing — they verify as `no_signature`).
+- Byte-for-byte historical replay (memory snapshots). v0.9 ships `current code + original policy`; the data model leaves room for memory snapshots without a schema break.

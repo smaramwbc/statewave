@@ -60,9 +60,9 @@ The runtime essentials. [Full capability inventory →](docs/capabilities.md)
 - **Provenance** — every memory traces back to its source episodes; receipts are content-hashed
 - **Pluggable compilers** — heuristic (regex, fully local) or LLM (any [LiteLLM](https://github.com/BerriAI/litellm) provider)
 - **Subject-organised** — `user:`, `repo:`, `account:`, or any entity prefix you choose
-- **State-assembly receipts** — immutable, ULID-addressable record of which memories influenced each bundle
-- **Sensitivity labels + policy engine** — declarative YAML policies (`deny` / `redact`) over per-memory tags (`pii`, `financial`, `secret`, …) with `log_only` and `enforce` modes
-- **Multi-tenant** — query-scoped data isolation via `X-Tenant-ID` header, per-tenant config and policies
+- **State-assembly receipts** — immutable, ULID-addressable record of which memories influenced each bundle. HMAC-SHA256 signature (v0.9), embedded policy snapshot (v0.9), and `POST /v1/receipts/{id}/replay` for "what would today's code say with the original rules?"
+- **Sensitivity labels + policy engine** — declarative YAML policies (`deny` / `redact`) over per-memory tags (`pii`, `financial`, `secret`, …) with `log_only` and `enforce` modes. v0.9 adds advisory `suggested_labels` from heuristic detectors (pii.email/phone, financial.card, secret.token) with operator review + explicit promotion via the admin app
+- **Multi-tenant** — query-scoped data isolation via `X-Tenant-ID` header, per-tenant config and policies. v0.9 adds per-tenant **region pinning** for residency: requests for a tenant pinned to `eu` are 403'd at any process running in another region
 - **Self-hosted on Postgres + pgvector** — no vendor lock-in; runs on your infrastructure
 
 ## Why Statewave
@@ -257,6 +257,9 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_WEBHOOK_TIMEOUT` | `5.0` | Webhook HTTP timeout in seconds |
 | `STATEWAVE_WEBHOOK_EVENTS` | — | Comma-separated event-type allowlist (empty = deliver every event) |
 | `STATEWAVE_RECEIPT_SIGNING_KEYS` | — | JSON `{"<key_id>": "<base64>"}` map of HMAC keys for receipt signing (≥32 bytes each). Never persisted to the DB; per-tenant active key id set via `tenant_configs.config.receipt_signing_key_id`. |
+| `STATEWAVE_AUTO_LABELING_ENABLED` | `false` | Run heuristic detectors at compile time and stamp advisory `suggested_labels` on memories (v0.9). See [`docs/auto-labeling.md`](docs/auto-labeling.md). |
+| `STATEWAVE_AUTO_LABELING_PROVIDER` | `heuristic` | Detector provider. Only `heuristic` is valid in v0.9; the switch is reserved for future LLM-based classifiers. |
+| `STATEWAVE_REGION` | — | Region this server process is running in. When set, requests for tenants pinned to a different region are refused with HTTP 403 `residency.mismatch` (v0.9). Empty = single-region mode, residency disabled. See [`docs/residency.md`](docs/residency.md). |
 | `STATEWAVE_TENANT_HEADER` | `X-Tenant-ID` | Header for multi-tenant isolation |
 | `STATEWAVE_REQUIRE_TENANT` | `false` | Reject requests without tenant header |
 | `STATEWAVE_DEFAULT_MAX_CONTEXT_TOKENS` | `4000` | Default token budget for context assembly |
@@ -281,10 +284,12 @@ pytest tests/ -v
 Statewave is in active development (v0.9.0). Honest status:
 
 - **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
-- **Multi-tenant is app-layer** — query-scoped data isolation (v0.5) + per-tenant config / policy bundles / receipts (v0.8) layered on top, but no Postgres RLS yet
-- **PostgreSQL required** — no alternative storage backends
+- **Multi-tenant is app-layer** — query-scoped data isolation (v0.5) + per-tenant config / policy bundles / receipts (v0.8) + HMAC-signed audit + tenant region pin (v0.9), but no Postgres RLS yet
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them
-- **Policy retention purge worker** — `tenant_configs.receipt_retention_days` is read by the config surface but no scheduled worker deletes expired receipts yet; planned for v0.9
+- **No admin-action identity yet** — the v0.9 auto-labeling promote endpoint stamps `promoted_at` + `labels` on every promotion, but `promoted_by` is `null` until an admin-identity layer ships
+- **No visual policy editor** — policy bundles are authored as YAML in git and uploaded through the admin workflow; a no-YAML form-based editor is deferred to a future admin release
+- **No federated cross-region audit** — v0.9 ships strict per-region isolation by design; operators running multiple regions cannot search receipts or memories across regions from a single console yet. Federated audit should be added explicitly later, not through implicit cross-region access
+- **Replay is "current code + original policy"** — v0.9 receipt replay re-runs the original retrieval against today's memories using the original policy bundle (frozen on every v0.9+ receipt). Byte-for-byte historical reproduction needs memory snapshots, which are deferred
 
 See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) for what's being fixed and when.
 
@@ -305,6 +310,10 @@ See the [roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.
 | [Deployment sizing guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/sizing.md) | Hardware profiles by tier (local → enterprise) and topology patterns |
 | [Capacity planning checklist](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/capacity-planning.md) | Diagnostic flow + tuning order when load grows |
 | [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md) | Production deployment guidance |
+| [State-assembly receipts](docs/state-assembly-receipts.md) | Receipt schema, HMAC signing, verify semantics |
+| [Receipt replay](docs/replay.md) | v0.9 — re-run a historical retrieval against current memories + original policy |
+| [Auto-labeling](docs/auto-labeling.md) | v0.9 — heuristic detectors + review/promote workflow |
+| [Residency](docs/residency.md) | v0.9 — per-region deployment + tenant pinning + ops runbook |
 | [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) | What's next |
 | [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) | Release history |
 

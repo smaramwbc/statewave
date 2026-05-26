@@ -17,6 +17,7 @@ from server.core.logging import setup_logging
 from server.core.middleware import RequestIDMiddleware
 from server.core.auth import APIKeyMiddleware
 from server.core.ratelimit import RateLimitMiddleware
+from server.core.residency_middleware import ResidencyMiddleware
 from server.core.tenant import TenantMiddleware
 from server.core.tracing import setup_tracing
 
@@ -170,8 +171,13 @@ def create_app() -> FastAPI:
 
     # -- Middleware -----------------------------------------------------------
     # Starlette executes add_middleware in REVERSE order (last-added = outermost).
-    # Desired execution: CORS → RequestID → Auth → RateLimit → Tenant → App
+    # Desired execution: CORS → RequestID → Auth → RateLimit → Tenant → Residency → App
     # So we register innermost first:
+    # Residency runs AFTER Tenant resolves the id so the check has
+    # something to compare against. Single-region deployments
+    # (settings.region is None) make the middleware a zero-cost
+    # pass-through. See server/services/residency.py.
+    app.add_middleware(ResidencyMiddleware)
     app.add_middleware(
         TenantMiddleware, header=settings.tenant_header, require=settings.require_tenant
     )

@@ -2979,9 +2979,30 @@ async def patch_tenant_config(tenant_id: str, patch: TenantConfigPatch):
     # for a known field is also "don't change it" (consistent with
     # the doc strings).
     incoming = patch.model_dump(exclude_none=True)
-    # `expected_version` is a request-only concurrency token, not a
-    # config key. Pop it before it leaks into the JSONB.
+    # `expected_version` and `force_region_pin` are request-only
+    # control fields, not config keys. Pop them before they leak
+    # into the JSONB blob.
     expected_version = incoming.pop("expected_version", None)
+    force_region_pin = incoming.pop("force_region_pin", False)
+
+    # Region-pin safety check (v0.9 #161). Refuse a pin that would
+    # immediately lock the tenant out of this deployment.
+    region_value = incoming.get("region")
+    if region_value is not None:
+        from server.services.residency import validate_region_pin
+
+        refusal = validate_region_pin(
+            proposed_region=region_value,
+            server_region=settings.region,
+        )
+        if refusal is not None and not force_region_pin:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "residency.invalid_pin",
+                    "message": refusal,
+                },
+            )
 
     async with engine_module.get_session_factory()() as session:
         result = await session.execute(

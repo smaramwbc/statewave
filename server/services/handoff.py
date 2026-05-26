@@ -65,9 +65,7 @@ async def assemble_handoff(
     # through the same policy gate as /v1/context. The active bundle is
     # the same one /v1/context resolves; log_only vs enforce is the same
     # per-tenant flag.
-    tenant_config = await receipts_service.load_tenant_receipt_config(
-        session, tenant_id
-    )
+    tenant_config = await receipts_service.load_tenant_receipt_config(session, tenant_id)
     policy_mode = (tenant_config or {}).get("policy_mode", "log_only")
     policy_enforce = policy_mode == "enforce"
     active_bundle = await policy_service.resolve_active_bundle(session, tenant_id)
@@ -86,9 +84,7 @@ async def assemble_handoff(
         if decision.action != "allow":
             policy_decisions[row.id] = decision
     if policy_enforce and policy_decisions:
-        fact_rows, _ = policy_service.apply_decisions(
-            fact_rows, policy_decisions, enforce=True
-        )
+        fact_rows, _ = policy_service.apply_decisions(fact_rows, policy_decisions, enforce=True)
 
     # -- Key facts ----------------------------------------------------------
     key_facts = [row.content for row in fact_rows if row.status == "active"]
@@ -342,9 +338,7 @@ async def _maybe_emit_handoff_receipt(
     `handoff:{reason}` string so audit dashboards can filter handoffs
     cleanly from regular retrievals."""
     if tenant_config is None:
-        tenant_config = await receipts_service.load_tenant_receipt_config(
-            session, tenant_id
-        )
+        tenant_config = await receipts_service.load_tenant_receipt_config(session, tenant_id)
     decision = receipts_service.decide_emission(
         request_flag=emit_receipt,
         tenant_config=tenant_config,
@@ -353,14 +347,10 @@ async def _maybe_emit_handoff_receipt(
     if not decision.emit:
         return None, False
 
-    context_hash, context_size_bytes = receipts_service.canonicalize_context(
-        handoff_notes
-    )
+    context_hash, context_size_bytes = receipts_service.canonicalize_context(handoff_notes)
     policy_decisions = policy_decisions or {}
     filters_applied = policy_service.build_filters_applied(policy_decisions)
-    filters_skipped = policy_service.build_filters_skipped(
-        policy_decisions, policy_bundle
-    )
+    filters_skipped = policy_service.build_filters_skipped(policy_decisions, policy_bundle)
 
     rank = 0
     selected_memories = []
@@ -412,6 +402,9 @@ async def _maybe_emit_handoff_receipt(
         filters_skipped=filters_skipped,
         caller_id=caller_id,
         caller_type=caller_type,
+        # v0.9 #161 — same residency stamp as the context path uses;
+        # handoff receipts also record where the decision was made.
+        region=settings.region,
     )
     written_id = await receipts_service.write_receipt(
         session, receipt_body=body, as_of=as_of, tenant_config=tenant_config

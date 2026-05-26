@@ -833,6 +833,10 @@ async def _maybe_emit_receipt(
         caller_id=caller_id,
         caller_type=caller_type,
         policy_snapshot=policy_snapshot,
+        # v0.9 #161 — stamp the local region on every emitted receipt
+        # so the audit trail records *where* the decision was made,
+        # not just *what* it was. None in single-region deployments.
+        region=settings.region,
     )
     written_id = await receipts_service.write_receipt(
         session, receipt_body=body, as_of=as_of, tenant_config=tenant_config

@@ -227,6 +227,32 @@ class TenantConfigPatch(BaseModel):
             "enforcement non-bypassable."
         ),
     )
+    region: str | None = Field(
+        None,
+        max_length=64,
+        description=(
+            "Data-residency pin (v0.9 #161). When set, requests for "
+            "this tenant only run in the matching region — a process "
+            "with STATEWAVE_REGION differing from this value refuses "
+            "the request with HTTP 403 residency.mismatch. `None` "
+            "(the default) leaves the tenant unpinned: it runs in "
+            "any region. The admin endpoint refuses pinning a tenant "
+            "to a region this server doesn't serve (would lock the "
+            "tenant out immediately); patch from a server in the "
+            "target region instead."
+        ),
+    )
+    force_region_pin: bool | None = Field(
+        None,
+        description=(
+            "Bypass the safety check that refuses pinning this tenant "
+            "to a region this server doesn't serve. Use only for "
+            "scripted bulk-config migrations executed via a "
+            "single-region orchestrator (set STATEWAVE_REGION=None on "
+            "the orchestrator). Has no effect on the value written; "
+            "only suppresses the validation refusal."
+        ),
+    )
     expected_version: int | None = Field(
         None,
         ge=0,

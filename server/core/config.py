@@ -289,6 +289,41 @@ class Settings(BaseSettings):
     tenant_header: str = "X-Tenant-ID"
     require_tenant: bool = False
 
+    # Data residency (v0.9, issue #161) — per-region deployment model.
+    #
+    # `region` declares which region THIS server process is running in
+    # (e.g. "eu", "us", "ap"). The residency enforcement layer hard-
+    # checks every tenant-scoped request against the tenant's pinned
+    # region (`tenant_configs.config.region`): a request for a tenant
+    # pinned to "us" arriving at a process with STATEWAVE_REGION="eu"
+    # is rejected with HTTP 403 / `residency.mismatch`.
+    #
+    # Default `None` is single-region mode: no checks, no stamping.
+    # Set this whenever you operate >1 region so the application
+    # enforces residency at the request boundary instead of relying
+    # on DNS / load-balancer hints (which can be misrouted).
+    #
+    # Naming is up to the operator; we recommend short lowercase
+    # identifiers ("eu", "us-east", "ap-south-1") so the value is
+    # grep-friendly across logs.
+    region: str | None = None
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        s = value.strip()
+        if not s:
+            return None
+        # Keep the value tight so a leading-space typo doesn't silently
+        # produce two distinct regions in audit logs.
+        if s != value:
+            raise ValueError("STATEWAVE_REGION must not have leading/trailing whitespace")
+        if len(s) > 64:
+            raise ValueError("STATEWAVE_REGION must be ≤64 characters")
+        return s
+
     # Migration safety
     strict_schema: bool = False  # if True, refuse to start on schema mismatch
 

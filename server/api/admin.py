@@ -84,6 +84,13 @@ class MemoryListItem(BaseModel):
     valid_from: str
     valid_to: str | None
     created_at: str
+    # Governance fields (v0.9): exposed on subject-scoped listings so the
+    # admin "open subject → view memories" flow can show labels in one
+    # place — both already-authoritative and detector-suggested.
+    # Empty list is the documented default; the policy evaluator reads
+    # only ``sensitivity_labels`` so surfacing them here is non-destructive.
+    sensitivity_labels: list[str]
+    suggested_labels: list[str]
 
 
 class MemoryListResponse(BaseModel):
@@ -706,6 +713,8 @@ async def list_subject_memories(
                 valid_from=m.valid_from.isoformat(),
                 valid_to=m.valid_to.isoformat() if m.valid_to else None,
                 created_at=m.created_at.isoformat(),
+                sensitivity_labels=list(m.sensitivity_labels or []),
+                suggested_labels=list(m.suggested_labels or []),
             )
             for m in rows
         ]

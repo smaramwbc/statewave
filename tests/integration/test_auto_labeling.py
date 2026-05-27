@@ -503,3 +503,70 @@ async def test_promote_labels_appends_subsequent_audit_entries(
     assert promotions[0]["promoted_at"] <= promotions[1]["promoted_at"]
     assert set(row.sensitivity_labels) == {"pii.email", "pii.phone"}
     assert row.suggested_labels == []
+
+
+# ---------------------------------------------------------------------------
+# Subject-scoped memory listing — labels exposed alongside the rest of the
+# memory shape so the "open subject -> view memories" admin flow can show
+# both authoritative and suggested labels in one place (v0.9.4 #B / smoke
+# finding: the listing previously omitted both fields, fragmenting the
+# admin governance review path).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_subject_memory_listing_includes_label_fields_after_suggestion(
+    client: AsyncClient, session_factory
+):
+    """A memory carrying suggested_labels must surface both label arrays
+    on GET /admin/subjects/{id}/memories — not only on the dedicated
+    /admin/memories/with-suggested-labels review endpoint."""
+    s = f"labels-list-{uuid.uuid4().hex[:8]}"
+    await _insert_memory_with_suggested(
+        session_factory,
+        subject_id=s,
+        tenant_id=None,
+        suggested=["pii.email", "pii.phone"],
+    )
+
+    resp = await client.get(f"/admin/subjects/{s}/memories")
+    assert resp.status_code == 200
+    items = resp.json()["memories"]
+    assert len(items) == 1
+    item = items[0]
+    # Both fields are present in the response shape (regression guard
+    # against an omission that broke the admin demo path in v0.9.4 smoke).
+    assert "suggested_labels" in item
+    assert "sensitivity_labels" in item
+    assert set(item["suggested_labels"]) == {"pii.email", "pii.phone"}
+    assert item["sensitivity_labels"] == []
+
+
+@pytest.mark.anyio
+async def test_subject_memory_listing_reflects_promoted_labels(
+    client: AsyncClient, session_factory
+):
+    """After promote-labels moves entries from suggested into authoritative,
+    the subject-scoped listing must reflect the new sensitivity_labels and
+    the now-emptied suggested_labels — closing the loop on the review-and-
+    promote flow without the operator having to bounce through two
+    different admin endpoints."""
+    s = f"labels-promote-{uuid.uuid4().hex[:8]}"
+    mid = await _insert_memory_with_suggested(
+        session_factory,
+        subject_id=s,
+        tenant_id=None,
+        suggested=["pii.email"],
+    )
+
+    promote = await client.post(
+        f"/admin/memories/{mid}/promote-labels",
+        json={"labels": ["pii.email"]},
+    )
+    assert promote.status_code == 200
+
+    resp = await client.get(f"/admin/subjects/{s}/memories")
+    assert resp.status_code == 200
+    item = resp.json()["memories"][0]
+    assert item["sensitivity_labels"] == ["pii.email"]
+    assert item["suggested_labels"] == []

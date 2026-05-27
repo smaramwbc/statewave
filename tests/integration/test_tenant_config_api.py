@@ -96,13 +96,9 @@ async def test_patch_merges_and_preserves_unknown_keys(client: AsyncClient):
     one knob must not clobber the others."""
     tenant = "merge-test"
     # First write: set policy_mode.
-    await client.patch(
-        f"/admin/tenants/{tenant}/config", json={"policy_mode": "enforce"}
-    )
+    await client.patch(f"/admin/tenants/{tenant}/config", json={"policy_mode": "enforce"})
     # Second write: ONLY change receipts. policy_mode must survive.
-    r = await client.patch(
-        f"/admin/tenants/{tenant}/config", json={"receipts": "always"}
-    )
+    r = await client.patch(f"/admin/tenants/{tenant}/config", json={"receipts": "always"})
     body = r.json()
     assert body["config"] == {"policy_mode": "enforce", "receipts": "always"}
     assert body["version"] == 2
@@ -128,18 +124,14 @@ async def test_patch_validates_enum_at_api_boundary(client: AsyncClient):
     """A typo like `policy_mode: "enforced"` would silently leave
     enforcement off if we validated inside the JSONB. Validate at
     the request layer — fail fast with 422."""
-    r = await client.patch(
-        "/admin/tenants/typo/config", json={"policy_mode": "enforced"}
-    )
+    r = await client.patch("/admin/tenants/typo/config", json={"policy_mode": "enforced"})
     assert r.status_code == 422
 
 
 @pytest.mark.anyio
 async def test_patch_validates_bounds(client: AsyncClient):
     """receipt_retention_days has a ge=0 / le=36500 bound."""
-    r = await client.patch(
-        "/admin/tenants/bad/config", json={"receipt_retention_days": -1}
-    )
+    r = await client.patch("/admin/tenants/bad/config", json={"receipt_retention_days": -1})
     assert r.status_code == 422
 
 
@@ -148,9 +140,7 @@ async def test_patch_optimistic_concurrency_returns_409_on_mismatch(client: Asyn
     """expected_version must reflect the current row; mismatch = 409."""
     tenant = "concurrency-test"
     # Bring the row into existence.
-    r = await client.patch(
-        f"/admin/tenants/{tenant}/config", json={"policy_mode": "log_only"}
-    )
+    r = await client.patch(f"/admin/tenants/{tenant}/config", json={"policy_mode": "log_only"})
     assert r.json()["version"] == 1
 
     # PATCH with stale version should 409.
@@ -205,9 +195,7 @@ async def _install_active_policy(session_factory, yaml_content: str, tenant_id: 
     async with session_factory() as session:
         # Idempotent: insert-if-missing + flip active.
         result = await session.execute(
-            select(PolicyBundleRow).where(
-                PolicyBundleRow.bundle_hash == bundle.bundle_hash
-            )
+            select(PolicyBundleRow).where(PolicyBundleRow.bundle_hash == bundle.bundle_hash)
         )
         if result.scalar_one_or_none() is None:
             session.add(
@@ -247,13 +235,13 @@ async def test_patch_policy_mode_enforce_actually_filters_memories(
     await _seed(client, subject_id)
     # Label every memory pii so the deny rule covers any retrieval winner.
     async with session_factory() as session:
-        ids = (await session.execute(
-            select(MemoryRow.id).where(MemoryRow.subject_id == subject_id)
-        )).scalars().all()
+        ids = (
+            (await session.execute(select(MemoryRow.id).where(MemoryRow.subject_id == subject_id)))
+            .scalars()
+            .all()
+        )
         await session.execute(
-            update(MemoryRow)
-            .where(MemoryRow.id.in_(ids))
-            .values(sensitivity_labels=["pii"])
+            update(MemoryRow).where(MemoryRow.id.in_(ids)).values(sensitivity_labels=["pii"])
         )
         await session.commit()
     await _install_active_policy(session_factory, PII_BUNDLE_YAML, tenant)
@@ -280,9 +268,7 @@ async def test_patch_policy_mode_enforce_actually_filters_memories(
 
     # The flip. This is the thing the endpoint exists to make
     # possible without a SQL shell.
-    r = await client.patch(
-        f"/admin/tenants/{tenant}/config", json={"policy_mode": "enforce"}
-    )
+    r = await client.patch(f"/admin/tenants/{tenant}/config", json={"policy_mode": "enforce"})
     assert r.status_code == 200
     assert r.json()["config"]["policy_mode"] == "enforce"
 
@@ -340,3 +326,174 @@ async def test_patch_require_caller_identity_blocks_anonymous_after_flip(
         },
     )
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# v0.9.3 — receipt_signing_key_id field + extra="forbid" hardening
+# ---------------------------------------------------------------------------
+#
+# v0.9.1 wired HMAC signing through services/receipts.py: the receipt path
+# reads `tenant_configs.config.receipt_signing_key_id` to resolve which
+# operator-supplied key signs new receipts under each tenant. But until
+# v0.9.3 there was no API field for SETTING that key id — operators had to
+# write the JSONB directly via psql to enable signing per tenant. The
+# v0.9.2 launch-readiness smoke caught that gap. These tests verify the
+# fix: PATCH can set the field, signing then activates end-to-end without
+# direct SQL, AND the schema rejects unknown fields instead of silently
+# dropping them (the silent-drop behaviour is what hid the original gap).
+
+
+@pytest.mark.anyio
+async def test_patch_sets_receipt_signing_key_id(client: AsyncClient):
+    tenant = "sign-tenant-1"
+    client.headers["X-Tenant-ID"] = tenant
+
+    r = await client.patch(
+        f"/admin/tenants/{tenant}/config",
+        json={"receipt_signing_key_id": "ops-key-2026-01"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["config"]["receipt_signing_key_id"] == "ops-key-2026-01"
+
+    # Round-trip via GET to be sure the field actually persisted.
+    r = await client.get(f"/admin/tenants/{tenant}/config")
+    assert r.status_code == 200
+    assert r.json()["config"]["receipt_signing_key_id"] == "ops-key-2026-01"
+
+
+@pytest.mark.anyio
+async def test_patch_receipt_signing_key_id_validates_length(client: AsyncClient):
+    """Length cap = 64 chars; max_length on the Field. Pydantic returns 422
+    before the request ever touches the DB."""
+    tenant = "sign-tenant-len"
+    client.headers["X-Tenant-ID"] = tenant
+    r = await client.patch(
+        f"/admin/tenants/{tenant}/config",
+        json={"receipt_signing_key_id": "x" * 65},
+    )
+    assert r.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_receipt_signing_key_id_validates_charset(client: AsyncClient):
+    """Charset is `[A-Za-z0-9._-]+`. Anything else (whitespace, slashes,
+    quotes, … the things that survive a copy-paste from a bad config UI)
+    must be rejected. The actual key bytes live in env, never in the DB,
+    so this is purely about the operator-supplied identifier hygiene."""
+    tenant = "sign-tenant-charset"
+    client.headers["X-Tenant-ID"] = tenant
+
+    for bad in ["has space", "has/slash", 'has"quote', "$dollar", "has\nnewline"]:
+        r = await client.patch(
+            f"/admin/tenants/{tenant}/config",
+            json={"receipt_signing_key_id": bad},
+        )
+        assert r.status_code == 422, f"expected 422 for {bad!r}, got {r.status_code}: {r.text}"
+
+
+@pytest.mark.anyio
+async def test_patch_unknown_fields_now_rejected(client: AsyncClient):
+    """Before v0.9.3 the schema silently dropped unknown PATCH fields,
+    which hid the receipt_signing_key_id gap (operators thought their
+    PATCH had set the field but it had been discarded). The schema now
+    sets `extra="forbid"` so any unknown field is a 422 — the exact
+    behaviour the v0.9.2 launch-readiness smoke needed."""
+    tenant = "strict-tenant"
+    client.headers["X-Tenant-ID"] = tenant
+    r = await client.patch(
+        f"/admin/tenants/{tenant}/config",
+        json={"some_field_that_doesnt_exist": "value"},
+    )
+    assert r.status_code == 422
+    # Validation error envelope mentions the unknown field
+    assert "extra" in r.text.lower() or "some_field_that_doesnt_exist" in r.text
+
+
+@pytest.mark.anyio
+async def test_patch_unknown_field_does_not_silently_drop_known_one(
+    client: AsyncClient,
+):
+    """The bug we're closing: caller sends {known + unknown} and the
+    server should refuse the whole request, not silently apply the
+    known field while dropping the unknown one. Either we reject (the
+    new behaviour) or we apply both — silent partial application is
+    the operator-trust failure."""
+    tenant = "strict-partial-tenant"
+    client.headers["X-Tenant-ID"] = tenant
+    r = await client.patch(
+        f"/admin/tenants/{tenant}/config",
+        json={
+            "receipts": "always",  # known, valid
+            "phantom_field": "value",  # unknown
+        },
+    )
+    assert r.status_code == 422  # whole request rejected
+    # And the known field MUST NOT have been applied
+    r = await client.get(f"/admin/tenants/{tenant}/config")
+    assert r.json()["config"].get("receipts") is None
+
+
+@pytest.mark.anyio
+async def test_hmac_signing_works_end_to_end_via_patch_no_sql(client: AsyncClient, monkeypatch):
+    """The load-bearing test: configure HMAC signing for a tenant
+    purely via the admin API (PATCH receipt_signing_key_id), then
+    confirm receipts emitted under that tenant carry a valid HMAC
+    signature that the verify endpoint reports as valid=True. No
+    direct SQL writes. This is the scenario the v0.9.2 smoke had to
+    drop to SQL for — it must now work end-to-end through the
+    documented operator workflow."""
+    from server.core.config import settings
+
+    # The signing key map normally loads at startup from env. For the
+    # test we inject a single key directly into the settings object —
+    # the same shape `STATEWAVE_RECEIPT_SIGNING_KEYS` produces.
+    monkeypatch.setitem(
+        settings.receipt_signing_keys,
+        "smoke-key-1",
+        b"this_is_a_test_signing_key_thats_32_bytes",
+    )
+
+    tenant = "hmac-e2e-tenant"
+    subject = "hmac-e2e-subject"
+    client.headers["X-Tenant-ID"] = tenant
+
+    # Step 1: configure signing key id via PATCH. NO SQL.
+    r = await client.patch(
+        f"/admin/tenants/{tenant}/config",
+        json={"receipt_signing_key_id": "smoke-key-1"},
+    )
+    assert r.status_code == 200, r.text
+
+    # Step 2: standard ingest → compile → context with emit_receipt
+    r = await client.post(
+        "/v1/episodes",
+        json={
+            "subject_id": subject,
+            "source": "test",
+            "type": "chat.session",
+            "payload": {"messages": [{"role": "user", "content": "hi"}]},
+        },
+    )
+    assert r.status_code == 201
+    r = await client.post("/v1/memories/compile", json={"subject_id": subject})
+    assert r.status_code == 200
+    r = await client.post(
+        "/v1/context",
+        json={"subject_id": subject, "task": "what?", "emit_receipt": True},
+    )
+    assert r.status_code == 200
+    receipt_id = r.json()["receipt_id"]
+    assert receipt_id
+
+    # Step 3: verify endpoint must say valid=True with our key_id.
+    # If it says valid=null/no_signature, the PATCH didn't actually
+    # land the key_id on the row — i.e. the v0.9.2 smoke gap is back.
+    r = await client.get(f"/v1/receipts/{receipt_id}/verify")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["valid"] is True, (
+        f"HMAC verify returned valid={body['valid']} reason={body['reason']} "
+        f"after PATCH-only signing config — the v0.9.2 gap has regressed"
+    )
+    assert body["key_id"] == "smoke-key-1"
+    assert body["algorithm"] == "hmac-sha256-canonical-v1"

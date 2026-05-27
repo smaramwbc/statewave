@@ -178,8 +178,9 @@ class LLMCompleteRequest(BaseModel):
 class TenantConfigPatch(BaseModel):
     """Partial update to `tenant_configs.config`. Every known key is
     optional — `None` means "don't change this key", a supplied
-    value sets it. Unknown keys in the existing config dict are
-    preserved across the merge.
+    value sets it. Unknown keys in the **stored** config dict are
+    preserved across the merge; unknown keys in the **incoming
+    PATCH body** are rejected (see ``model_config`` below).
 
     Validation lives here at the API boundary rather than inside the
     config JSON because typos in enum values (e.g. `policy_mode:
@@ -187,7 +188,16 @@ class TenantConfigPatch(BaseModel):
     policy in `log_only`. Catching them at the request layer is the
     only place that's safe — once the value lives in JSONB nothing
     type-checks it again.
+
+    ``extra="forbid"`` extends that boundary check to **unknown field
+    names**: a PATCH with ``{"receipt_signing_key_id": "..."}`` against
+    a server that lacks the field (e.g. an older binary) now returns
+    HTTP 422 instead of silently dropping the field. Pre-v0.9.3 the
+    field was silently dropped, which masked the gap that left HMAC
+    signing configurable only via direct SQL (v0.9.2 smoke finding A).
     """
+
+    model_config = {"extra": "forbid"}
 
     receipts: Literal["always", "on_request", "never"] | None = Field(
         None,
@@ -240,6 +250,27 @@ class TenantConfigPatch(BaseModel):
             "to a region this server doesn't serve (would lock the "
             "tenant out immediately); patch from a server in the "
             "target region instead."
+        ),
+    )
+    receipt_signing_key_id: str | None = Field(
+        None,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._\-]+$",
+        description=(
+            "Operator-supplied key identifier this tenant uses to sign "
+            "state-assembly receipts (v0.9 #157). The actual key bytes "
+            "live in `STATEWAVE_RECEIPT_SIGNING_KEYS` (env / secret "
+            "manager) — only the public key_id is stored on the tenant "
+            "row, never the bytes. Setting this turns on HMAC signing "
+            "for new receipts emitted under this tenant; the verifier "
+            "reports `valid: null, reason: 'key_unavailable'` for any "
+            "historical receipts whose key_id later rotates out of "
+            "config (never a 500). Validation here is intentionally "
+            "shallow — length + charset only, no lookup against the "
+            "configured key map. Operators may set a key_id before "
+            "the corresponding key is loaded; that's allowed and "
+            "produces `key_unavailable` on verify until the env catches "
+            "up. Charset matches what's grep-friendly across logs."
         ),
     )
     force_region_pin: bool | None = Field(

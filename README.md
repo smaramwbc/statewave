@@ -198,6 +198,8 @@ Connectors live in their own repository so this core stays focused on the runtim
 ```bash
 # Pick what you need — every package is independent
 npm install @statewavedev/connectors-github
+npm install @statewavedev/connectors-jira          # preview
+npm install @statewavedev/connectors-database      # preview — postgres/mysql/mariadb/mssql
 npm install @statewavedev/connectors-markdown
 npm install @statewavedev/connectors-slack
 npm install @statewavedev/connectors-n8n

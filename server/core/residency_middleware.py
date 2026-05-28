@@ -42,6 +42,7 @@ _EXEMPT_PATHS = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/v1/version",
 }
 
 

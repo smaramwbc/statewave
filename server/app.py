@@ -243,6 +243,24 @@ def create_app() -> FastAPI:
         """Returns 200 if the process is alive."""
         return {"status": "ok"}
 
+    @app.get("/v1/version", tags=["ops"], summary="Server version discovery")
+    async def version():
+        """Public, unauthenticated version discovery.
+
+        Returns the running server version and the API contract id — useful
+        for smoke tests, support, and Docker users verifying which image is
+        live. No auth, tenant, or rate-limit applies (see the middleware
+        public-path sets).
+        """
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version as pkg_version
+
+        try:
+            ver = pkg_version("statewave")
+        except PackageNotFoundError:
+            ver = "unknown"
+        return {"version": ver, "api_contract": "v1"}
+
     @app.get("/readyz", tags=["ops"], summary="Deep readiness check")
     @app.get("/ready", tags=["ops"], summary="Readiness check (alias)", include_in_schema=False)
     async def readyz():

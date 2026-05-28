@@ -227,7 +227,7 @@ statewave-connectors mcp start
 
 **Where to go next:**
 
-- Connector ecosystem repo: [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) *(Phase-1 packages — core, CLI, MCP server, GitHub, Markdown — landing soon; npm publication is a follow-up)*
+- Connector ecosystem repo: [statewave-connectors](https://github.com/smaramwbc/statewave-connectors) — published on npm under `@statewavedev/connectors-*` (incl. preview Jira + database source connectors)
 - Connector docs: [statewave-docs/connectors](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/index.md)
 - SDKs (custom ingestion paths): [Python](https://github.com/smaramwbc/statewave-py) · [TypeScript](https://github.com/smaramwbc/statewave-ts)
 

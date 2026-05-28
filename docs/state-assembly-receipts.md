@@ -98,9 +98,8 @@ audit story) and not as JSONB on the assembly response (lost after the
 request). The table is **append-only by convention**: no service-code
 path issues `UPDATE` or `DELETE`. Operators running compliance-grade
 deployments should additionally grant the service role
-`INSERT`-and-`SELECT`-only on `receipts`; this is documented in
-[`docs/deployment-hardening.md`](./deployment-hardening.md) (separate
-from v1 of this feature).
+`INSERT`-and-`SELECT`-only on `receipts` — a deployment-hardening step
+independent of this feature.
 
 Retention is tenant-controlled via
 `tenant_configs.config.receipt_retention_days`. Absent or `null` means

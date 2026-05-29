@@ -9,6 +9,8 @@ When STATEWAVE_API_KEY is unset/empty, authentication is disabled
 
 from __future__ import annotations
 
+import hmac
+
 import structlog
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -45,7 +47,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        if provided != self._api_key:
+        if not hmac.compare_digest(provided.encode(), self._api_key.encode()):
             logger.warning("auth_failed", path=request.url.path)
             return JSONResponse(
                 status_code=403,

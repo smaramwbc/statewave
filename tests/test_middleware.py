@@ -59,6 +59,17 @@ async def test_auth_correct_key(auth_app):
     assert r.status_code == 200
 
 
+async def test_auth_same_length_wrong_key(auth_app):
+    # Behavioral parity guard for the constant-time comparison: a wrong key of
+    # the SAME length as the secret must still be rejected with 403. The
+    # existing wrong-key test uses a shorter value; this one exercises the
+    # equal-length path that hmac.compare_digest is specifically used for.
+    wrong = "x" * len("test-secret-key")
+    async with AsyncClient(transport=ASGITransport(app=auth_app), base_url="http://test") as c:
+        r = await c.get("/test", headers={"X-API-Key": wrong})
+    assert r.status_code == 403
+
+
 async def test_auth_query_param(auth_app):
     async with AsyncClient(transport=ASGITransport(app=auth_app), base_url="http://test") as c:
         r = await c.get("/test?api_key=test-secret-key")

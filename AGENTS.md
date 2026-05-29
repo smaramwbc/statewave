@@ -62,23 +62,15 @@ add tests for behavior changes, and make sure `ruff` and `pytest` pass.
 
 ## Optional: give your agent memory of this repo (with Statewave itself)
 
-This project dogfoods Statewave. If you'd like your coding assistant to recall
-this repo's decisions, history, and conventions instead of re-reading files
-each session, serve it through the Statewave MCP server:
+This project dogfoods Statewave. The easiest way to give your assistant a
+queryable project brain for this repo is the **Statewave IDE Companion**
+extension for **VS Code / Cursor** (publisher `statewavedev`) — install it from
+your editor's extensions marketplace. It exposes your workspace, docs, git
+state, structure, and run-commands to Copilot / Cursor / Claude over MCP and
+**registers the MCP server for you** (no manual config); it just needs a
+Statewave server to talk to (a one-file `docker compose up`). See the
+[extension README](https://github.com/smaramwbc/statewave-connectors/blob/main/packages/vscode-extension/README.md).
 
-1. **Run a Statewave instance** — self-host via `docker compose up` (see the
-   [README quick start](README.md#quick-start)).
-2. **Ingest this repo** into a subject using the GitHub or Markdown connector.
-   The recommended subject is `repo:smaramwbc/statewave` (per the
-   [subject strategy](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/subject-strategy.md)).
-   See the
-   [connectors quickstart](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/quickstart.md)
-   and
-   [GitHub connector](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/github.md).
-3. **Point your MCP client** (Copilot, Claude, Cursor, custom agents) at the
-   [Statewave MCP server](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/mcp.md)
-   (`@statewavedev/mcp-server`). Your agent can then call `statewave_get_context`
-   with subject `repo:smaramwbc/statewave` for compact, ranked repo context.
-
-This is optional — it needs a running Statewave instance — but it's a good way
-to see the product work on a real codebase.
+Prefer to wire it up by hand, or use another MCP client? Run the
+[Statewave MCP server](https://github.com/smaramwbc/statewave-docs/blob/main/connectors/mcp.md)
+(`@statewavedev/mcp-server`) directly and query subject `repo:smaramwbc/statewave`.

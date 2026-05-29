@@ -113,7 +113,7 @@ async def test_complete_chat_timeout_returns_504(monkeypatch):
     with patch(
         "server.api.llm.acomplete",
         new_callable=AsyncMock,
-        side_effect=LLMTimeoutError("timed out after 60s"),
+        side_effect=LLMTimeoutError("timed out talking to https://internal-config after 60s"),
     ):
         async with await _client_with() as c:
             r = await c.post(
@@ -122,6 +122,8 @@ async def test_complete_chat_timeout_returns_504(monkeypatch):
             )
     assert r.status_code == 504
     assert r.json()["error"]["code"] == "upstream_llm_timeout"
+    # Don't echo upstream details (endpoint URLs, internal model identifiers).
+    assert "internal-config" not in r.text
 
 
 @pytest.mark.asyncio

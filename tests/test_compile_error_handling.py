@@ -173,14 +173,19 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
 @pytest.mark.asyncio
 async def test_sync_route_returns_502_on_compilation_error(monkeypatch):
     """Sync `/v1/memories/compile` surfaces a 502 with a clear error envelope
-    rather than a misleading `memories_created: 0`."""
+    rather than a misleading `memories_created: 0`.
+
+    The envelope carries a static, actionable message — NOT the raw exception
+    text, which can leak provider internals to an external caller (CWE-209,
+    CodeQL py/stack-trace-exposure). The detail goes to the server log only."""
     import json
 
     from server.api import memories as api_memories
     from server.schemas.requests import CompileMemoriesRequest
 
+    # A message that would expose internals if echoed verbatim.
     async def raising_batch(*_a, **_k):
-        raise CompilationError("LLM compiler has no reachable key")
+        raise CompilationError("connect to http://10.0.0.5:11434 failed: secret-key-abc123")
 
     monkeypatch.setattr(api_memories, "_compile_one_batch", raising_batch)
 
@@ -190,7 +195,10 @@ async def test_sync_route_returns_502_on_compilation_error(monkeypatch):
     assert resp.status_code == 502
     payload = json.loads(bytes(resp.body))
     assert payload["error"]["code"] == "compilation_failed"
-    assert "no reachable key" in payload["error"]["message"]
+    assert payload["error"]["message"] == api_memories._COMPILE_FAILED_MESSAGE
+    # The exception detail must not reach the client.
+    assert "secret-key-abc123" not in payload["error"]["message"]
+    assert "10.0.0.5" not in payload["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -202,7 +210,7 @@ async def test_async_job_marked_failed_on_compilation_error(monkeypatch):
     failed: list = []
 
     async def raising_batch(*_a, **_k):
-        raise CompilationError("LLM compiler has no reachable key")
+        raise CompilationError("connect to http://10.0.0.5:11434 failed: secret-key-abc123")
 
     async def fake_mark_running(_job_id):
         pass
@@ -234,4 +242,7 @@ async def test_async_job_marked_failed_on_compilation_error(monkeypatch):
 
     assert len(failed) == 1
     assert failed[0][0] == "job-1"
-    assert "no reachable key" in failed[0][1]
+    # `job.error` is returned to polling clients, so it carries the static
+    # message — never the raw exception text (CWE-209).
+    assert failed[0][1] == api_memories._COMPILE_FAILED_MESSAGE
+    assert "secret-key-abc123" not in failed[0][1]

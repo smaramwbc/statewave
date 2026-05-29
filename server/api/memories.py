@@ -31,6 +31,21 @@ logger = structlog.stdlib.get_logger()
 
 router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
+# Client-facing error text for compile failures. Deliberately static and
+# free of any exception detail: the underlying exception can carry provider
+# internals (URLs, config, partial keys, stack traces) that must not reach an
+# external caller (CWE-209). The full `str(exc)` is logged server-side at every
+# raise site; the client only needs the actionable next step. `CompilationError`
+# is an expected, recoverable misconfiguration, so its message points the caller
+# at the fix; the catch-all path stays vague because the cause is unknown.
+_COMPILE_FAILED_MESSAGE = (
+    "Memory compilation could not run because the configured compiler or "
+    "provider is unavailable or misconfigured. The affected episodes were left "
+    "uncompiled — fix the provider configuration and retry. See server logs for "
+    "the underlying error."
+)
+_COMPILE_INTERNAL_ERROR_MESSAGE = "An internal error occurred during compilation."
+
 
 async def _compile_one_batch(
     session: AsyncSession, subject_id: str, tenant_id: str | None, batch_size: int
@@ -182,12 +197,15 @@ async def _run_compile(
         # the reason instead of a clean zero-memory completion.
         logger.warning("compile_unavailable", subject_id=subject_id, error=str(exc))
         if job_id:
-            await compile_jobs.mark_failed_durable(job_id, str(exc))
+            # `job.error` is returned to the polling client by
+            # `get_compile_status`, so store the static message — never the raw
+            # exception (CWE-209). The detail is in the log line above.
+            await compile_jobs.mark_failed_durable(job_id, _COMPILE_FAILED_MESSAGE)
         raise
-    except Exception as exc:
+    except Exception:
         logger.error("compile_failed", subject_id=subject_id, exc_info=True)
         if job_id:
-            await compile_jobs.mark_failed_durable(job_id, str(exc))
+            await compile_jobs.mark_failed_durable(job_id, _COMPILE_INTERNAL_ERROR_MESSAGE)
         raise
 
 
@@ -244,7 +262,7 @@ async def compile_memories(
                 content={
                     "error": {
                         "code": "compilation_failed",
-                        "message": str(exc),
+                        "message": _COMPILE_FAILED_MESSAGE,
                     }
                 },
             )

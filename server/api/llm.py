@@ -58,9 +58,11 @@ async def complete_chat(body: LLMCompleteRequest) -> LLMCompleteResponse:
             temperature=body.temperature,
         )
     except LLMTimeoutError as exc:
+        # Same reason as the provider-error handler below — don't echo the raw
+        # exception text, which can carry the configured endpoint/model detail.
         raise HTTPException(
             status_code=504,
-            detail={"code": "upstream_llm_timeout", "message": str(exc)},
+            detail={"code": "upstream_llm_timeout", "message": "Upstream LLM call timed out."},
         ) from exc
     except (LLMProviderError, LLMResponseError, StatewaveLLMError) as exc:
         # Don't echo the raw provider message back — it can include URLs,

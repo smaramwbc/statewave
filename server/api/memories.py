@@ -18,7 +18,7 @@ from server.db.engine import get_session
 from server.db.tables import MemoryRow
 from server.schemas.requests import CompileMemoriesRequest, SetMemoryLabelsRequest
 from server.schemas.responses import CompileMemoriesResponse, MemoryResponse, SearchMemoriesResponse
-from server.services.compilers import get_compiler
+from server.services.compilers import CompilationError, get_compiler
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.backfill import schedule_embedding_backfill
 from server.services.conflicts import resolve_conflicts
@@ -44,6 +44,15 @@ async def _compile_one_batch(
 
     Does its own commit so each batch is durable independently — if the
     process dies mid-drain, no episode is lost or double-counted.
+
+    Raises `CompilationError` (propagated from the compiler) when extraction
+    could not run — e.g. the LLM compiler has no reachable provider key. In
+    that case the episodes are deliberately left UNCOMPILED: we return before
+    `mark_episodes_compiled`/`commit`, so a later, correctly configured
+    recompile reprocesses them instead of the failure silently consuming them
+    (issue #201). An empty `new_rows` from a *successful* run is the opposite
+    case — a legitimate "extracted nothing" — and does mark the episodes
+    compiled.
     """
     episodes = await repo.list_uncompiled_episodes(
         session, subject_id, tenant_id=tenant_id, limit=batch_size
@@ -52,6 +61,8 @@ async def _compile_one_batch(
         return [], 0, 0
 
     compiler = get_compiler()
+    # A CompilationError here propagates intentionally: nothing below this
+    # point runs, so the episodes are never marked compiled or committed.
     if hasattr(compiler, "compile_async"):
         new_rows = await compiler.compile_async(list(episodes))
     else:
@@ -162,6 +173,17 @@ async def _run_compile(
 
         return result
 
+    except CompilationError as exc:
+        # Extraction could not run (e.g. provider misconfig / no key). This is
+        # an expected, recoverable failure mode, not a code bug — log it
+        # without a stacktrace. Episodes from the failed batch were left
+        # uncompiled (issue #201); any batches that already succeeded in this
+        # drain are committed. Mark the job failed so the polling client sees
+        # the reason instead of a clean zero-memory completion.
+        logger.warning("compile_unavailable", subject_id=subject_id, error=str(exc))
+        if job_id:
+            await compile_jobs.mark_failed_durable(job_id, str(exc))
+        raise
     except Exception as exc:
         logger.error("compile_failed", subject_id=subject_id, exc_info=True)
         if job_id:
@@ -205,9 +227,27 @@ async def compile_memories(
         # report `has_more` so the caller knows whether to loop. Bounded
         # latency is the trade-off for not surprising long-standing
         # sync clients with multi-minute compile calls.
-        memory_responses, created, remaining = await _compile_one_batch(
-            session, body.subject_id, tenant_id, settings.compile_batch_size
-        )
+        try:
+            memory_responses, created, remaining = await _compile_one_batch(
+                session, body.subject_id, tenant_id, settings.compile_batch_size
+            )
+        except CompilationError as exc:
+            # Extraction could not run (e.g. LLM compiler with no reachable
+            # key). The episodes were left uncompiled (issue #201); surface
+            # the failure as a 5xx instead of a misleading
+            # `memories_created: 0` so the caller knows to fix the provider
+            # config and retry rather than assuming there was nothing to
+            # compile.
+            logger.warning("compile_unavailable", subject_id=body.subject_id, error=str(exc))
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "error": {
+                        "code": "compilation_failed",
+                        "message": str(exc),
+                    }
+                },
+            )
         return CompileMemoriesResponse(
             subject_id=body.subject_id,
             memories_created=created,

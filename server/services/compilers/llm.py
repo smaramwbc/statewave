@@ -8,10 +8,12 @@ adapter owns provider selection, timeout, retries, and error mapping.
 Optimized for speed:
 - Batches small episodes into a single LLM call
 - Runs multiple batches in parallel with concurrency control
-- Per-batch errors are logged at WARNING and contribute zero memories
-  to the final result. (The previous "Falls back gracefully" wording
-  obscured this — partial failures still log loudly so they can be
-  investigated.)
+- A failed provider round-trip (auth, timeout, 5xx, missing key) is logged
+  at WARNING and re-raised as `CompilationError` — extraction could not RUN,
+  which is distinct from a batch that legitimately extracted nothing. The
+  caller (server/api/memories.py) leaves the affected episodes uncompiled
+  and surfaces the failure rather than consuming the episodes for a run that
+  produced no memories (issue #201).
 
 Requires:
 - STATEWAVE_COMPILER_TYPE=llm
@@ -31,6 +33,7 @@ from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
 from server.services.auto_labeling import apply_suggestions
+from server.services.compilers.errors import CompilationError
 from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
 
@@ -135,7 +138,13 @@ class LLMCompiler:
         )
 
     async def compile_async(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
-        """Async compile — batches episodes and processes in parallel."""
+        """Async compile — batches episodes and processes in parallel.
+
+        Returns the extracted memories (possibly empty when the episodes
+        legitimately yield nothing). Raises `CompilationError` if any batch's
+        provider round-trip fails, so the caller does not mistake a provider
+        outage for an empty extraction and consume the episodes (issue #201).
+        """
         # Extract text from each episode, skip empties
         episode_texts: list[tuple[EpisodeRow, str]] = []
         for ep in episodes:
@@ -225,9 +234,18 @@ class LLMCompiler:
 
             try:
                 raw_memories = await self._call_llm_async(combined_text, len(batch))
-            except Exception:
+            except Exception as exc:
+                # A failed provider round-trip (auth, timeout, 5xx, no key)
+                # means extraction could not RUN — it is NOT a legitimate
+                # "zero memories" result. Raise so the caller leaves these
+                # episodes uncompiled and surfaces the failure, instead of
+                # silently consuming them (issue #201). Previously this
+                # returned `[]`, which the compile route could not tell apart
+                # from a real empty extraction.
                 logger.warning("llm_batch_failed", episode_count=len(batch), exc_info=True)
-                return []
+                raise CompilationError(
+                    f"LLM compilation failed for a batch of {len(batch)} episode(s): {exc}"
+                ) from exc
 
             # Map memories back to their source episodes
             results: list[MemoryRow] = []

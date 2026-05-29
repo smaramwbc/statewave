@@ -9,6 +9,9 @@ from __future__ import annotations
 from typing import Protocol, Sequence
 
 from server.db.tables import EpisodeRow, MemoryRow
+from server.services.compilers.errors import CompilationError
+
+__all__ = ["BaseCompiler", "CompilationError", "get_compiler"]
 
 
 class BaseCompiler(Protocol):
@@ -21,7 +24,13 @@ class BaseCompiler(Protocol):
         - Must be deterministic for the same input.
         - Must set source_episode_ids on every produced memory.
         - Must not mutate the input episodes.
-        - May return an empty list.
+        - May return an empty list when the input legitimately yields no
+          memories. An empty list means "extracted nothing", which lets the
+          caller mark the episodes compiled.
+        - Must raise `CompilationError` when extraction could NOT run (config
+          or provider failure). Never swallow such a failure into an empty
+          list — that would let the caller consume episodes for a run that
+          produced nothing. See `errors.CompilationError`.
         """
         ...
 

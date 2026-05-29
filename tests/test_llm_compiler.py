@@ -90,15 +90,25 @@ async def test_llm_compile_empty_payload():
 
 
 @pytest.mark.asyncio
-async def test_llm_compile_api_failure_returns_empty():
+async def test_llm_compile_api_failure_raises_compilation_error():
+    """A failed provider round-trip must raise `CompilationError`, NOT return
+    an empty list.
+
+    Returning `[]` was indistinguishable from a legitimate "extracted
+    nothing" result, so the compile route marked the episodes compiled and
+    silently consumed them (issue #201). The error now propagates so the
+    caller leaves the episodes uncompiled and surfaces the failure.
+    """
+    from server.services.compilers.errors import CompilationError
+
     compiler = _make_compiler()
 
     with patch.object(
         compiler, "_call_llm_async", new_callable=AsyncMock, side_effect=RuntimeError("API down")
     ):
         ep = _make_episode()
-        memories = await compiler.compile_async([ep])
-        assert memories == []
+        with pytest.raises(CompilationError, match="API down"):
+            await compiler.compile_async([ep])
 
 
 @pytest.mark.asyncio

@@ -123,6 +123,25 @@ class TestExtractIssueKeywords:
         assert "ok" not in kw
         assert "no" not in kw
 
+    def test_strips_trailing_punctuation(self):
+        # A sentence-final keyword must not keep its punctuation, or
+        # "outage!" silently fails to match "outage" elsewhere. The sibling
+        # tokenizer _tokenize_for_relevance strips for exactly this reason.
+        kw = _extract_issue_keywords("We have a production outage!")
+        assert "outage" in kw
+        assert "outage!" not in kw
+        # Stripping unmasks punctuation-wrapped stopwords ("(no)" -> "no"),
+        # which must then still be filtered out as stopwords.
+        assert "no" not in _extract_issue_keywords("(no)")
+
+    def test_punctuation_does_not_break_repeat_overlap(self):
+        # The repeat-issue boost depends on a current issue (often phrased
+        # with sentence punctuation) overlapping a prior session's clean
+        # keywords. A trailing "!" must not zero the overlap.
+        current = _extract_issue_keywords("Production outage!")
+        prior = _extract_issue_keywords("we had an outage last week")
+        assert _session_keyword_overlap(current, prior) > 0.0
+
 
 class TestSessionKeywordOverlap:
     def test_identical_sets(self):

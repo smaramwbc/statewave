@@ -876,11 +876,17 @@ _STOPWORDS = frozenset(
 
 
 def _extract_issue_keywords(text: str) -> set[str]:
-    """Extract meaningful issue keywords from text (lowercase, stopwords removed)."""
+    """Extract meaningful issue keywords (lowercase, punctuation-stripped,
+    stopwords removed).
+
+    Shares `_tokenize_for_relevance`'s punctuation handling so a
+    sentence-final keyword like "outage!" still matches a clean "outage"
+    during repeat-issue overlap detection — without it the trailing
+    punctuation silently zeros the overlap (same failure that helper's
+    docstring documents for the lexical signal)."""
     if not text:
         return set()
-    words = set(text.lower().split())
-    return words - _STOPWORDS
+    return _tokenize_for_relevance(text) - _STOPWORDS
 
 
 def _session_keyword_overlap(current_keywords: set[str], prior_keywords: set[str]) -> float:

@@ -64,6 +64,42 @@ def test_are_conflicting_stricter_for_non_facts():
     assert _are_conflicting(a, b) is True  # still high overlap
 
 
+def test_are_conflicting_ignores_trailing_punctuation():
+    # Same fact, one with a trailing period. Punctuation must not drag the
+    # word-overlap below threshold and silently prevent supersession.
+    a = _make_memory("I use Stripe.")
+    b = _make_memory("I use Stripe")
+    assert _are_conflicting(a, b) is True
+
+
+def test_are_conflicting_distinct_facts_not_over_merged():
+    # Precision guard: edge-stripping must not merge facts that differ by a
+    # real word. "Stripe" vs "PayPal" share only stopwords, so they stay
+    # below threshold and neither wrongly supersedes the other.
+    a = _make_memory("I use Stripe")
+    b = _make_memory("I use PayPal")
+    assert _are_conflicting(a, b) is False
+
+
+async def test_resolve_conflicts_supersedes_despite_punctuation():
+    # Regression: trailing punctuation on the newer memory must not stop the
+    # older duplicate from being superseded — otherwise it stays active and
+    # pollutes every future context bundle.
+    now = datetime.now(timezone.utc)
+    older = _make_memory("I use Stripe", created_at=now - timedelta(days=5))
+    newer = _make_memory("I use Stripe.", created_at=now)
+
+    with patch("server.services.conflicts.repo") as mock_repo:
+        mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[older, newer])
+        mock_repo.mark_memories_superseded = AsyncMock()
+
+        session = AsyncMock()
+        result = await resolve_conflicts(session, "user-1")
+
+    assert older.id in result
+    mock_repo.mark_memories_superseded.assert_called_once()
+
+
 async def test_resolve_conflicts_marks_older_superseded():
     now = datetime.now(timezone.utc)
     older = _make_memory("my name is Alice", created_at=now - timedelta(days=5))

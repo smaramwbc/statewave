@@ -77,11 +77,21 @@ def _make_resolution_row(
 
 
 @contextmanager
-def _mock_repos(*, episodes=None, facts=None, resolutions=None, health=None, sla=None):
+def _mock_repos(
+    *, episodes=None, session_episodes=None, facts=None, resolutions=None, health=None, sla=None
+):
     if health is None:
         health = HealthResult(subject_id="user-1", score=100, state="healthy", factors=[])
     if sla is None:
         sla = SLASummary(subject_id="user-1")
+    # By default the session-scoped fetch returns the "sess-1" subset of the
+    # subject-wide list, so existing tests (which all hand off "sess-1") keep
+    # exercising the same episodes. Tests that need the active session to live
+    # outside the subject window pass `session_episodes` explicitly.
+    if session_episodes is None:
+        session_episodes = [
+            ep for ep in (episodes or []) if getattr(ep, "session_id", None) == "sess-1"
+        ]
     with (
         patch(
             "server.services.handoff.repo.search_memories",
@@ -92,6 +102,11 @@ def _mock_repos(*, episodes=None, facts=None, resolutions=None, health=None, sla
             "server.services.handoff.repo.list_episodes_by_subject",
             new_callable=AsyncMock,
             return_value=episodes or [],
+        ),
+        patch(
+            "server.services.handoff.repo.list_episodes_by_session",
+            new_callable=AsyncMock,
+            return_value=session_episodes,
         ),
         patch(
             "server.services.handoff.repo.list_resolutions",
@@ -231,6 +246,60 @@ async def test_recent_context_from_other_sessions():
         result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
 
     assert any("Previous conversation" in c for c in result.recent_context)
+
+
+@pytest.mark.asyncio
+async def test_active_session_episodes_present_outside_subject_window():
+    """Active session episodes must surface even when the subject-wide window
+    (occurred_at ASC, capped at 30) contains only older, other-session
+    episodes — the active session would otherwise fall outside it."""
+    # Subject-wide window: 30 episodes, all from a different, older session.
+    subject_window = [
+        _make_episode_row(session_id="sess-old", text=f"old message {i}", minutes_ago=1000 - i)
+        for i in range(30)
+    ]
+    # The active session's episodes live outside that window.
+    active_eps = [
+        _make_episode_row(session_id="sess-1", source="user", text="My billing is wrong"),
+        _make_episode_row(
+            session_id="sess-1", source="assistant", text="I checked your account status"
+        ),
+    ]
+
+    with _mock_repos(episodes=subject_window, session_episodes=active_eps):
+        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+
+    assert "billing" in result.active_issue.lower()
+    assert any("checked your account" in s for s in result.attempted_steps)
+    assert len(result.provenance["episode_ids"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_recent_context_shows_newest_other_sessions():
+    """Recent context should surface the newest cross-session episodes, not the
+    oldest, lead with the most recent, and stay consistent with provenance."""
+    current_ep = _make_episode_row(session_id="sess-1", text="Current issue")
+    # Other-session episodes in occurred_at ASC order (oldest first), as the
+    # subject-wide query returns them.
+    other_eps = [
+        _make_episode_row(session_id=f"sess-{i}", text=f"other message {i}") for i in range(7)
+    ]
+    episodes = other_eps + [current_ep]
+
+    with _mock_repos(episodes=episodes):
+        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+
+    joined = "\n".join(result.recent_context)
+    # Newest (index 6) is present; oldest (index 0/1) are dropped.
+    assert "other message 6" in joined
+    assert "other message 0" not in joined
+    assert "other message 1" not in joined
+    # Most-recent leads the section.
+    assert "other message 6" in result.recent_context[0]
+    assert len(result.recent_context) == 5
+    # Provenance attests the SAME newest-5 episodes (reversed) the brief shows.
+    expected_ids = [str(ep.id) for ep in reversed(other_eps[-5:])]
+    assert result.provenance["context_episode_ids"] == expected_ids
 
 
 @pytest.mark.asyncio

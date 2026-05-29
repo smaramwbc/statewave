@@ -56,6 +56,9 @@ async def assemble_handoff(
     episode_rows = await repo.list_episodes_by_subject(
         session, subject_id, tenant_id=tenant_id, limit=30
     )
+    session_episode_rows = await repo.list_episodes_by_session(
+        session, subject_id, session_id, tenant_id=tenant_id, limit=30
+    )
     resolution_rows = await repo.list_resolutions(
         session, subject_id, tenant_id=tenant_id, limit=20
     )
@@ -90,9 +93,12 @@ async def assemble_handoff(
     key_facts = [row.content for row in fact_rows if row.status == "active"]
 
     # -- Active issue (current session episodes) ----------------------------
-    current_session_eps = [
-        row for row in episode_rows if getattr(row, "session_id", None) == session_id
-    ]
+    # Sourced from a session-scoped query, not the subject-wide list: for
+    # subjects with >30 lifetime episodes the active session falls outside
+    # the subject window, which would silently empty the active issue and
+    # attempted steps. `episode_rows` is still used for cross-session
+    # "recent context" below.
+    current_session_eps = list(session_episode_rows)
     other_eps = [row for row in episode_rows if getattr(row, "session_id", None) != session_id]
 
     # Build active issue description from current session
@@ -138,8 +144,13 @@ async def assemble_handoff(
         )
 
     # -- Recent context (non-current session, most recent first) ------------
+    # `other_eps` is occurred_at ASC (oldest first); take the newest 5 and
+    # reverse so the most-recent cross-session episode leads, matching the
+    # heading. Computed once and reused for provenance + the receipt's
+    # carry-forward set so all three agree on which episodes are surfaced.
+    recent_eps = list(reversed(other_eps[-5:]))
     recent_context: list[str] = []
-    for ep in other_eps[:5]:
+    for ep in recent_eps:
         text = extract_payload_text(ep.payload)
         if text:
             sid_label = f" [{ep.session_id}]" if getattr(ep, "session_id", None) else ""
@@ -250,7 +261,7 @@ async def assemble_handoff(
         "fact_ids": [str(row.id) for row in fact_rows if row.status == "active"],
         "episode_ids": [str(ep.id) for ep in current_session_eps[:10]],
         "resolution_ids": [str(r.id) for r in resolution_rows],
-        "context_episode_ids": [str(ep.id) for ep in other_eps[:5]],
+        "context_episode_ids": [str(ep.id) for ep in recent_eps],
     }
 
     # -- Receipt emission ---------------------------------------------------
@@ -270,7 +281,7 @@ async def assemble_handoff(
         token_estimate=token_estimate,
         active_fact_rows=[row for row in fact_rows if row.status == "active"],
         session_episode_rows=current_session_eps[:10],
-        carry_forward_episode_rows=other_eps[:5],
+        carry_forward_episode_rows=recent_eps,
         emit_receipt=emit_receipt,
         query_id=query_id,
         task_id=task_id,

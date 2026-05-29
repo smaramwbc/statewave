@@ -81,6 +81,31 @@ async def list_episodes_by_subject(
     return result.scalars().all()
 
 
+async def list_episodes_by_session(
+    session: AsyncSession,
+    subject_id: str,
+    session_id: str,
+    *,
+    tenant_id: str | None = None,
+    limit: int = 100,
+) -> Sequence[EpisodeRow]:
+    # Scoped to a single session so callers (e.g. handoff) always see the
+    # active session's episodes regardless of how many lifetime episodes the
+    # subject has. Same chronological ordering contract as
+    # `list_episodes_by_subject`: `occurred_at` first so backfilled events
+    # land in their real position, `created_at` as the ingest-order tiebreak.
+    stmt = (
+        select(EpisodeRow)
+        .where(EpisodeRow.subject_id == subject_id)
+        .where(EpisodeRow.session_id == session_id)
+        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc())
+        .limit(limit)
+    )
+    stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
+    result = await session.execute(stmt)
+    return result.scalars().all()
+
+
 async def list_uncompiled_episodes(
     session: AsyncSession,
     subject_id: str,

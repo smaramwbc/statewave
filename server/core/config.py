@@ -34,7 +34,17 @@ class Settings(BaseSettings):
     default_max_context_tokens: int = 4000
 
     # Compiler
-    compiler_type: str = "heuristic"
+    compiler_type: str = "heuristic"  # "heuristic" | "llm"
+
+    @field_validator("compiler_type")
+    @classmethod
+    def _validate_compiler_type(cls, value: str) -> str:
+        allowed = {"heuristic", "llm"}
+        if value not in allowed:
+            raise ValueError(
+                f"STATEWAVE_COMPILER_TYPE must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
     # Embeddings.
     #
@@ -46,6 +56,16 @@ class Settings(BaseSettings):
     # `none` disables embeddings entirely (no vector column writes).
     embedding_provider: str = "stub"  # "stub" | "litellm" | "none"
     embedding_dimensions: int = 1536
+
+    @field_validator("embedding_provider")
+    @classmethod
+    def _validate_embedding_provider(cls, value: str) -> str:
+        allowed = {"stub", "litellm", "none"}
+        if value not in allowed:
+            raise ValueError(
+                f"STATEWAVE_EMBEDDING_PROVIDER must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
     # LiteLLM — single provider abstraction. See server/services/llm.py for
     # the provider-neutral env-var contract. LiteLLM dispatches to the
@@ -65,6 +85,16 @@ class Settings(BaseSettings):
     # Rate limiting (0 = disabled)
     rate_limit_rpm: int = 0
     rate_limit_strategy: str = "memory"  # "memory" (default) | "distributed"
+
+    @field_validator("rate_limit_strategy")
+    @classmethod
+    def _validate_rate_limit_strategy(cls, value: str) -> str:
+        allowed = {"memory", "distributed"}
+        if value not in allowed:
+            raise ValueError(
+                f"STATEWAVE_RATE_LIMIT_STRATEGY must be one of {sorted(allowed)}, got {value!r}"
+            )
+        return value
 
     # Subject Snapshots (advanced bootstrap — disabled by default)
     enable_snapshots: bool = False

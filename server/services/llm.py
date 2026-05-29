@@ -94,10 +94,13 @@ def llm_requires_api_key() -> bool:
 def warn_if_llm_compiler_missing_api_key() -> None:
     """Log a one-shot startup warning when LLM compiler is selected without credentials.
 
-    Operators often copy `.env.example` (compiler=llm, empty key) and assume
-    semantic search is live. Without a key, compilation cannot reach a provider
-    and the default hash embedding stub still produces non-semantic vectors —
-    the same degraded "demo mode" described in getting-started.md.
+    Operators sometimes select the LLM compiler (STATEWAVE_COMPILER_TYPE=llm)
+    with an empty key and assume semantic search is live. It is not: without a
+    reachable key, every compile call fails its provider round-trip and yields
+    zero memories — the LLM compiler does NOT fall back to the regex
+    (heuristic) compiler. Embeddings separately degrade to the non-semantic
+    hash stub. For a keyless setup, use STATEWAVE_COMPILER_TYPE=heuristic
+    (the .env.example default), which extracts memories locally.
     """
     if settings.compiler_type != "llm":
         return
@@ -109,13 +112,15 @@ def warn_if_llm_compiler_missing_api_key() -> None:
     logger.warning(
         "llm_compiler_missing_api_key",
         missing_var="STATEWAVE_LITELLM_API_KEY",
-        fallback=(
-            "demo mode: regex-based extraction and hash-based embeddings "
-            "(no real semantic search)"
+        effect=(
+            "compilation will produce zero memories (LLM calls fail with no "
+            "key — there is no regex fallback); embeddings use the "
+            "non-semantic hash stub"
         ),
         advice=(
             "Set STATEWAVE_LITELLM_API_KEY in .env (or deployment secrets) and "
-            "restart the API process."
+            "restart the API process — or, for a keyless setup, set "
+            "STATEWAVE_COMPILER_TYPE=heuristic to extract memories locally."
         ),
         docs=_GETTING_STARTED_TROUBLESHOOTING_URL,
     )

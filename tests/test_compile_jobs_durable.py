@@ -105,6 +105,25 @@ class TestDurableJobs:
         assert job.id in _jobs
 
     @pytest.mark.anyio
+    async def test_submit_job_durable_preserves_tenant_in_cache(self):
+        """Durable submit keeps tenant ownership available for cache reads."""
+        mock_session = AsyncMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+
+        def mock_factory():
+            return mock_session
+
+        with patch(
+            "server.services.compile_jobs_durable.get_session_factory",
+            return_value=mock_factory,
+        ):
+            job = await submit_job_durable("test-subject", tenant_id="tenant-a")
+
+        assert job.tenant_id == "tenant-a"
+        assert _jobs[job.id].tenant_id == "tenant-a"
+
+    @pytest.mark.anyio
     async def test_submit_job_durable_propagates_db_error(self):
         """A DB failure surfaces to the caller — no silent in-memory fallback.
 
@@ -136,6 +155,15 @@ class TestDurableJobs:
         job = submit_job("sub")
         result = await get_job_durable(job.id)
         assert result is job
+
+    @pytest.mark.anyio
+    async def test_get_job_durable_rejects_cache_hit_for_wrong_tenant(self):
+        """A cached job for another tenant must not be visible to this caller."""
+        job = submit_job("sub", tenant_id="tenant-a")
+
+        result = await get_job_durable(job.id, tenant_id="tenant-b")
+
+        assert result is None
 
     @pytest.mark.anyio
     async def test_get_job_durable_queries_db_on_miss(self):

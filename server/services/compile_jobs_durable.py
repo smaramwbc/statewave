@@ -45,6 +45,7 @@ class JobStatus(str, Enum):
 class CompileJob:
     id: str
     subject_id: str
+    tenant_id: str | None = None
     status: JobStatus = JobStatus.pending
     memories_created: int = 0
     memories: list[dict[str, Any]] = field(default_factory=list)
@@ -57,6 +58,7 @@ def _row_to_job(row: CompileJobRow) -> CompileJob:
     return CompileJob(
         id=row.id,
         subject_id=row.subject_id,
+        tenant_id=row.tenant_id,
         status=JobStatus(row.status),
         memories_created=row.memories_created,
         memories=[],  # Not stored in DB to keep table lean
@@ -86,17 +88,27 @@ async def submit_job(subject_id: str, tenant_id: str | None = None) -> CompileJo
         )
         session.add(row)
         await session.commit()
-    return CompileJob(id=job_id, subject_id=subject_id, created_at=now.timestamp())
+    return CompileJob(
+        id=job_id,
+        subject_id=subject_id,
+        tenant_id=tenant_id,
+        created_at=now.timestamp(),
+    )
 
 
-async def get_job(job_id: str) -> CompileJob | None:
+async def get_job(job_id: str, tenant_id: str | None = None) -> CompileJob | None:
     """Retrieve a job by ID from Postgres.
 
     Returns None only when the job genuinely does not exist. DB errors
     propagate so a transient outage doesn't masquerade as "not found".
     """
     async with get_session_factory()() as session:
-        result = await session.execute(select(CompileJobRow).where(CompileJobRow.id == job_id))
+        stmt = select(CompileJobRow).where(CompileJobRow.id == job_id)
+        if tenant_id is None:
+            stmt = stmt.where(CompileJobRow.tenant_id.is_(None))
+        else:
+            stmt = stmt.where(CompileJobRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
         row = result.scalar_one_or_none()
         if row is None:
             return None

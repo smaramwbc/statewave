@@ -171,6 +171,25 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_compile_status_scopes_job_lookup_by_tenant(monkeypatch):
+    """Polling an async compile job should only look up jobs in the caller tenant."""
+    from server.api import memories as api_memories
+
+    looked_up: list[tuple[str, str | None]] = []
+
+    async def fake_get_job(job_id: str, *, tenant_id: str | None):
+        looked_up.append((job_id, tenant_id))
+        return None
+
+    monkeypatch.setattr(api_memories.compile_jobs, "get_job_durable", fake_get_job)
+
+    response = await api_memories.get_compile_status("job-1", tenant_id="tenant-a")
+
+    assert response.status_code == 404
+    assert looked_up == [("job-1", "tenant-a")]
+
+
+@pytest.mark.asyncio
 async def test_sync_route_returns_502_on_compilation_error(monkeypatch):
     """Sync `/v1/memories/compile` surfaces a 502 with a clear error envelope
     rather than a misleading `memories_created: 0`.

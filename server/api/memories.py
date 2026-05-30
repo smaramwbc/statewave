@@ -276,9 +276,12 @@ async def compile_memories(
 
 
 @router.get("/compile/{job_id}", summary="Check compile job status")
-async def get_compile_status(job_id: str):
+async def get_compile_status(
+    job_id: str,
+    tenant_id: str | None = Depends(get_tenant_id),
+):
     """Poll for the status of an async compile job (durable — survives restarts)."""
-    job = await compile_jobs.get_job_durable(job_id)
+    job = await compile_jobs.get_job_durable(job_id, tenant_id=tenant_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found or expired"})
 

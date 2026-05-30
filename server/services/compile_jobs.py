@@ -44,6 +44,7 @@ class JobStatus(str, Enum):
 class CompileJob:
     id: str
     subject_id: str
+    tenant_id: str | None = None
     status: JobStatus = JobStatus.pending
     memories_created: int = 0
     memories: list[dict[str, Any]] = field(default_factory=list)
@@ -83,7 +84,7 @@ async def submit_job_durable(subject_id: str, tenant_id: str | None = None) -> C
     return job
 
 
-async def get_job_durable(job_id: str) -> CompileJob | None:
+async def get_job_durable(job_id: str, tenant_id: str | None = None) -> CompileJob | None:
     """Get a job by id. Process-local cache first, then Postgres.
 
     Cache hits skip the DB round-trip; cache misses fall through to
@@ -91,10 +92,13 @@ async def get_job_durable(job_id: str) -> CompileJob | None:
     as "job not found".
     """
     if job_id in _jobs:
-        return _jobs[job_id]
+        job = _jobs[job_id]
+        if job.tenant_id == tenant_id:
+            return job
+        return None
     from server.services.compile_jobs_durable import get_job as _durable_get
 
-    return await _durable_get(job_id)
+    return await _durable_get(job_id, tenant_id=tenant_id)
 
 
 async def mark_running_durable(job_id: str) -> None:
@@ -152,10 +156,10 @@ async def update_progress_durable(job_id: str, memories_created: int) -> None:
 # ---------------------------------------------------------------------------
 
 
-def submit_job(subject_id: str) -> CompileJob:
+def submit_job(subject_id: str, tenant_id: str | None = None) -> CompileJob:
     """Create a new compile job and return it. Caller must start the task."""
     job_id = str(uuid.uuid4())[:8]
-    job = CompileJob(id=job_id, subject_id=subject_id)
+    job = CompileJob(id=job_id, subject_id=subject_id, tenant_id=tenant_id)
     _jobs[job_id] = job
     _cleanup_old_jobs()
     return job

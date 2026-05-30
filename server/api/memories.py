@@ -302,7 +302,7 @@ async def search_memories(
     kind: str | None = Query(None),
     query: str | None = Query(None, alias="q"),
     semantic: bool = Query(False, description="Use semantic similarity search when available"),
-    limit: int = Query(20, le=100),
+    limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):

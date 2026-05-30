@@ -100,6 +100,21 @@ async def test_resolve_conflicts_supersedes_despite_punctuation():
     mock_repo.mark_memories_superseded.assert_called_once()
 
 
+async def test_resolve_conflicts_scopes_memory_lookup_by_tenant():
+    with patch("server.services.conflicts.repo") as mock_repo:
+        mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[])
+        mock_repo.mark_memories_superseded = AsyncMock()
+
+        session = AsyncMock()
+        result = await resolve_conflicts(session, "user-1", tenant_id="tenant-a")
+
+    assert result == []
+    mock_repo.list_active_memories_by_subject.assert_awaited_once_with(
+        session, "user-1", tenant_id="tenant-a"
+    )
+    mock_repo.mark_memories_superseded.assert_not_called()
+
+
 async def test_resolve_conflicts_marks_older_superseded():
     now = datetime.now(timezone.utc)
     older = _make_memory("my name is Alice", created_at=now - timedelta(days=5))

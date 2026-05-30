@@ -126,6 +126,7 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
 
     episodes = [_FakeEpisode()]
     marked: list = []
+    resolved: list[tuple[str, str | None]] = []
 
     async def fake_list(_session, _subject_id, *, tenant_id, limit):
         return episodes
@@ -136,7 +137,8 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
     async def fake_count(_session, _subject_id, *, tenant_id):
         return 0
 
-    async def fake_resolve(_session, _subject_id):
+    async def fake_resolve(_session, _subject_id, *, tenant_id):
+        resolved.append((_subject_id, tenant_id))
         return []
 
     async def fake_fire(*_a, **_k):
@@ -156,12 +158,13 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
 
     session = _FakeSession()
     responses, created, remaining = await api_memories._compile_one_batch(
-        session, "user-1", None, 10
+        session, "user-1", "tenant-a", 10
     )
 
     assert created == 0
     assert responses == []
     assert marked == [[episodes[0].id]], "empty-but-successful run marks episodes compiled"
+    assert resolved == [("user-1", "tenant-a")]
     assert session.commits == 1
 
 

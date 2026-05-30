@@ -91,7 +91,7 @@ async def _compile_one_batch(
         session.add(row)
     await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
-    superseded_ids = await resolve_conflicts(session, subject_id)
+    superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
     if superseded_ids:
         logger.info("conflicts_resolved", superseded=len(superseded_ids))
 

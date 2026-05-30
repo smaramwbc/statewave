@@ -47,9 +47,13 @@ def _tokenize(content: str) -> set[str]:
 async def resolve_conflicts(
     session: AsyncSession,
     subject_id: str,
+    *,
+    tenant_id: str | None = None,
 ) -> list[uuid.UUID]:
     """Detect and resolve conflicting memories. Returns IDs of superseded memories."""
-    memories = await repo.list_active_memories_by_subject(session, subject_id)
+    memories = await repo.list_active_memories_by_subject(
+        session, subject_id, tenant_id=tenant_id
+    )
     if len(memories) < 2:
         return []
 

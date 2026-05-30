@@ -358,9 +358,15 @@ async def test_list_subjects(client: AsyncClient, subject_id: str):
 
 @pytest.mark.anyio
 async def test_list_subjects_empty(client: AsyncClient):
-    """GET /v1/subjects with pagination returns valid shape."""
+    """An out-of-range page returns an empty `subjects` list, while `total`
+    still reports the full matching count (it must not collapse to the page
+    length). `total` is therefore independent of `limit`/`offset`."""
+    baseline = await client.get("/v1/subjects")
+    assert baseline.status_code == 200
+    total_all = baseline.json()["total"]
+
     resp = await client.get("/v1/subjects", params={"limit": 1, "offset": 99999})
     assert resp.status_code == 200
     data = resp.json()
     assert data["subjects"] == []
-    assert data["total"] == 0
+    assert data["total"] == total_all

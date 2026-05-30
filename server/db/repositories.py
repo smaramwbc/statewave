@@ -385,6 +385,29 @@ async def list_subjects(
     ]
 
 
+async def count_subjects(
+    session: AsyncSession,
+    *,
+    tenant_id: str | None = None,
+) -> int:
+    """Return the unpaginated count of public subject IDs."""
+    ep_subjects = select(EpisodeRow.subject_id)
+    mem_subjects = select(MemoryRow.subject_id)
+    if tenant_id is not None:
+        ep_subjects = ep_subjects.where(EpisodeRow.tenant_id == tenant_id)
+        mem_subjects = mem_subjects.where(MemoryRow.tenant_id == tenant_id)
+    all_subjects = ep_subjects.union(mem_subjects).subquery()
+
+    stmt = (
+        select(func.count())
+        .select_from(all_subjects)
+        .where(all_subjects.c.subject_id.not_like("_snapshot/%"))
+        .where(all_subjects.c.subject_id.not_like("_bootstrap_tmp/%"))
+    )
+    total = await session.scalar(stmt)
+    return int(total or 0)
+
+
 # ---------------------------------------------------------------------------
 # Resolutions
 # ---------------------------------------------------------------------------

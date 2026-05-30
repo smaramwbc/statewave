@@ -23,9 +23,10 @@ async def list_subjects(
 ):
     """List all known subject IDs with episode and memory counts."""
     rows = await repo.list_subjects(session, tenant_id=tenant_id, limit=limit, offset=offset)
+    total = await repo.count_subjects(session, tenant_id=tenant_id)
     return ListSubjectsResponse(
         subjects=rows,
-        total=len(rows),
+        total=total,
     )
 
 

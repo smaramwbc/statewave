@@ -115,6 +115,7 @@ async def create_snapshot(
                     metadata_=ep.metadata_,
                     session_id=ep.session_id,
                     provenance={**(ep.provenance or {}), "original_id": str(ep.id)},
+                    occurred_at=ep.occurred_at,
                     created_at=ep.created_at,
                     last_compiled_at=ep.last_compiled_at,
                 )
@@ -468,9 +469,15 @@ async def delete_snapshot(snapshot_id: uuid.UUID) -> bool:
             return False
 
         source_subject = s.source_subject_id
-        # Delete source data
+        # Delete source data. create_snapshot copies resolutions into the
+        # snapshot-source subject too (see above), so they must be reaped here
+        # as well — otherwise every create/delete cycle orphans ResolutionRows
+        # under the deleted _snapshot/* subject, growing the table unbounded.
         await session.execute(delete(MemoryRow).where(MemoryRow.subject_id == source_subject))
         await session.execute(delete(EpisodeRow).where(EpisodeRow.subject_id == source_subject))
+        await session.execute(
+            delete(ResolutionRow).where(ResolutionRow.subject_id == source_subject)
+        )
         await session.execute(
             delete(SubjectSnapshotRow).where(SubjectSnapshotRow.id == snapshot_id)
         )

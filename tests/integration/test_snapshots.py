@@ -420,3 +420,114 @@ async def test_cleanup_does_not_delete_snapshots(client: AsyncClient, subject_id
         r = await client.get("/admin/snapshots")
         snap_ids = [s["id"] for s in r.json()["snapshots"]]
         assert snap["id"] in snap_ids
+
+
+# ---------------------------------------------------------------------------
+# Snapshot data-integrity: occurred_at preservation + resolution cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_snapshot_preserves_occurred_at(client: AsyncClient, subject_id, session_factory):
+    """The snapshot-source episode must carry the original episode's
+    occurred_at, not the column server-default (now()). Otherwise a
+    backfilled history (occurred_at far in the past) collapses its real
+    timeline to snapshot-creation time on every snapshot round-trip."""
+    import datetime as dt
+
+    from sqlalchemy import select
+
+    from server.db.tables import EpisodeRow
+    from server.services.snapshots import SNAPSHOT_SOURCE_PREFIX, create_snapshot
+
+    expected = dt.datetime(2020, 1, 2, 3, 4, 5, tzinfo=dt.timezone.utc)
+    with patch("server.core.config.settings.enable_snapshots", True):
+        r = await client.post(
+            "/v1/episodes",
+            json={
+                "subject_id": subject_id,
+                "source": "test",
+                "type": "conversation",
+                "payload": {"text": "backfilled history"},
+                "occurred_at": expected.isoformat(),
+            },
+        )
+        assert r.status_code == 201
+
+        snap_name = f"occ-{uuid.uuid4().hex[:8]}"
+        await create_snapshot(name=snap_name, source_subject_id=subject_id)
+
+    snapshot_subject = f"{SNAPSHOT_SOURCE_PREFIX}{snap_name}/v1"
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(EpisodeRow).where(EpisodeRow.subject_id == snapshot_subject)
+            )
+        ).scalars().all()
+    assert rows, "snapshot-source episode should exist"
+    assert all(row.occurred_at == expected for row in rows)
+
+
+@pytest.mark.anyio
+async def test_delete_snapshot_removes_copied_resolutions(
+    client: AsyncClient, subject_id, session_factory
+):
+    """delete_snapshot must reap the resolutions create_snapshot copied into
+    the snapshot-source subject, otherwise they orphan under the deleted
+    _snapshot/* subject and grow the table unbounded."""
+    from sqlalchemy import func, select
+
+    from server.db.tables import EpisodeRow, ResolutionRow
+    from server.services.snapshots import (
+        SNAPSHOT_SOURCE_PREFIX,
+        create_snapshot,
+        delete_snapshot,
+    )
+
+    async with session_factory() as session:
+        session.add(
+            EpisodeRow(
+                id=uuid.uuid4(),
+                subject_id=subject_id,
+                source="test",
+                type="conversation",
+                payload={"text": "hi"},
+            )
+        )
+        session.add(
+            ResolutionRow(
+                id=uuid.uuid4(),
+                subject_id=subject_id,
+                session_id="sess-1",
+                status="resolved",
+                resolution_summary="done",
+            )
+        )
+        await session.commit()
+
+    snapshot_subject = ""
+    with patch("server.core.config.settings.enable_snapshots", True):
+        snap_name = f"res-{uuid.uuid4().hex[:8]}"
+        snap = await create_snapshot(name=snap_name, source_subject_id=subject_id)
+        snapshot_subject = f"{SNAPSHOT_SOURCE_PREFIX}{snap_name}/v1"
+
+        async with session_factory() as session:
+            copied = await session.scalar(
+                select(func.count())
+                .select_from(ResolutionRow)
+                .where(ResolutionRow.subject_id == snapshot_subject)
+            )
+        assert copied == 1, "create_snapshot should copy the resolution into the source"
+
+        assert await delete_snapshot(uuid.UUID(snap["id"])) is True
+
+        listing = await client.get("/admin/snapshots")
+        assert snap["id"] not in [s["id"] for s in listing.json()["snapshots"]]
+
+    async with session_factory() as session:
+        remaining = await session.scalar(
+            select(func.count())
+            .select_from(ResolutionRow)
+            .where(ResolutionRow.subject_id == snapshot_subject)
+        )
+    assert remaining == 0

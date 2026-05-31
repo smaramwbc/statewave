@@ -41,6 +41,13 @@ async def delete_subject(
     """Permanently delete all episodes and memories for a subject. This is irreversible."""
     ep_count = await repo.delete_episodes_by_subject(session, subject_id, tenant_id=tenant_id)
     mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
+    # "Permanently delete all subject data" must also reap the subject's
+    # resolutions and health-cache row — there is no FK cascade. Leaving them
+    # behind keeps open/resolved-session logic treating the deleted subject's
+    # sessions as live and lets a stale health-cache row suppress/forge alerts
+    # if the subject id is later reused.
+    await repo.delete_resolutions_by_subject(session, subject_id, tenant_id=tenant_id)
+    await repo.delete_health_cache_by_subject(session, subject_id, tenant_id=tenant_id)
     await session.commit()
     await webhooks.fire(
         "subject.deleted",

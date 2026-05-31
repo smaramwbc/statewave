@@ -1930,6 +1930,8 @@ async def delete_subject_admin(
     async with engine_module.get_session_factory()() as session:
         ep_count = await repo.delete_episodes_by_subject(session, subject_id, tenant_id=tenant_id)
         mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
+        await repo.delete_resolutions_by_subject(session, subject_id, tenant_id=tenant_id)
+        await repo.delete_health_cache_by_subject(session, subject_id, tenant_id=tenant_id)
         await session.commit()
 
     if ep_count == 0 and mem_count == 0:
@@ -2022,6 +2024,12 @@ async def commit_bulk_delete(req: BulkDeleteCommitRequest):
                     session, s.subject_id, tenant_id=s.tenant_id
                 )
                 mem_n = await repo.delete_memories_by_subject(
+                    session, s.subject_id, tenant_id=s.tenant_id
+                )
+                await repo.delete_resolutions_by_subject(
+                    session, s.subject_id, tenant_id=s.tenant_id
+                )
+                await repo.delete_health_cache_by_subject(
                     session, s.subject_id, tenant_id=s.tenant_id
                 )
                 await session.commit()

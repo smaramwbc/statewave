@@ -122,6 +122,25 @@ authorized the contribution before submitting.
 - Match the surrounding code's conventions; prefer small, composable
   functions; prefer clear names over comments.
 
+## Invariants enforced by CI
+
+A few cross-cutting rules are checked automatically so a single change can't
+silently reintroduce a whole class of bug. If your PR trips one of these, the
+fix is to satisfy the rule (not to weaken the test):
+
+- **Tenant scoping** — every repository query that takes a `subject_id` must
+  also take a `tenant_id` and apply `_tenant_filter`, so it can't read across
+  tenants. (`tests/test_tenant_scoping_invariant.py`)
+- **Bounded pagination** — every `limit` query parameter needs `ge` and `le`,
+  and every `offset` needs `ge`. (`tests/test_route_limits_invariant.py`)
+- **One tokenizer** — lexical word comparison goes through
+  `server.services.tokenization.tokenize`; raw `.lower().split()` elsewhere is
+  rejected, because punctuation welded onto tokens silently zeros overlap.
+  (`tests/test_no_raw_tokenization.py`, `tests/test_tokenization.py`)
+
+Each rule exists because a real bug shipped without it; the test is the cheapest
+place to catch the next one.
+
 ## Reporting security issues
 
 Please **do not** open a public issue for security vulnerabilities. See

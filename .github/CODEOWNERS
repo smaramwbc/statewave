@@ -1,0 +1,17 @@
+# Code owners for security-sensitive surfaces.
+#
+# Listing a path here requests @smaramwbc as a reviewer automatically. It is
+# ENFORCED (review required to merge) only when branch protection has
+# "Require review from Code Owners" enabled for the default branch.
+
+# CI / supply chain — a malicious workflow edit is the highest-impact change.
+/.github/                @smaramwbc
+
+# Auth, tenancy, config, and persistence — isolation-critical code.
+/server/core/            @smaramwbc
+/server/db/              @smaramwbc
+
+# Dependency and image definitions.
+/pyproject.toml          @smaramwbc
+/Dockerfile              @smaramwbc
+/docker-compose.yml      @smaramwbc

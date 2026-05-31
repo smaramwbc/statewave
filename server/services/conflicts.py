@@ -21,27 +21,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
 from server.db.tables import MemoryRow
+from server.services.tokenization import EDGE_PUNCT, tokenize
 
 logger = structlog.stdlib.get_logger()
 
 # Similarity threshold for word-overlap conflict detection (0–1)
 _WORD_OVERLAP_THRESHOLD = 0.6
 
-# Punctuation stripped from token edges before the word-overlap comparison,
-# mirroring server.services.context._tokenize_for_relevance. Without it a
-# trailing "." welds onto a word ("Stripe." != "Stripe"), dragging the Jaccard
-# similarity below threshold and silently skipping a valid supersession — the
-# older duplicate then stays active forever and pollutes future bundles.
-_TOKEN_EDGE_PUNCT = "?.,:;()[]{}'\"!"
-
-
-def _tokenize(content: str) -> set[str]:
-    """Lowercase word tokens with surrounding punctuation stripped."""
-    return {
-        stripped
-        for stripped in (t.strip(_TOKEN_EDGE_PUNCT) for t in content.lower().split())
-        if stripped
-    }
+# Tokenization is centralized in server.services.tokenization so this detector
+# and the relevance scorer can never drift apart. Drift silently welds a
+# trailing "." onto a word ("Stripe." != "Stripe"), dragging Jaccard similarity
+# below threshold and skipping a valid supersession (#198/#199).
+_TOKEN_EDGE_PUNCT = EDGE_PUNCT
+_tokenize = tokenize
 
 
 async def resolve_conflicts(

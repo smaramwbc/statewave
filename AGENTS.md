@@ -54,6 +54,10 @@ STATEWAVE_EMBEDDING_PROVIDER=stub STATEWAVE_COMPILER_TYPE=heuristic \
 - **Keep claims accurate and modest.** Describe what the code does; back any
   performance or benchmark claim with a reproducible source, and avoid
   unqualified superlatives.
+- **CI enforces a few cross-cutting invariants** — tenant-scoped repository
+  queries, bounded pagination params, and a single shared tokenizer. If a guard
+  test fails, satisfy the rule rather than weakening the test. See
+  [CONTRIBUTING.md](CONTRIBUTING.md#invariants-enforced-by-ci).
 
 ## Pull requests
 

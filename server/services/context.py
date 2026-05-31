@@ -33,6 +33,7 @@ from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.query_cache import cached_embed_query
+from server.services.tokenization import EDGE_PUNCT, tokenize
 
 logger = structlog.stdlib.get_logger()
 
@@ -897,22 +898,10 @@ def _session_keyword_overlap(current_keywords: set[str], prior_keywords: set[str
     return overlap / len(current_keywords)
 
 
-_RELEVANCE_PUNCT = "?.,:;()[]{}'\"!"
-
-
-def _tokenize_for_relevance(text: str) -> set[str]:
-    """Lowercase word tokens for relevance scoring, with surrounding
-    punctuation stripped. Without stripping, content fragments like
-    `'npm install'` (literal quotes from a markdown code-snippet docs
-    pack) tokenize as `'npm` and won't intersect a query token of `npm`,
-    silently zeroing the lexical signal."""
-    if not text:
-        return set()
-    return {
-        stripped
-        for stripped in (t.strip(_RELEVANCE_PUNCT) for t in text.lower().split())
-        if stripped
-    }
+# Lexical tokenization is centralized in server.services.tokenization so the
+# relevance scorer and the conflict detector can never drift apart (#198/#199).
+_RELEVANCE_PUNCT = EDGE_PUNCT
+_tokenize_for_relevance = tokenize
 
 
 def _has_urgency(text: str) -> bool:

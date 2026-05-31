@@ -1,0 +1,36 @@
+name: Security Review (Claude)
+
+# AI security review of each pull request diff; findings are posted as PR
+# comments. Complements (does not replace) CodeQL and human review.
+#
+# Fork PRs do NOT receive repository secrets — this is a deliberate GitHub
+# protection that stops a malicious PR from stealing CLAUDE_API_KEY. The `if`
+# below skips forks so the job doesn't fail on them; review fork PRs with a
+# maintainer-gated run instead. Requires a CLAUDE_API_KEY repository secret
+# (a key with Claude API + Claude Code usage enabled).
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  security-review:
+    # Same-repo branches only (forks have no secret); Dependabot bumps are
+    # already covered by CodeQL + the dependency review.
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository
+      && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - uses: anthropics/claude-code-security-review@main
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}

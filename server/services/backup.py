@@ -167,17 +167,34 @@ async def import_subject(
     id_map: dict[str, str] = {}
 
     async with engine_module.get_session_factory()() as session:
-        # Check for conflicts if preserving IDs
-        if preserve_ids and episodes_data:
-            existing_ids = [ep["id"] for ep in episodes_data]
-            conflict_stmt = select(EpisodeRow.id).where(
-                EpisodeRow.id.in_([uuid.UUID(eid) for eid in existing_ids])
+        # Check for conflicts if preserving IDs. Both episode AND memory ids
+        # must be checked — a memory-id collision otherwise slips past this
+        # guard and surfaces as a raw IntegrityError (HTTP 500) on commit,
+        # after episodes were partially added, instead of the clean ValueError
+        # (HTTP 400) this function promises. Run whenever preserve_ids is set,
+        # not only when there are episodes (a memories-only doc must be guarded
+        # too).
+        if preserve_ids:
+            ep_ids = [uuid.UUID(ep["id"]) for ep in episodes_data]
+            mem_ids = [uuid.UUID(m["id"]) for m in memories_data]
+            ep_conflicts = (
+                (await session.execute(select(EpisodeRow.id).where(EpisodeRow.id.in_(ep_ids))))
+                .scalars()
+                .all()
+                if ep_ids
+                else []
             )
-            result = await session.execute(conflict_stmt)
-            conflicts = result.scalars().all()
-            if conflicts:
+            mem_conflicts = (
+                (await session.execute(select(MemoryRow.id).where(MemoryRow.id.in_(mem_ids))))
+                .scalars()
+                .all()
+                if mem_ids
+                else []
+            )
+            if ep_conflicts or mem_conflicts:
                 raise ValueError(
-                    f"ID conflict: {len(conflicts)} episode(s) already exist. "
+                    f"ID conflict: {len(ep_conflicts)} episode(s) and "
+                    f"{len(mem_conflicts)} memory(ies) already exist. "
                     "Use preserve_ids=false to generate new IDs, or delete existing data first."
                 )
 

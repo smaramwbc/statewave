@@ -302,7 +302,18 @@ async def aembed_texts(
         usage=resp.usage.total_tokens if getattr(resp, "usage", None) else None,
     )
     try:
-        return [item["embedding"] for item in resp.data]
+        # The OpenAI-compatible embeddings API does NOT guarantee that
+        # ``resp.data`` comes back in input order — each item carries an
+        # ``index`` precisely so clients can re-order. Sort by it so that
+        # ``result[i]`` corresponds to ``texts[i]`` (callers, e.g. the
+        # background backfill, zip the result against the input ids). Fall
+        # back to response order if a provider omits ``index``.
+        data = list(resp.data)
+        try:
+            data.sort(key=lambda item: item["index"])
+        except (KeyError, TypeError):
+            pass
+        return [item["embedding"] for item in data]
     except (AttributeError, KeyError, TypeError) as exc:
         raise LLMResponseError("Embedding response missing data/embedding") from exc
 

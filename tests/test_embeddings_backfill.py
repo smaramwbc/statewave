@@ -91,6 +91,37 @@ async def test_happy_path_writes_one_embedding_per_memory():
 
 
 @pytest.mark.anyio
+async def test_count_mismatch_short_circuits_without_partial_write():
+    """If the provider returns fewer vectors than inputs, ``zip`` would
+    silently drop the trailing memories (leaving them ``embedding IS NULL``)
+    while still committing a partial result. Guard it: no UPDATE, no commit."""
+    ids = [uuid4(), uuid4(), uuid4()]
+    texts = ["a", "b", "c"]
+    short_vectors = [[0.1] * 4, [0.2] * 4]  # provider returned only 2 of 3
+
+    fake_provider = MagicMock()
+    fake_provider.embed_texts = AsyncMock(return_value=short_vectors)
+
+    fake_session = AsyncMock()
+    fake_session.execute = AsyncMock()
+    fake_session.commit = AsyncMock()
+    fake_session_ctx = MagicMock()
+    fake_session_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session_ctx.__aexit__ = AsyncMock(return_value=None)
+    fake_factory = MagicMock(return_value=fake_session_ctx)
+
+    with (
+        patch.object(backfill_mod, "get_provider", return_value=fake_provider),
+        patch.object(backfill_mod, "get_session_factory", return_value=fake_factory),
+    ):
+        await backfill_mod.generate_embeddings_background(ids, texts)
+
+    fake_provider.embed_texts.assert_awaited_once_with(texts)
+    fake_session.execute.assert_not_awaited()
+    fake_session.commit.assert_not_awaited()
+
+
+@pytest.mark.anyio
 async def test_provider_failure_is_swallowed():
     """A flaky provider must NOT propagate — embeddings are an
     optimisation, retrieval falls back to non-vector ranking when

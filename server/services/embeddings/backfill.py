@@ -76,6 +76,18 @@ async def generate_embeddings_background(
 
     try:
         embeddings = await provider.embed_texts(list(texts))
+        if len(embeddings) != len(memory_ids):
+            # A provider that returns fewer/more vectors than inputs would,
+            # via ``zip`` below, silently leave trailing memories with
+            # ``embedding IS NULL`` (or misalign them). Refuse the partial
+            # write so retrieval cleanly falls back instead of persisting a
+            # desynced result; a future recompile retries.
+            logger.warning(
+                "background_embedding_count_mismatch",
+                expected=len(memory_ids),
+                got=len(embeddings),
+            )
+            return
         async with get_session_factory()() as session:
             for mid, emb in zip(memory_ids, embeddings):
                 await session.execute(

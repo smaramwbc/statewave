@@ -24,13 +24,19 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
       && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
+    env:
+      CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
 
-      - uses: anthropics/claude-code-security-review@main
+      # Skips cleanly until the CLAUDE_API_KEY secret is added (the job then
+      # passes as a no-op), and auto-activates once it is set.
+      - name: Claude security review
+        if: env.CLAUDE_API_KEY != ''
+        uses: anthropics/claude-code-security-review@main
         with:
           comment-pr: true
-          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          claude-api-key: ${{ env.CLAUDE_API_KEY }}

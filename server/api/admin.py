@@ -655,7 +655,22 @@ async def get_subject_sla(
                 "sessions": getattr(sla_result, "sessions", []),
             }
     except Exception:
-        return {"total_sessions": 0, "resolved_sessions": 0, "open_sessions": 0, "sessions": []}
+        # Keep the response shape identical to the success branch — a typed
+        # admin client reading avg_*/breach_count fields would otherwise get
+        # missing keys on a transient failure while still seeing HTTP 200. Also
+        # log it: silently swallowing makes a real DB error indistinguishable
+        # from a genuinely empty subject on this operator-introspection endpoint.
+        logger.warning("subject_sla_failed", subject_id=subject_id, exc_info=True)
+        return {
+            "total_sessions": 0,
+            "resolved_sessions": 0,
+            "open_sessions": 0,
+            "avg_first_response_seconds": None,
+            "avg_resolution_seconds": None,
+            "first_response_breach_count": 0,
+            "resolution_breach_count": 0,
+            "sessions": [],
+        }
 
 
 @router.get("/subjects/{subject_id}/memories", response_model=MemoryListResponse)

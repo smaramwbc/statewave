@@ -726,10 +726,18 @@ async def list_receipts(
     individually addressable via `get_receipt_by_id` for forensic
     lookup of "a receipt with id X was emitted and later retired."
     """
+    # Order by the SAME key the cursor predicate uses (`receipt_id < cursor`
+    # below). The ULID receipt_id encodes creation time, so receipt_id-desc is
+    # newest-first as the docstring promises — and keyset pagination is only
+    # sound when ORDER BY and the cursor comparison agree. Ordering by
+    # created_at (a different clock: DB commit time vs the app-side ULID) while
+    # cursoring on receipt_id silently dropped or duplicated rows across pages
+    # whenever the two orderings disagreed (clock skew, multi-replica, or two
+    # receipts in the same millisecond). `since`/`until` still filter created_at.
     stmt = (
         select(ReceiptRow)
         .where(ReceiptRow.subject_id == subject_id)
-        .order_by(ReceiptRow.created_at.desc(), ReceiptRow.receipt_id.desc())
+        .order_by(ReceiptRow.receipt_id.desc())
         .limit(limit)
     )
     stmt = _tenant_filter(stmt, ReceiptRow.tenant_id, tenant_id)

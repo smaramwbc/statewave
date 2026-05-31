@@ -179,8 +179,13 @@ async def assemble_context(
     summary_rows = await repo.search_memories(
         session, subject_id, tenant_id=tenant_id, kind="episode_summary", limit=30
     )
+    # `newest_first` so a subject with >30 lifetime episodes contributes its
+    # most-recent 30 to the candidate pool — recency boosts, the "Recent
+    # interactions" rendering, and repeat-issue detection all assume recent
+    # episodes. Without it the oldest 30 would be scored under a "recent"
+    # heading.
     episode_rows = await repo.list_episodes_by_subject(
-        session, subject_id, tenant_id=tenant_id, limit=30
+        session, subject_id, tenant_id=tenant_id, limit=30, newest_first=True
     )
 
     # -- Prepare semantic scoring -------------------------------------------

@@ -65,11 +65,31 @@ async def list_episodes_by_subject(
     *,
     tenant_id: str | None = None,
     limit: int = 100,
+    newest_first: bool = False,
 ) -> Sequence[EpisodeRow]:
     # Order by `occurred_at` (the source-event time) so backfilled episodes
     # land in their real chronological position. `created_at` is the
     # tiebreak so simultaneous events from a single ingest batch retain
     # their insertion order in the response.
+    #
+    # `newest_first=True` selects the most-recent `limit` episodes (then
+    # returns them in ascending chronological order). Callers that want a
+    # bounded "recent activity" window MUST use it: with the default ascending
+    # order, a `limit` smaller than the subject's lifetime episode count
+    # returns the OLDEST `limit` rows — the opposite of recent.
+    if newest_first:
+        stmt = (
+            select(EpisodeRow)
+            .where(EpisodeRow.subject_id == subject_id)
+            .order_by(EpisodeRow.occurred_at.desc(), EpisodeRow.created_at.desc())
+            .limit(limit)
+        )
+        stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        rows.reverse()  # newest-`limit` fetched desc → return ascending
+        return rows
+
     stmt = (
         select(EpisodeRow)
         .where(EpisodeRow.subject_id == subject_id)

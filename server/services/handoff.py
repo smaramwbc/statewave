@@ -53,8 +53,12 @@ async def assemble_handoff(
     fact_rows = await repo.search_memories(
         session, subject_id, tenant_id=tenant_id, kind="profile_fact", limit=20
     )
+    # `newest_first` so the cross-session "recent context" below is drawn from
+    # the subject's most-recent 30 episodes, not its oldest 30. PR #205 fixed
+    # the active-session path (session_episode_rows) but this subject-wide
+    # fetch still bound "recent context" to the oldest-30 window.
     episode_rows = await repo.list_episodes_by_subject(
-        session, subject_id, tenant_id=tenant_id, limit=30
+        session, subject_id, tenant_id=tenant_id, limit=30, newest_first=True
     )
     session_episode_rows = await repo.list_episodes_by_session(
         session, subject_id, session_id, tenant_id=tenant_id, limit=30
@@ -144,10 +148,11 @@ async def assemble_handoff(
         )
 
     # -- Recent context (non-current session, most recent first) ------------
-    # `other_eps` is occurred_at ASC (oldest first); take the newest 5 and
-    # reverse so the most-recent cross-session episode leads, matching the
-    # heading. Computed once and reused for provenance + the receipt's
-    # carry-forward set so all three agree on which episodes are surfaced.
+    # `episode_rows` is the subject's most-recent 30 episodes in ascending
+    # order, so `other_eps` (its cross-session subset) is ascending too; take
+    # the newest 5 and reverse so the most-recent cross-session episode leads,
+    # matching the heading. Computed once and reused for provenance + the
+    # receipt's carry-forward set so all three agree on which episodes surface.
     recent_eps = list(reversed(other_eps[-5:]))
     recent_context: list[str] = []
     for ep in recent_eps:

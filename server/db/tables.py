@@ -211,17 +211,24 @@ class ResolutionRow(Base):
 
 
 class SubjectHealthCacheRow(Base):
-    """Caches last-known health state per subject for alert deduplication."""
+    """Caches last-known health state per (tenant_id, subject_id) for alert
+    deduplication."""
 
     __tablename__ = "subject_health_cache"
 
-    subject_id: Mapped[str] = mapped_column(String(256), primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False, index=True)
     tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     last_state: Mapped[str] = mapped_column(String(32), nullable=False)
     last_score: Mapped[int] = mapped_column(Integer, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+    # Composite unique index ix_subject_health_cache_tenant_subject (migration
+    # 0024, NULLS NOT DISTINCT) enforces one row per (tenant_id, subject_id).
+    # Not a SQLAlchemy UniqueConstraint because NULLS NOT DISTINCT isn't
+    # natively expressible — the migration owns it.
 
 
 class ReceiptRow(Base):

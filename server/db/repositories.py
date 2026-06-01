@@ -534,9 +534,16 @@ async def delete_resolutions_by_subject(
 async def get_health_cache(
     session: AsyncSession,
     subject_id: str,
+    *,
+    tenant_id: str | None = None,
 ) -> SubjectHealthCacheRow | None:
-    """Get cached health state for a subject."""
+    """Get cached health state for a subject, scoped to the tenant.
+
+    Without the tenant filter a caller could read another tenant's cached
+    health for the same subject_id (the cache row identity is
+    (tenant_id, subject_id); see migration 0024)."""
     stmt = select(SubjectHealthCacheRow).where(SubjectHealthCacheRow.subject_id == subject_id)
+    stmt = _tenant_filter(stmt, SubjectHealthCacheRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.scalar_one_or_none()
 
@@ -552,7 +559,10 @@ async def upsert_health_cache(
     """Update or insert cached health state."""
     from datetime import datetime, timezone
 
-    existing = await get_health_cache(session, subject_id)
+    # Tenant-scoped lookup: without it, tenant B's upsert would find and
+    # overwrite tenant A's row for the same subject_id instead of inserting
+    # its own.
+    existing = await get_health_cache(session, subject_id, tenant_id=tenant_id)
     if existing:
         existing.last_state = state
         existing.last_score = score
@@ -572,9 +582,14 @@ async def upsert_health_cache(
 async def delete_health_cache_by_subject(
     session: AsyncSession,
     subject_id: str,
+    *,
+    tenant_id: str | None = None,
 ) -> None:
-    """Delete health cache for a subject (used in subject deletion)."""
+    """Delete health cache for a subject (used in subject deletion), scoped to
+    the tenant so one tenant's deletion can't drop another tenant's cache row
+    for the same subject_id."""
     stmt = delete(SubjectHealthCacheRow).where(SubjectHealthCacheRow.subject_id == subject_id)
+    stmt = _tenant_filter(stmt, SubjectHealthCacheRow.tenant_id, tenant_id)
     await session.execute(stmt)
 
 

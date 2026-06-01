@@ -37,8 +37,8 @@ async def check_and_alert(
     """
     current_severity = _STATE_SEVERITY.get(health.state, 0)
 
-    # Get cached previous state
-    cached = await repo.get_health_cache(session, health.subject_id)
+    # Get cached previous state (tenant-scoped — see repo.get_health_cache)
+    cached = await repo.get_health_cache(session, health.subject_id, tenant_id=tenant_id)
     previous_state = cached.last_state if cached else "healthy"
     previous_severity = _STATE_SEVERITY.get(previous_state, 0)
 

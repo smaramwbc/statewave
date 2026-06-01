@@ -94,7 +94,11 @@ async def stop_worker() -> None:
 
 
 async def fire(
-    event: str, payload: dict[str, Any], db: AsyncSession | None = None
+    event: str,
+    payload: dict[str, Any],
+    db: AsyncSession | None = None,
+    *,
+    tenant_id: str | None = None,
 ) -> uuid.UUID | None:
     """Enqueue a webhook event for delivery.
 
@@ -119,6 +123,7 @@ async def fire(
 
     row = WebhookEventRow(
         id=event_id,
+        tenant_id=tenant_id,
         event=event,
         payload={
             "event": event,
@@ -211,12 +216,35 @@ async def _attempt_delivery(event: WebhookEventRow, session: AsyncSession) -> No
                 attempt=event.attempts,
                 status=resp.status_code,
             )
-        else:
+        elif _is_retryable_status(resp.status_code):
             _handle_failure(event, f"HTTP {resp.status_code}: {resp.text[:200]}")
+        else:
+            _handle_permanent_failure(
+                event, f"HTTP {resp.status_code}: {resp.text[:200]}"
+            )
 
     except Exception as exc:
         event.http_status = None
         _handle_failure(event, f"{type(exc).__name__}: {str(exc)[:200]}")
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    """Return True when a later delivery attempt may reasonably succeed."""
+    return status_code in {408, 409, 425, 429} or status_code >= 500
+
+
+def _handle_permanent_failure(event: WebhookEventRow, error: str) -> None:
+    """Dead-letter non-retryable delivery failures immediately."""
+    event.last_error = error
+    event.status = "dead_letter"
+    event.next_attempt_at = None
+    logger.warning(
+        "webhook_permanent_failure",
+        event_id=str(event.id),
+        event_type=event.event,
+        attempts=event.attempts,
+        last_error=error,
+    )
 
 
 def _handle_failure(event: WebhookEventRow, error: str) -> None:

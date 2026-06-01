@@ -110,6 +110,7 @@ async def _compile_one_batch(
             "subject_id": subject_id,
             "memories_created": len(new_rows),
         },
+        tenant_id=tenant_id,
     )
 
     remaining = await repo.count_uncompiled_episodes(

@@ -90,7 +90,11 @@ async def apply_memory_template(
     await repo.insert_episode(session, row)
     await session.commit()
     await session.refresh(row)
-    await webhooks.fire("episode.created", {"id": str(row.id), "subject_id": row.subject_id})
+    await webhooks.fire(
+        "episode.created",
+        {"id": str(row.id), "subject_id": row.subject_id},
+        tenant_id=tenant_id,
+    )
 
     return EpisodeResponse(
         id=row.id,

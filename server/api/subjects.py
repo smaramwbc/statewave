@@ -49,6 +49,7 @@ async def delete_subject(
             "episodes_deleted": ep_count,
             "memories_deleted": mem_count,
         },
+        tenant_id=tenant_id,
     )
     return DeleteSubjectResponse(
         subject_id=subject_id,

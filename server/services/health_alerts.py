@@ -77,5 +77,5 @@ async def check_and_alert(
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    await webhooks.fire(event, payload, db=session)
+    await webhooks.fire(event, payload, db=session, tenant_id=tenant_id)
     return event

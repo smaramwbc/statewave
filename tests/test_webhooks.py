@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -60,6 +61,25 @@ async def test_fire_uses_provided_session():
     mock_session.add.assert_called_once()
     # Should NOT commit — caller's responsibility
     mock_session.commit.assert_not_called()
+
+
+async def test_fire_persists_tenant_id_without_mutating_payload():
+    """Tenant-aware callers should get filterable queue rows without changing payload."""
+    webhooks.configure("http://example.com/hook")
+
+    payload = {"id": "123", "subject_id": "s1"}
+    mock_session = MagicMock()
+
+    event_id = await webhooks.fire(
+        "episode.created", payload, db=mock_session, tenant_id="tenant-a"
+    )
+
+    assert event_id is not None
+    mock_session.add.assert_called_once()
+    row = mock_session.add.call_args[0][0]
+    assert row.tenant_id == "tenant-a"
+    assert row.payload["data"] == payload
+    assert "tenant_id" not in row.payload["data"]
 
 
 def test_backoff_increases_exponentially():
@@ -173,3 +193,69 @@ def test_event_filter_accessor_reflects_configuration():
     # Reconfiguring without events clears the filter.
     webhooks.configure("http://example.com/hook")
     assert webhooks.event_filter() == frozenset()
+
+
+# ── Delivery failure classification ────────────────────────────────────────
+
+
+class _FakeAsyncClient:
+    def __init__(self, status_code: int):
+        self._status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def post(self, url, json):
+        return SimpleNamespace(status_code=self._status_code, text="response body")
+
+
+def _webhook_row() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        event="episode.created",
+        payload={"event": "episode.created", "data": {"id": "123"}},
+        status="pending",
+        attempts=0,
+        max_attempts=5,
+        next_attempt_at=None,
+        last_attempt_at=None,
+        last_error=None,
+        http_status=None,
+        delivered_at=None,
+    )
+
+
+async def test_permanent_client_error_dead_letters_without_retry(monkeypatch):
+    """Permanent 4xx responses should not consume all retry attempts."""
+    webhooks.configure("http://example.com/hook")
+    row = _webhook_row()
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda timeout: _FakeAsyncClient(400))
+
+    await webhooks._attempt_delivery(row, MagicMock())
+
+    assert row.attempts == 1
+    assert row.http_status == 400
+    assert row.status == "dead_letter"
+    assert row.next_attempt_at is None
+    assert "HTTP 400" in row.last_error
+
+
+async def test_retryable_client_error_still_schedules_retry(monkeypatch):
+    """Rate-limit style 4xx responses should keep the existing retry path."""
+    webhooks.configure("http://example.com/hook")
+    row = _webhook_row()
+
+    monkeypatch.setattr("httpx.AsyncClient", lambda timeout: _FakeAsyncClient(429))
+    monkeypatch.setattr(webhooks, "_backoff_seconds", lambda attempt: 30)
+
+    await webhooks._attempt_delivery(row, MagicMock())
+
+    assert row.attempts == 1
+    assert row.http_status == 429
+    assert row.status == "pending"
+    assert row.next_attempt_at is not None
+    assert "HTTP 429" in row.last_error

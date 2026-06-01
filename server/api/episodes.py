@@ -43,7 +43,11 @@ async def create_episode(
     await repo.insert_episode(session, row)
     await session.commit()
     await session.refresh(row)
-    await webhooks.fire("episode.created", {"id": str(row.id), "subject_id": row.subject_id})
+    await webhooks.fire(
+        "episode.created",
+        {"id": str(row.id), "subject_id": row.subject_id},
+        tenant_id=tenant_id,
+    )
     return EpisodeResponse(
         id=row.id,
         subject_id=row.subject_id,
@@ -97,6 +101,7 @@ async def create_episodes_batch(
                 "count": len(rows),
                 "subject_ids": list({r.subject_id for r in rows}),
             },
+            tenant_id=tenant_id,
         )
         return BatchCreateEpisodesResponse(
             episodes_created=len(rows),

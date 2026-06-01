@@ -1937,6 +1937,7 @@ async def delete_subject_admin(
             "episodes_deleted": ep_count,
             "memories_deleted": mem_count,
         },
+        tenant_id=tenant_id,
     )
     return {
         "subject_id": subject_id,
@@ -2031,6 +2032,7 @@ async def commit_bulk_delete(req: BulkDeleteCommitRequest):
                         "episodes_deleted": ep_n,
                         "memories_deleted": mem_n,
                     },
+                    tenant_id=s.tenant_id,
                 )
             except Exception:
                 await session.rollback()

@@ -20,15 +20,12 @@ _REPOSITORIES = (
     pathlib.Path(__file__).resolve().parents[1] / "server" / "db" / "repositories.py"
 )
 
-# Known, accepted exceptions. The subject-health cache is keyed by a bare
-# ``subject_id`` PRIMARY KEY (server/db/tables.py: SubjectHealthCacheRow), so
-# isolating it needs a composite-key schema migration, not a query filter — it
-# is tracked separately. Multi-tenancy is experimental and does not yet enforce
-# full isolation.
-_ALLOWED_UNSCOPED = {
-    "get_health_cache",
-    "delete_health_cache_by_subject",
-}
+# Known, accepted exceptions — currently none. (The subject-health cache gap
+# that originally seeded this list was fixed in #213: migration 0024 re-keyed
+# subject_health_cache to (tenant_id, subject_id) and scoped its queries.)
+# Do not add to this set to silence a new finding — add the tenant_id and apply
+# _tenant_filter instead.
+_ALLOWED_UNSCOPED: set[str] = set()
 
 
 def _subject_scoped_without_tenant() -> set[str]:

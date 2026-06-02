@@ -1749,15 +1749,20 @@ async def purge_webhook_events(
 
 
 @router.get("/webhooks/stats")
-async def webhook_stats():
-    """Aggregate webhook delivery statistics."""
-    return await webhooks.get_delivery_stats()
+async def webhook_stats(
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Aggregate webhook delivery statistics (optionally filtered by tenant)."""
+    return await webhooks.get_delivery_stats(tenant_id=tenant_id)
 
 
 @router.get("/webhooks/{event_id}")
-async def webhook_event_status(event_id: uuid.UUID):
-    """Get delivery status of a specific webhook event."""
-    result = await webhooks.get_event_status(event_id)
+async def webhook_event_status(
+    event_id: uuid.UUID,
+    tenant_id: str | None = Query(None, description="Filter by tenant"),
+):
+    """Get delivery status of a specific webhook event (optionally tenant-filtered)."""
+    result = await webhooks.get_event_status(event_id, tenant_id=tenant_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Webhook event not found")
     return result

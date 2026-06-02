@@ -259,3 +259,71 @@ async def test_retryable_client_error_still_schedules_retry(monkeypatch):
     assert row.status == "pending"
     assert row.next_attempt_at is not None
     assert "HTTP 429" in row.last_error
+
+
+# ── get_event_status tenant filter ─────────────────────────────────────────
+
+
+class _FakeGetSession:
+    """Async-context session whose .get() returns a fixed row."""
+
+    def __init__(self, row):
+        self._row = row
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def get(self, _model, _key):
+        return self._row
+
+
+def _status_row(tenant_id: str | None):
+    import datetime as _dt
+
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=tenant_id,
+        event="episode.created",
+        status="pending",
+        attempts=0,
+        max_attempts=5,
+        last_attempt_at=None,
+        next_attempt_at=None,
+        last_error=None,
+        http_status=None,
+        created_at=_dt.datetime(2026, 6, 1, tzinfo=_dt.timezone.utc),
+        delivered_at=None,
+    )
+
+
+async def test_get_event_status_returns_event_for_matching_tenant():
+    row = _status_row("tenant-a")
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: _FakeGetSession(row)
+    ):
+        result = await webhooks.get_event_status(row.id, tenant_id="tenant-a")
+    assert result is not None and result["id"] == str(row.id)
+
+
+async def test_get_event_status_hides_event_from_other_tenant():
+    # A tenant filter that doesn't match the row's tenant must read as not-found,
+    # mirroring the list/purge filter semantics.
+    row = _status_row("tenant-a")
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: _FakeGetSession(row)
+    ):
+        result = await webhooks.get_event_status(row.id, tenant_id="tenant-b")
+    assert result is None
+
+
+async def test_get_event_status_without_tenant_filter_returns_event():
+    # No filter = operator global view (unchanged default behavior).
+    row = _status_row("tenant-a")
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: _FakeGetSession(row)
+    ):
+        result = await webhooks.get_event_status(row.id)
+    assert result is not None and result["id"] == str(row.id)

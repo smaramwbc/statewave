@@ -276,11 +276,20 @@ def _handle_failure(event: WebhookEventRow, error: str) -> None:
 # ── Query helpers (for admin endpoints) ───────────────────────────────────
 
 
-async def get_event_status(event_id: uuid.UUID) -> dict[str, Any] | None:
-    """Get the delivery status of a single webhook event."""
+async def get_event_status(
+    event_id: uuid.UUID, *, tenant_id: str | None = None
+) -> dict[str, Any] | None:
+    """Get the delivery status of a single webhook event.
+
+    When ``tenant_id`` is provided, an event belonging to a different tenant is
+    reported as not-found, so the operator's optional tenant filter behaves
+    consistently with the list/purge endpoints.
+    """
     async with get_session_factory()() as session:
         row = await session.get(WebhookEventRow, event_id)
         if not row:
+            return None
+        if tenant_id is not None and row.tenant_id != tenant_id:
             return None
         return {
             "id": str(row.id),
@@ -297,8 +306,8 @@ async def get_event_status(event_id: uuid.UUID) -> dict[str, Any] | None:
         }
 
 
-async def get_delivery_stats() -> dict[str, Any]:
-    """Get aggregate webhook delivery statistics."""
+async def get_delivery_stats(*, tenant_id: str | None = None) -> dict[str, Any]:
+    """Get aggregate webhook delivery statistics, optionally scoped to a tenant."""
     from sqlalchemy import func as sqlfunc
 
     async with get_session_factory()() as session:
@@ -306,6 +315,8 @@ async def get_delivery_stats() -> dict[str, Any]:
             WebhookEventRow.status,
             sqlfunc.count(WebhookEventRow.id).label("count"),
         ).group_by(WebhookEventRow.status)
+        if tenant_id is not None:
+            stmt = stmt.where(WebhookEventRow.tenant_id == tenant_id)
         result = await session.execute(stmt)
         counts = {row.status: row.count for row in result}
 

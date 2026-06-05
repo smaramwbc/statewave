@@ -329,9 +329,10 @@ async def list_subjects_admin(
         mem_stats = (
             select(
                 MemoryRow.subject_id,
+                MemoryRow.tenant_id,
                 func.count().label("memory_count"),
             )
-            .group_by(MemoryRow.subject_id)
+            .group_by(MemoryRow.subject_id, MemoryRow.tenant_id)
             .subquery()
         )
 
@@ -339,10 +340,11 @@ async def list_subjects_admin(
         session_stats = (
             select(
                 EpisodeRow.subject_id,
+                EpisodeRow.tenant_id,
                 func.count(func.distinct(EpisodeRow.session_id)).label("session_count"),
             )
             .where(EpisodeRow.session_id.isnot(None))
-            .group_by(EpisodeRow.subject_id)
+            .group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
             .subquery()
         )
 
@@ -350,15 +352,26 @@ async def list_subjects_admin(
         open_sessions = (
             select(
                 ResolutionRow.subject_id,
+                ResolutionRow.tenant_id,
                 func.count().label("open_count"),
             )
             .where(ResolutionRow.status == "open")
-            .group_by(ResolutionRow.subject_id)
+            .group_by(ResolutionRow.subject_id, ResolutionRow.tenant_id)
             .subquery()
         )
 
         # Health cache
-        health_cache = select(SubjectHealthCacheRow).subquery()
+        health_cache = select(
+            SubjectHealthCacheRow.subject_id,
+            SubjectHealthCacheRow.tenant_id,
+            SubjectHealthCacheRow.last_state,
+            SubjectHealthCacheRow.last_score,
+        ).subquery()
+
+        def _same_subject_and_tenant(stats):
+            return (ep_stats.c.subject_id == stats.c.subject_id) & (
+                ep_stats.c.tenant_id.is_not_distinct_from(stats.c.tenant_id)
+            )
 
         # Main query joining all
         stmt = select(
@@ -372,10 +385,10 @@ async def list_subjects_admin(
             health_cache.c.last_score.label("health_score"),
             func.coalesce(open_sessions.c.open_count, 0).label("open_sessions"),
         ).select_from(
-            ep_stats.outerjoin(mem_stats, ep_stats.c.subject_id == mem_stats.c.subject_id)
-            .outerjoin(session_stats, ep_stats.c.subject_id == session_stats.c.subject_id)
-            .outerjoin(open_sessions, ep_stats.c.subject_id == open_sessions.c.subject_id)
-            .outerjoin(health_cache, ep_stats.c.subject_id == health_cache.c.subject_id)
+            ep_stats.outerjoin(mem_stats, _same_subject_and_tenant(mem_stats))
+            .outerjoin(session_stats, _same_subject_and_tenant(session_stats))
+            .outerjoin(open_sessions, _same_subject_and_tenant(open_sessions))
+            .outerjoin(health_cache, _same_subject_and_tenant(health_cache))
         )
 
         # Exclude internal subjects

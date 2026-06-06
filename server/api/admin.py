@@ -2506,9 +2506,14 @@ async def admin_list_receipts(
         return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
     async with engine_module.get_session_factory()() as session:
+        # Order by the SAME key the cursor predicate uses (`receipt_id < cursor`
+        # below). The ULID receipt_id encodes creation time, so receipt_id-desc
+        # is newest-first; ordering by created_at (DB commit time) while
+        # cursoring on receipt_id silently drops/duplicates rows across pages
+        # (same keyset-pagination bug fixed for repo.list_receipts in #223).
         stmt = (
             select(ReceiptRow)
-            .order_by(ReceiptRow.created_at.desc(), ReceiptRow.receipt_id.desc())
+            .order_by(ReceiptRow.receipt_id.desc())
             .limit(limit)
         )
         if subject_id:

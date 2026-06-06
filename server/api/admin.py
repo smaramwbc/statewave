@@ -1413,14 +1413,7 @@ async def get_session_timeline(
         episode_rows = result.scalars().all()
 
         # Get total count for this session
-        count_stmt = select(func.count()).select_from(
-            select(EpisodeRow)
-            .where(
-                EpisodeRow.subject_id == subject_id,
-                EpisodeRow.session_id == session_id,
-            )
-            .subquery()
-        )
+        count_stmt = select(func.count()).select_from(base.subquery())
         episode_count = await session.scalar(count_stmt) or 0
 
         # Get citing memory counts for all episode IDs in one query
@@ -1434,6 +1427,8 @@ async def get_session_timeline(
                     MemoryRow.subject_id == subject_id,
                     ep_id == any_(MemoryRow.source_episode_ids),
                 )
+                if tenant_id:
+                    count_q = count_q.where(MemoryRow.tenant_id == tenant_id)
                 citing_counts[str(ep_id)] = await session.scalar(count_q) or 0
 
         # Get resolution for this session
@@ -2511,11 +2506,7 @@ async def admin_list_receipts(
         # is newest-first; ordering by created_at (DB commit time) while
         # cursoring on receipt_id silently drops/duplicates rows across pages
         # (same keyset-pagination bug fixed for repo.list_receipts in #223).
-        stmt = (
-            select(ReceiptRow)
-            .order_by(ReceiptRow.receipt_id.desc())
-            .limit(limit)
-        )
+        stmt = select(ReceiptRow).order_by(ReceiptRow.receipt_id.desc()).limit(limit)
         if subject_id:
             stmt = stmt.where(ReceiptRow.subject_id == subject_id)
         if tenant_id:

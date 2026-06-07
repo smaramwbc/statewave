@@ -97,3 +97,36 @@ async def test_admin_session_timeline_metrics_are_scoped_by_tenant(
     episode_events = [event for event in body["events"] if event["event_type"] == "episode"]
     assert len(episode_events) == 1
     assert episode_events[0]["citing_memory_count"] == 1
+
+    tenant_a_episode_id = str(tenant_a_episode.id)
+
+    # Operator-global view (no tenant filter): the metrics must AGGREGATE across
+    # tenants — all three episodes, and the tenant-a episode cited by BOTH
+    # tenants' memories. This guards against a future regression where the
+    # tenant filter leaks into the operator path and over-narrows the global
+    # view (the behavior the fix is careful to preserve).
+    global_response = await client.get(
+        f"/admin/subjects/{subject_id}/sessions/{session_id}/timeline",
+    )
+    assert global_response.status_code == 200
+    global_body = global_response.json()
+    assert global_body["episode_count"] == 3
+    global_episode_events = [e for e in global_body["events"] if e["event_type"] == "episode"]
+    tenant_a_event = next(e for e in global_episode_events if e["id"] == tenant_a_episode_id)
+    assert tenant_a_event["citing_memory_count"] == 2
+
+    # Tenant-b filtered view: only tenant-b's two episodes, and neither is cited
+    # by a tenant-b memory (both memories cite the tenant-a episode id), so the
+    # count must be 0 — not the cross-tenant citation.
+    tenant_b_response = await client.get(
+        f"/admin/subjects/{subject_id}/sessions/{session_id}/timeline",
+        params={"tenant_id": "tenant-b"},
+    )
+    assert tenant_b_response.status_code == 200
+    tenant_b_body = tenant_b_response.json()
+    assert tenant_b_body["episode_count"] == 2
+    tenant_b_episode_events = [
+        e for e in tenant_b_body["events"] if e["event_type"] == "episode"
+    ]
+    assert len(tenant_b_episode_events) == 2
+    assert all(e["citing_memory_count"] == 0 for e in tenant_b_episode_events)

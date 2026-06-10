@@ -74,6 +74,8 @@ This policy applies to all Statewave repositories:
 - `statewave-examples` - Examples
 - `statewave-web` - Marketing site + embedded demo
 - `statewave-admin` - Admin dashboard
+- `statewave-connectors` - Connector ecosystem (`@statewavedev/connectors-*` on npm)
+- `statewave-bench` - Benchmark tooling
 
 ## Contact
 

@@ -82,8 +82,9 @@ must_emit`. The inputs are consulted in this order:
    `tenant_configs.config`) — set in the admin dashboard. `always`
    overrides per-request `false`; `never` suppresses everything.
    Compliance-grade tenants flip this on once. Default `on_request`.
-3. **Per-policy force-on** (deferred until #50). v1 of this layer
-   returns "no opinion" so the call collapses to inputs 1 and 2.
+3. **Per-policy force-on** (reserved — not yet wired to the policy
+   engine; #50 shipped without it). The current implementation returns
+   "no opinion", so the call collapses to inputs 1 and 2.
 4. **Env kill-switch** (`STATEWAVE_RECEIPTS_DISABLED=true`) —
    emergency operational hygiene; not the everyday control.
 
@@ -236,11 +237,11 @@ assembly internals:
 - **Auto-labeling** ([#158](https://github.com/smaramwbc/statewave/issues/158)) — shipped v0.9. Heuristic detectors stamp advisory `suggested_labels` on memories; the policy evaluator never reads them. Operator review + promote via the admin app (#160). See [`docs/auto-labeling.md`](auto-labeling.md).
 - **Per-tenant residency** ([#161](https://github.com/smaramwbc/statewave/issues/161)) — shipped v0.9. `STATEWAVE_REGION` + `tenant_configs.config.region` enforced at the application layer. See [`docs/residency.md`](residency.md).
 
-## Still out of scope (v0.9)
+## Still out of scope (v0.9+, current as of v1.0.0)
 
 - Review-time redaction UI for receipts.
 - Cross-tenant receipt aggregation / fleet-wide audit views. Single-tenant audit ships; federated cross-region audit is an explicit future surface, not implicit access (see `docs/residency.md`).
-- KMS / Vault-backed signing (architecture is compatible — a future PR swaps the key resolver behind the same `receipt_signing_keys` settings field; v0.9 reads keys from env / secret-manager mount).
-- Asymmetric signatures (the `algorithm` field reserves space for `ed25519-canonical-v1` etc.; v0.9 ships HMAC only).
+- KMS / Vault-backed signing (architecture is compatible — a future PR swaps the key resolver behind the same `receipt_signing_keys` settings field; the current release reads keys from env / secret-manager mount).
+- Asymmetric signatures (the `algorithm` field reserves space for `ed25519-canonical-v1` etc.; the current release ships HMAC only).
 - Bulk re-signing of pre-v0.9 receipts (forward-only signing — they verify as `no_signature`).
-- Byte-for-byte historical replay (memory snapshots). v0.9 ships `current code + original policy`; the data model leaves room for memory snapshots without a schema break.
+- Byte-for-byte historical replay (memory snapshots). The current release ships `current code + original policy`; the data model leaves room for memory snapshots without a schema break.

@@ -56,7 +56,7 @@ probing the residency boundary.
 - **No in-DB region column on every row.** That would conflate
   residency with multi-tenancy. Residency is per-tenant, not
   per-row.
-- **Total isolation** in v0.9. Cross-region admin reads are not
+- **Total isolation** (v0.9+). Cross-region admin reads are not
   allowed. Unified federated audit is a future feature, not implicit
   cross-region access — building it as an explicit separate surface
   later is safer than letting cross-region reads sneak in by default
@@ -118,7 +118,7 @@ auditor answer end-to-end:
 
 ## Ops runbook — spinning up a second region
 
-The v0.9 design ships **code + config model + ops runbook only**. No
+The residency layer (v0.9+) ships **code + config model + ops runbook only**. No
 second region is deployed by this PR; this section is the
 reproducible recipe for an operator standing one up.
 
@@ -197,12 +197,12 @@ reproducible recipe for an operator standing one up.
   v0.9 design decision is total isolation. The same middleware
   enforces both.
 
-## What residency does NOT do (v0.9)
+## What residency does NOT do (v0.9+)
 
 - **Does not move data.** Pinning a tenant assumes the data is
   already in the target region. The export/import + pin workflow
   is the operator's responsibility.
-- **Does not unify cross-region audit reads.** v0.9 ships total
+- **Does not unify cross-region audit reads.** Residency (v0.9+) ships total
   isolation. Federated audit search is a future feature, built as
   an explicit cross-region surface — never as implicit access.
 - **Does not deploy a second region.** This PR is code + config

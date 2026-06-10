@@ -19,7 +19,7 @@ of contributing to an Apache-2.0-licensed project.
 
 ## Development setup
 
-See the [Quick start](README.md#quick-start) section in the README for the
+See the [Quickstart](README.md#quickstart) section in the README for the
 canonical setup. In short:
 
 ```bash

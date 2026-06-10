@@ -106,7 +106,7 @@ machine-readable code is on `error.code`:
 | `error.code`                            | When                                                                 |
 |-----------------------------------------|----------------------------------------------------------------------|
 | `unreplayable.missing_policy_snapshot`  | Pre-v0.9 receipt. The column is NULL — no snapshot was captured.    |
-| `unreplayable.nested_replay`            | Receipt is itself a replay. v0.9 ships one level only.              |
+| `unreplayable.nested_replay`            | Receipt is itself a replay. Replay is single-level only (since v0.9). |
 | `unreplayable.invalid_snapshot`         | Snapshot YAML failed to parse. Tampering or corruption — see below. |
 
 Receipt-not-found returns plain 404 with the same wire shape as

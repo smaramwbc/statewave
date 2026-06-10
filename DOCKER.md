@@ -55,7 +55,7 @@ walks through clone → run → store and retrieve your first memory in about 5 
 ## Pin a version
 
 ```sh
-STATEWAVE_VERSION=0.7.0 docker compose up -d
+STATEWAVE_VERSION=1.0.0 docker compose up -d
 ```
 
 ## Handling port conflicts

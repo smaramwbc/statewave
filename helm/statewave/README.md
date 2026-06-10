@@ -115,7 +115,7 @@ At higher replica counts, put a transaction-mode PgBouncer in front of Postgres.
 ```bash
 helm upgrade statewave ./helm/statewave \
   --reuse-values \
-  --set image.tag=0.7.1
+  --set image.tag=1.0.0
 ```
 
 The pre-upgrade Job runs `alembic upgrade head` before the rollout begins. Rolling upgrades require backwards-compatible schemas across one version (the project's standard policy) — see the [migration runbook](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/migrations.md).

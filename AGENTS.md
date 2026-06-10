@@ -16,7 +16,7 @@ implementation. For the big picture, see the
 
 The canonical steps live in
 [CONTRIBUTING.md](CONTRIBUTING.md#development-setup) and the
-[README quick start](README.md#quick-start) — don't duplicate them, follow
+[README Quickstart](README.md#quickstart) — don't duplicate them, follow
 them. In short:
 
 ```bash
@@ -68,7 +68,7 @@ add tests for behavior changes, and make sure `ruff` and `pytest` pass.
 
 This project dogfoods Statewave. The easiest way to give your assistant a
 queryable project brain for this repo is the **Statewave IDE Companion**
-extension for **VS Code / Cursor** (publisher `statewavedev`) — install it from
+extension for **VS Code / Cursor** (publisher `statewavedev`, available as a preview) — install it from
 your editor's extensions marketplace. It exposes your workspace, docs, git
 state, structure, and run-commands to Copilot / Cursor / Claude over MCP and
 **registers the MCP server for you** (no manual config); it just needs a

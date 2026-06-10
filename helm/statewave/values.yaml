@@ -130,7 +130,7 @@ webhooks:
   timeoutSeconds: 5.0
 
 # ──────────────────────────────────────────────────
-# Multi-tenant (experimental)
+# Multi-tenant (app-layer isolation via X-Tenant-ID)
 # ──────────────────────────────────────────────────
 multiTenant:
   enabled: false

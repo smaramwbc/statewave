@@ -1,5 +1,3 @@
-<!-- HERO GRAPHIC: docs/img/hero.png landing in follow-up PR (issue #4) -->
-
 # Statewave
 
 [![CI](https://github.com/smaramwbc/statewave/workflows/CI/badge.svg)](https://github.com/smaramwbc/statewave/actions/workflows/ci.yml)
@@ -11,8 +9,6 @@
 Statewave is the open-source memory runtime that gives AI agents reproducible, provenance-tagged context — without sampling-noise from query-time retrieval.
 
 _If Statewave is useful to you, a ⭐ on the repo helps others discover it._
-
-<!-- QUICKSTART GIF: docs/img/quickstart.gif landing in follow-up PR (issue #4) -->
 
 > **v1.0.0** — actively developed. [Changelog](https://github.com/smaramwbc/statewave-docs/blob/main/CHANGELOG.md) · [Roadmap](https://github.com/smaramwbc/statewave-docs/blob/main/roadmap.md) · [Limitations](#current-limitations)
 
@@ -260,7 +256,7 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_WEBHOOK_EVENTS` | — | Comma-separated event-type allowlist (empty = deliver every event) |
 | `STATEWAVE_RECEIPT_SIGNING_KEYS` | — | JSON `{"<key_id>": "<base64>"}` map of HMAC keys for receipt signing (≥32 bytes each). Never persisted to the DB; per-tenant active key id set via `tenant_configs.config.receipt_signing_key_id`. |
 | `STATEWAVE_AUTO_LABELING_ENABLED` | `false` | Run heuristic detectors at compile time and stamp advisory `suggested_labels` on memories (v0.9). See [`docs/auto-labeling.md`](docs/auto-labeling.md). |
-| `STATEWAVE_AUTO_LABELING_PROVIDER` | `heuristic` | Detector provider. Only `heuristic` is valid in v0.9; the switch is reserved for future LLM-based classifiers. |
+| `STATEWAVE_AUTO_LABELING_PROVIDER` | `heuristic` | Detector provider. Only `heuristic` is currently supported (since v0.9); the switch is reserved for future LLM-based classifiers. |
 | `STATEWAVE_REGION` | — | Region this server process is running in. When set, requests for tenants pinned to a different region are refused with HTTP 403 `residency.mismatch` (v0.9). Empty = single-region mode, residency disabled. See [`docs/residency.md`](docs/residency.md). |
 | `STATEWAVE_TENANT_HEADER` | `X-Tenant-ID` | Header for multi-tenant isolation |
 | `STATEWAVE_REQUIRE_TENANT` | `false` | Reject requests without tenant header |

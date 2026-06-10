@@ -30,7 +30,7 @@ existing tenants. To enable it process-wide:
 
 ```bash
 STATEWAVE_AUTO_LABELING_ENABLED=true
-STATEWAVE_AUTO_LABELING_PROVIDER=heuristic   # the only v0.9 provider
+STATEWAVE_AUTO_LABELING_PROVIDER=heuristic   # the only supported provider (introduced in v0.9)
 ```
 
 With the flag on, both compilers (`heuristic` and `llm`) run the
@@ -159,8 +159,8 @@ The promoted labels are:
 }
 ```
 
-`promoted_by` is `null` in v0.9 — no admin identity layer exists
-yet. The TODO is tracked at the field level so when admin identity
+`promoted_by` is `null` (v0.9+, still true in v1.0.0) — no admin
+identity layer exists yet. The TODO is tracked at the field level so when admin identity
 lands the column populates without an audit schema break. Time and
 what-was-promoted are captured today.
 
@@ -176,7 +176,7 @@ A 404 means the memory ID is unknown OR (with `tenant_id` set) belongs
 to a different tenant — the two cases are indistinguishable on the
 wire so a misconfigured caller cannot probe cross-tenant.
 
-## What auto-labeling does **NOT** do (v0.9)
+## What auto-labeling does **NOT** do (v0.9+)
 
 * **Does not refuse or filter retrieval.** The policy evaluator
   ignores `suggested_labels`.
@@ -200,7 +200,7 @@ and are load-bearing for the governance story.
 3. Append the dataclass to the `DETECTORS` tuple.
 4. Add positive + negative unit tests in
    `tests/test_auto_labeling.py` and update the registry assertion
-   if you intend the new label to be part of the v0.9 contract.
+   if you intend the new label to be part of the current contract.
 
 Detectors should bias toward **precision over recall**: a false
 positive is a noisy admin row; a flood of false positives undermines

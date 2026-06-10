@@ -87,7 +87,7 @@ body:
       label: Environment
       description: Provide your environment details
       placeholder: |
-        - SDK version: [e.g., 0.7.1]
+        - SDK version: [e.g., 1.0.0]
         - Python/Node.js version:
         - OS:
     validations:

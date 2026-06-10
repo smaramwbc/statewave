@@ -5,6 +5,14 @@ description = "Open-source memory runtime for AI agents — durable, structured 
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.11"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Developers",
+]
 dependencies = [
     "fastapi>=0.136.3,<1",
     "uvicorn[standard]>=0.49.0,<1",
@@ -34,6 +42,12 @@ otel = [
     "opentelemetry-sdk>=1.42.1,<2",
     "opentelemetry-exporter-otlp>=1.42.1,<2",
 ]
+
+[project.urls]
+Homepage = "https://statewave.ai"
+Repository = "https://github.com/smaramwbc/statewave"
+Issues = "https://github.com/smaramwbc/statewave/issues"
+Documentation = "https://github.com/smaramwbc/statewave-docs"
 
 [build-system]
 requires = ["hatchling"]

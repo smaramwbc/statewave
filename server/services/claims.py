@@ -221,12 +221,13 @@ def build_claim_envelope(
     without a claim".
     """
     canonical = canonicalize_key(key)
-    if canonical is None or normalize_value(value) is None:
+    normalized = normalize_value(value)
+    if canonical is None or normalized is None:
         return None
     env: dict[str, Any] = {
         "schema_version": CLAIM_SCHEMA_VERSION,
         "key": canonical,
-        "value": value,
+        "value": normalized,  # store the normalized value (resolver compares on it)
         "scope": CLAIM_REGISTRY[canonical].scope,
         "source": source,
     }

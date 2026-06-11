@@ -17,6 +17,7 @@ from typing import Sequence
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services.auto_labeling import apply_suggestions
+from server.services.claims import build_claim_envelope
 from server.services.memory_ttl import compute_valid_to
 
 
@@ -61,8 +62,10 @@ class HeuristicCompiler:
             )
         )
 
-        # Profile facts
-        for fact in _extract_profile_facts(text):
+        # Profile facts. Text/kind/count/order are unchanged; a conservatively
+        # recognized single-valued claim (if any) is attached additively in
+        # metadata_, otherwise metadata_ stays {} exactly as before.
+        for fact, claim_md in _extract_facts_with_claims(text):
             results.append(
                 MemoryRow(
                     id=uuid.uuid4(),
@@ -74,7 +77,7 @@ class HeuristicCompiler:
                     valid_from=ep_valid_from,
                     valid_to=compute_valid_to("profile_fact", ep_valid_from, ttl),
                     source_episode_ids=[ep.id],
-                    metadata_={},
+                    metadata_=claim_md or {},
                     status="active",
                 )
             )
@@ -198,9 +201,75 @@ _FACT_PATTERNS: list[re.Pattern[str]] = [
 ]
 
 
-def _extract_profile_facts(text: str) -> list[str]:
-    facts: list[str] = []
-    for pattern in _FACT_PATTERNS:
+# Pattern index -> (canonical claim key, required trigger prefix). ONLY the
+# three cleanly single-valued triggers get a claim. The required prefix is
+# deliberately TIGHTER than the extraction regex, dropping every ambiguous
+# alternative the regex also accepts:
+#   - "i'm"/"i am" (could be a possessive or place: "I am Bob's friend") — only
+#     the explicit "my name is" is a confident self-name assertion;
+#   - "i'm at"/"i am at" (a location, not an employer: "I'm at the gym") — only
+#     "i work at" reliably means current employer;
+#   - "i'm from"/"i am from" (ORIGIN, not current home) — only "i live in".
+# The team/group pattern (idx 2) and the packed use/prefer/favorite pattern
+# (idx 4) have no canonical single-valued key and never emit a claim. We do NOT
+# emit billing.primary_payment_processor here: generic "I use Stripe" must stay
+# unkeyed (the LLM compiler may key it only on explicit "primary/current" language).
+_CLAIMABLE_PATTERNS: dict[int, tuple[str, str]] = {
+    0: ("identity.name", "my name is"),
+    1: ("employment.current_employer", "i work at"),
+    3: ("location.current_home", "i live in"),
+}
+
+# A first-person assertion carrying any of these is not a confident CURRENT
+# single-valued fact (negation, uncertainty, or explicit history). When present
+# in the clause we emit the memory exactly as before, WITHOUT a claim.
+_CLAIM_BLOCKERS = re.compile(
+    r"\b(?:not|never|no\s+longer|n't|"
+    r"might|maybe|may|could|would|considering|thinking|planning|hop(?:e|ing)|"
+    r"want\s+to|plan\s+to|"
+    r"used\s+to|previously|formerly|former|ex|until|ago|left|past|if)\b",
+    re.IGNORECASE,
+)
+
+
+def _claim_blocked(text: str, m: "re.Match[str]") -> bool:
+    """True if the match sits in reported speech (double quotes) or its clause
+    carries a negation / uncertainty / history marker — i.e. not a confident
+    current fact. Omission is always preferred to a wrong authoritative claim."""
+    before = text[: m.start()]
+    if before.count('"') % 2 == 1:
+        return True
+    if before.count("“") > before.count("”"):  # smart quotes
+        return True
+    window = text[max(0, m.start() - 48) : m.end()]
+    return bool(_CLAIM_BLOCKERS.search(window))
+
+
+def _extract_facts_with_claims(text: str) -> list[tuple[str, dict | None]]:
+    """Each extracted fact text, paired with an optional claim envelope.
+
+    Claim emission is conservative by design: only the three tight single-valued
+    triggers, only the registry-canonical value, only when no negation / quote /
+    history / uncertainty marker is present. Everything else -> (fact, None),
+    emitted exactly as before.
+    """
+    out: list[tuple[str, dict | None]] = []
+    for idx, pattern in enumerate(_FACT_PATTERNS):
+        spec = _CLAIMABLE_PATTERNS.get(idx)
         for m in pattern.finditer(text):
-            facts.append(m.group(0).strip().rstrip(".").rstrip(","))
-    return facts
+            fact = m.group(0).strip().rstrip(".").rstrip(",")
+            claim_md: dict | None = None
+            if spec is not None:
+                key, trigger = spec
+                value = (m.group(1) or "").strip().rstrip(".").rstrip(",")
+                if value and fact.lower().startswith(trigger) and not _claim_blocked(text, m):
+                    # build_claim_envelope re-validates against the registry and
+                    # returns None for anything it cannot confidently key.
+                    claim_md = build_claim_envelope(key, value, source="heuristic")
+            out.append((fact, claim_md))
+    return out
+
+
+def _extract_profile_facts(text: str) -> list[str]:
+    """Unchanged public surface: the extracted fact strings (group(0)) only."""
+    return [fact for fact, _ in _extract_facts_with_claims(text)]

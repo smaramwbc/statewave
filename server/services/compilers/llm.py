@@ -29,10 +29,17 @@ from typing import Any, Sequence
 
 import structlog
 
+from datetime import datetime
+
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services import llm as llm_adapter
 from server.services.auto_labeling import apply_suggestions
+from server.services.claims import (
+    CLAIM_REGISTRY,
+    SCOPE_SINGLE,
+    build_claim_envelope,
+)
 from server.services.compilers.errors import CompilationError
 from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
@@ -103,6 +110,64 @@ Granularity — extract DETAILS, not just headlines:
 - A profile_fact about a person can be ONE specific item — don't wait to find "enough" to summarize.
 - Better to emit 30 concrete granular memories than 5 vague ones. The retrieval layer ranks them; the compiler's job is recall.
 """
+
+# The single-valued canonical keys the model may PROPOSE. The registry remains
+# authoritative for canonicalization, scope, and membership — the model never
+# decides those (see _llm_claim_metadata).
+_SINGLE_CLAIM_KEYS = sorted(k for k, spec in CLAIM_REGISTRY.items() if spec.scope == SCOPE_SINGLE)
+
+_SYSTEM_PROMPT += (
+    "\n\nOptional structured claim (advanced — usually OMITTED):\n"
+    '- A memory MAY carry an optional "claim" object, but ONLY when it asserts a CURRENT,\n'
+    "  single-valued fact about the subject that exactly matches one of these canonical keys:\n"
+    + "".join(f"    * {k}\n" for k in _SINGLE_CLAIM_KEYS)
+    + '- Shape: {"key": <one canonical key above>, "value": <the value>, and OPTIONALLY\n'
+    '  "valid_from"/"valid_to" as ISO-8601 dates ONLY when the source states them explicitly}.\n'
+    '- OMIT "claim" whenever you are not certain — omission is ALWAYS preferred to guessing.\n'
+    "- Do NOT emit a claim for negated, hypothetical, uncertain, quoted/reported, historical, or\n"
+    "  third-party statements. Distinguish a current single-valued state from a past one.\n"
+    "- Generic tool usage is NOT a billing.primary_payment_processor claim: only assert that key when\n"
+    '  the source explicitly says it is the PRIMARY or CURRENT payment processor. "I use Stripe"\n'
+    "  alone must NOT produce a claim.\n"
+    "- Use ONLY the keys listed; never invent keys, scopes, or cardinality. Claims are optional\n"
+    "  annotations — do NOT reduce, merge, or skip the granular memories you would otherwise emit.\n"
+)
+
+
+def _safe_dt(value: Any) -> datetime | None:
+    """Parse an LLM-proposed ISO date, or None. Never raises; a bad date simply
+    drops the temporal field rather than rejecting the whole claim."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
+def _llm_claim_metadata(mem: dict) -> dict | None:
+    """Validate an LLM-PROPOSED claim into an authoritative envelope, or None.
+
+    The model is untrusted for canonicalization, scope, and registry membership:
+    we only take its proposed key/value/temporal, then ``build_claim_envelope``
+    canonicalizes the key through the registry + approved aliases, stamps the
+    registry-authoritative scope, normalizes the value, and returns None for any
+    unknown key or unusable value. An unknown/malformed proposal therefore never
+    persists under ``metadata_.claim`` in an authoritative form — it is dropped.
+    """
+    raw = mem.get("claim")
+    if not isinstance(raw, dict):
+        return None
+    key, value = raw.get("key"), raw.get("value")
+    if not isinstance(key, str) or not isinstance(value, str):
+        return None
+    return build_claim_envelope(
+        key,
+        value,
+        valid_from=_safe_dt(raw.get("valid_from")),
+        valid_to=_safe_dt(raw.get("valid_to")),
+        source="llm",
+    )
 
 
 class LLMCompiler:
@@ -285,6 +350,15 @@ class LLMCompiler:
                     summary = str(raw_summary)[:200] if raw_summary else content[:200]
 
                 ep_valid_from = episode_valid_from(source_ep)
+                # Optional, validated claim. A malformed/unknown proposal is
+                # dropped and never fails the rest of the response.
+                metadata: dict[str, Any] = {"compiler": "llm", "model": self._model}
+                try:
+                    claim_md = _llm_claim_metadata(mem)
+                except Exception:  # pragma: no cover - defensive; never break compile
+                    claim_md = None
+                if claim_md:
+                    metadata.update(claim_md)
                 results.append(
                     MemoryRow(
                         id=uuid.uuid4(),
@@ -296,7 +370,7 @@ class LLMCompiler:
                         valid_from=ep_valid_from,
                         valid_to=compute_valid_to(kind, ep_valid_from, settings.kind_ttl_days),
                         source_episode_ids=[source_ep.id],
-                        metadata_={"compiler": "llm", "model": self._model},
+                        metadata_=metadata,
                         status="active",
                     )
                 )

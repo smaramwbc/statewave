@@ -240,7 +240,14 @@ def _legacy_resolve(
 
 def _claim_owned_pair(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim]) -> bool:
     ca, cb = claims.get(a.id), claims.get(b.id)
-    return ca is not None and cb is not None and ca.bucket == cb.bucket and ca.value != cb.value
+    if ca is None or cb is None:
+        return False  # a mixed keyed/unkeyed pair keeps existing legacy behavior
+    # The claim path owns EVERY pair of single-valued claims except an exact
+    # duplicate (same bucket + same value), which it defers to legacy dedup. In
+    # particular two DIFFERENT claim identities must coexist — lexical overlap
+    # between their texts must never supersede across distinct buckets (e.g.
+    # Stripe-card vs Stripe-ACH rates).
+    return not (ca.bucket == cb.bucket and ca.value == cb.value)
 
 
 def _legacy_sort_key(m: MemoryRow) -> tuple[datetime, datetime, str]:

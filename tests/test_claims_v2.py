@@ -214,3 +214,20 @@ async def test_same_identity_same_value_not_a_contradiction():
     a = _mem("stripe a", _env(value=_V350), age=10)
     b = _mem("stripe b", _env(value=_V350), age=0)  # identical value, distinct text
     assert await _resolve([a, b]) == []  # same value -> not a contradiction (coexist)
+
+
+async def test_distinct_buckets_with_identical_text_coexist():
+    # Regression: two DIFFERENT claim identities (card vs ACH) whose memory TEXT
+    # is identical must coexist — the legacy lexical path must never supersede
+    # across distinct buckets.
+    a = _mem(
+        "Stripe rate: 2.9% + 30c",
+        _env(quals={**_BASE_Q, "payment_method": "card"}, value=_V290),
+        age=10,
+    )
+    b = _mem(
+        "Stripe rate: 2.9% + 30c",
+        _env(quals={**_BASE_Q, "payment_method": "ach"}, value=_V290),
+        age=0,
+    )
+    assert await _resolve([a, b]) == []

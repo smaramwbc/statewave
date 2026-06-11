@@ -37,6 +37,15 @@ class HeuristicCompiler:
         return memories
 
     def _compile_episode(self, ep: EpisodeRow) -> list[MemoryRow]:
+        # Structured memory candidates short-circuit the heuristic path: compile
+        # the producer-supplied atomic facts deterministically, NO catch-all
+        # episode_summary. Lazy import avoids a heuristic<->structured cycle.
+        from server.services.structured import compile_candidates
+
+        structured = compile_candidates(ep)
+        if structured is not None:
+            return structured
+
         results: list[MemoryRow] = []
         text = extract_payload_text(ep.payload)
         if not text:

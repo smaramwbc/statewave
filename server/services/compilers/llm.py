@@ -210,15 +210,25 @@ class LLMCompiler:
         provider round-trip fails, so the caller does not mistake a provider
         outage for an empty extraction and consume the episodes (issue #201).
         """
-        # Extract text from each episode, skip empties
+        # Structured episodes compile deterministically from producer-supplied
+        # candidates — they never go to the LLM. Lazy import avoids a cycle.
+        from server.services.structured import compile_candidates
+
+        structured_memories: list[MemoryRow] = []
         episode_texts: list[tuple[EpisodeRow, str]] = []
         for ep in episodes:
+            structured = compile_candidates(ep)
+            if structured is not None:
+                structured_memories.extend(structured)
+                continue
             text = extract_payload_text(ep.payload)
             if text:
                 episode_texts.append((ep, text[:4000]))  # Cap per-episode text
 
         if not episode_texts:
-            return []
+            if structured_memories and settings.auto_labeling_enabled:
+                apply_suggestions(structured_memories)
+            return structured_memories
 
         # Group into batches by total character count
         batches = self._create_batches(episode_texts)
@@ -229,8 +239,8 @@ class LLMCompiler:
         tasks = [self._process_batch(batch, semaphore) for batch in batches]
         batch_results = await asyncio.gather(*tasks)
 
-        # Flatten results
-        memories: list[MemoryRow] = []
+        # Flatten results (structured candidates first, then LLM extractions)
+        memories: list[MemoryRow] = list(structured_memories)
         for result in batch_results:
             memories.extend(result)
 

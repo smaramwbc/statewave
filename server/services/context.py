@@ -31,6 +31,7 @@ from server.schemas.responses import (
 from server.services import policy as policy_service
 from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
+from server.services.structured import is_structured_episode
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.query_cache import cached_embed_query
 from server.services.tokenization import EDGE_PUNCT, tokenize
@@ -528,6 +529,12 @@ async def assemble_context(
                 continue  # already represented by a summary
             if str(row.id) in obsolete_episode_ids:
                 continue  # backing memories all superseded (Phase-1 leak fix)
+            if is_structured_episode(row.payload):
+                # Compiled from structured candidates: its active atomic memories
+                # ARE its representation. Never inject the raw mixed body, so a
+                # superseded atomic fact cannot leak back through it. The raw
+                # episode stays in timeline/admin/history.
+                continue
             ep_text = _short_episode_text(row.payload, row.source, row.type)
             content_text = extract_payload_text(row.payload)
             ep_relevance = _relevance_score(content_text, task_tokens)

@@ -459,6 +459,18 @@ async def assemble_context(
             if row.source_episode_ids:
                 covered_episode_ids.update(str(eid) for eid in row.source_episode_ids)
 
+        # Suppress episodes whose backing memories are ALL superseded. Without
+        # this, a correctly-superseded fact still resurfaces verbatim here
+        # ("Recent interactions") and leaks the stale value back into the
+        # prompt. Episodes that still back an active memory — or back no memory
+        # at all — are preserved. Deterministic set logic; no embeddings/LLM.
+        obsolete_episode_ids: set[str] = {
+            str(eid)
+            for eid in await repo.superseded_only_episode_ids(
+                session, subject_id, tenant_id=tenant_id
+            )
+        }
+
         # Fetch resolved sessions to penalize their episodes
         resolved_sessions = await repo.get_resolved_session_ids(
             session, subject_id, tenant_id=tenant_id
@@ -514,6 +526,8 @@ async def assemble_context(
         for row in episode_rows:
             if str(row.id) in covered_episode_ids:
                 continue  # already represented by a summary
+            if str(row.id) in obsolete_episode_ids:
+                continue  # backing memories all superseded (Phase-1 leak fix)
             ep_text = _short_episode_text(row.payload, row.source, row.type)
             content_text = extract_payload_text(row.payload)
             ep_relevance = _relevance_score(content_text, task_tokens)

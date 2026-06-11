@@ -306,6 +306,41 @@ async def mark_memories_superseded(
     await session.execute(stmt)
 
 
+async def superseded_only_episode_ids(
+    session: AsyncSession,
+    subject_id: str,
+    *,
+    tenant_id: str | None = None,
+) -> set[uuid.UUID]:
+    """Episode IDs whose backing memories are ALL non-active.
+
+    Phase-1 leak fix: a correctly-superseded fact must not resurface verbatim
+    via its originating episode in the "Recent interactions" context section.
+    An episode that still backs at least one *active* memory — or that backs no
+    memory at all — is NOT returned (i.e. it is kept), so partially-superseded
+    and raw uncompiled episodes are preserved exactly as today. Only an episode
+    referenced solely by superseded/tombstoned memories is reported obsolete.
+
+    Pure, deterministic set logic over committed rows — no embeddings, no LLM,
+    stub-safe — so it suppresses leaks regardless of which compile batch
+    produced the supersession. Read-only.
+    """
+    stmt = select(MemoryRow.status, MemoryRow.source_episode_ids).where(
+        MemoryRow.subject_id == subject_id
+    )
+    stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
+    result = await session.execute(stmt)
+
+    alive: set[uuid.UUID] = set()
+    dead: set[uuid.UUID] = set()
+    for status, episode_ids in result.all():
+        if not episode_ids:
+            continue
+        (alive if status == "active" else dead).update(episode_ids)
+    # Referenced only by non-active memories, never by an active one.
+    return dead - alive
+
+
 # ---------------------------------------------------------------------------
 # Semantic search
 # ---------------------------------------------------------------------------

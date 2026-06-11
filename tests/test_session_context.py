@@ -61,6 +61,11 @@ def _mock_repos(episodes, *, resolved_sessions=None):
             return_value=episodes,
         ),
         patch(
+            "server.services.context.repo.superseded_only_episode_ids",
+            new_callable=AsyncMock,
+            return_value=set(),
+        ),
+        patch(
             "server.services.context.repo.search_memories_by_embedding",
             new_callable=AsyncMock,
             return_value=[],

@@ -179,7 +179,6 @@ async def test_keyed_bucketing_scales_and_isolates_keys():
 
     single_keys = [k for k, s in CLAIM_REGISTRY.items() if s.scope == SCOPE_SINGLE]
     memories = []
-    expected = set()
     for n in range(250):
         key = single_keys[n % len(single_keys)]
         # Disambiguate same-registry-key buckets across iterations would merge,

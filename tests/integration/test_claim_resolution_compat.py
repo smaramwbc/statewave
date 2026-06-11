@@ -15,7 +15,7 @@ import pytest
 
 import tests.integration.conftest as _conftest
 from server.db import repositories as repo
-from server.db.tables import EpisodeRow, MemoryRow
+from server.db.tables import MemoryRow
 from server.services.backup import export_subject, import_subject
 from server.services.conflicts import resolve_conflicts
 from server.services.context import assemble_context
@@ -86,7 +86,7 @@ async def test_legacy_only_db_unchanged(session_factory, subject_id):
         await s.commit()
 
     async with session_factory() as s:
-        result = await resolve_conflicts(s, subject_id)
+        await resolve_conflicts(s, subject_id)
         await s.commit()
 
     statuses = await _statuses(session_factory, subject_id)

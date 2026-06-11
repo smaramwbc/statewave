@@ -80,9 +80,7 @@ async def resolve_conflicts(
     Call contract unchanged: exactly one ``list_active_memories_by_subject``
     read and at most one ``mark_memories_superseded`` write.
     """
-    memories = await repo.list_active_memories_by_subject(
-        session, subject_id, tenant_id=tenant_id
-    )
+    memories = await repo.list_active_memories_by_subject(session, subject_id, tenant_id=tenant_id)
     if len(memories) < 2:
         return []
 
@@ -123,12 +121,15 @@ def _resolve_single_valued_claims(
     if len(keyed) < 2:
         return []
 
-    by_key: dict[str, list[MemoryRow]] = {}
+    # Bucket by the GENERIC contradiction identity. v1 buckets by key alone; v2
+    # by (key, entity, canonical qualifiers). The resolver never inspects
+    # entity/qualifiers itself — it only requires that two claims share a bucket.
+    by_bucket: dict[tuple, list[MemoryRow]] = {}
     for m in keyed:
-        by_key.setdefault(claims[m.id].canonical_key, []).append(m)
+        by_bucket.setdefault(claims[m.id].bucket, []).append(m)
 
     superseded_ids: list[uuid.UUID] = []
-    for key, group in by_key.items():
+    for _bucket, group in by_bucket.items():
         if len(group) < 2:
             continue
         group.sort(key=functools.cmp_to_key(lambda a, b: _claim_cmp(a, b, claims)))
@@ -140,10 +141,10 @@ def _resolve_single_valued_claims(
                 if group[j].status != "active":
                     continue
                 cj = claims[group[j].id]
-                # Authoritative ONLY for a genuine contradiction: same canonical
-                # key (by grouping) + DIFFERENT normalized value + OVERLAPPING
-                # validity. Same value is a duplicate (left to legacy dedup);
-                # non-overlapping windows coexist as history.
+                # Authoritative ONLY for a genuine contradiction: same bucket (by
+                # grouping) + DIFFERENT canonical value + OVERLAPPING validity.
+                # Same value is a duplicate (left to legacy dedup); non-
+                # overlapping windows coexist as history.
                 if ci.value == cj.value:
                     continue
                 if not _claim_overlap(group[i], ci, group[j], cj):
@@ -155,7 +156,7 @@ def _resolve_single_valued_claims(
                     "memory_superseded",
                     old_id=str(group[i].id),
                     new_id=str(group[j].id),
-                    claim_key=key,
+                    claim_key=ci.canonical_key,
                     strategy="claim_contradiction",
                 )
                 break
@@ -179,9 +180,7 @@ def _claim_cmp(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim
     return -1 if sa < sb else (1 if sa > sb else 0)
 
 
-def _claim_overlap(
-    mi: MemoryRow, ci: ResolvedClaim, mj: MemoryRow, cj: ResolvedClaim
-) -> bool:
+def _claim_overlap(mi: MemoryRow, ci: ResolvedClaim, mj: MemoryRow, cj: ResolvedClaim) -> bool:
     """Temporal overlap of two claims, using each claim's own validity window
     when supplied and otherwise the memory row's valid_from/valid_to."""
     i_from = ci.valid_from if ci.valid_from is not None else mi.valid_from
@@ -239,16 +238,9 @@ def _legacy_resolve(
     return superseded_ids
 
 
-def _claim_owned_pair(
-    a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim]
-) -> bool:
+def _claim_owned_pair(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim]) -> bool:
     ca, cb = claims.get(a.id), claims.get(b.id)
-    return (
-        ca is not None
-        and cb is not None
-        and ca.canonical_key == cb.canonical_key
-        and ca.value != cb.value
-    )
+    return ca is not None and cb is not None and ca.bucket == cb.bucket and ca.value != cb.value
 
 
 def _legacy_sort_key(m: MemoryRow) -> tuple[datetime, datetime, str]:

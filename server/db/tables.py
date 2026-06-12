@@ -8,7 +8,7 @@ from datetime import datetime
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
 # Embedding dimensionality must match `LiteLLMEmbeddingProvider.dimensions`
 # and the `vector(N)` type in the schema. text-embedding-3-small at 1536
@@ -63,6 +63,17 @@ class MemoryRow(Base):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    @validates("content", "summary")
+    def _strip_nul_bytes(self, _key: str, value: str | None) -> str | None:
+        # Postgres text cannot store NUL (U+0000). An LLM occasionally emits one
+        # in generated content, and a single stray byte would raise
+        # CharacterNotInRepertoireError and 500 the ENTIRE compile batch (losing
+        # every memory in it). Strip NUL — and only NUL — so one bad byte can't
+        # sink the batch. Valid UTF-8 is otherwise preserved untouched.
+        if isinstance(value, str) and "\x00" in value:
+            return value.replace("\x00", "")
+        return value
     confidence: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     valid_from: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

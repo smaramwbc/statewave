@@ -24,6 +24,10 @@ class CreateEpisodeRequest(BaseModel):
     # (Slack history, GitHub issues, Zendesk imports) should always set
     # this so timeline-style queries see the real ordering.
     occurred_at: datetime | None = None
+    # De-dup key. Re-ingesting an episode with the same key (re-running a seed,
+    # retrying a webhook) is a no-op rather than a duplicate. Optional; when
+    # absent the server also reads `metadata.idempotency_key` for older clients.
+    idempotency_key: str | None = Field(default=None, max_length=512)
 
 
 class BatchCreateEpisodesRequest(BaseModel):

@@ -33,6 +33,12 @@ class EpisodeRow(Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
     provenance: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    # Client-supplied de-dup key. A partial unique index on
+    # (tenant_id, subject_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+    # (migration 0025, NULLS NOT DISTINCT) makes ingest idempotent: re-seeding a
+    # repo collapses to the same rows instead of duplicating them. NULL = no key
+    # = always inserted (live-chat ingest, legacy clients).
+    idempotency_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -51,6 +57,20 @@ class EpisodeRow(Base):
     __table_args__ = (
         Index("ix_episodes_subject_created", "subject_id", "created_at"),
         Index("ix_episodes_subject_occurred", "subject_id", "occurred_at"),
+        # Idempotent ingest: one episode per (tenant_id, subject_id,
+        # idempotency_key). Partial (keyless episodes are unconstrained) and
+        # NULLS NOT DISTINCT (a NULL tenant_id is a value, so single-tenant rows
+        # still de-dup). Declared here so create_all-based tests get it too;
+        # migration 0025 builds the same index on existing databases.
+        Index(
+            "ix_episodes_idempotency",
+            "tenant_id",
+            "subject_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
 

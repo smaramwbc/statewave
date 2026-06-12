@@ -36,11 +36,17 @@ async def create_episode(
         payload=body.payload,
         metadata_=body.metadata,
         provenance=body.provenance,
+        # Idempotency key: a first-class request field, falling back to where the
+        # connectors historically stashed it (metadata.idempotency_key) so older
+        # clients de-dup too. Drives the idempotent insert in insert_episode.
+        idempotency_key=body.idempotency_key or body.metadata.get("idempotency_key"),
     )
     if body.occurred_at is not None:
         row_kwargs["occurred_at"] = body.occurred_at
     row = EpisodeRow(**row_kwargs)
-    await repo.insert_episode(session, row)
+    # On an idempotency conflict this returns the existing episode (the local row
+    # is expunged), so rebind before commit/refresh.
+    row = await repo.insert_episode(session, row)
     await session.commit()
     await session.refresh(row)
     await webhooks.fire(
@@ -86,12 +92,14 @@ async def create_episodes_batch(
                 payload=ep.payload,
                 metadata_=ep.metadata,
                 provenance=ep.provenance,
+                idempotency_key=ep.idempotency_key or ep.metadata.get("idempotency_key"),
             )
             if ep.occurred_at is not None:
                 row_kwargs["occurred_at"] = ep.occurred_at
             row = EpisodeRow(**row_kwargs)
-            await repo.insert_episode(session, row)
-            rows.append(row)
+            # insert_episode returns the EXISTING row on an idempotency conflict,
+            # so append what it returns (not the local row, which is expunged).
+            rows.append(await repo.insert_episode(session, row))
         await session.commit()
         for row in rows:
             await session.refresh(row)

@@ -11,6 +11,7 @@ import uuid
 from typing import Sequence
 
 from sqlalchemy import delete, func, or_, select, text, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime
@@ -54,9 +55,43 @@ def _tenant_filter(stmt, column, tenant_id: str | None):
 
 
 async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
-    session.add(row)
-    await session.flush()
-    return row
+    """Insert an episode, idempotently.
+
+    With an `idempotency_key`, a row that collides with an existing
+    (tenant_id, subject_id, idempotency_key) is NOT duplicated — the existing
+    episode is returned unchanged. This makes re-ingest (re-running a seed,
+    retrying a webhook) a no-op instead of inflating the subject. Episodes
+    without a key are always inserted (live-chat ingest, legacy clients).
+    """
+    if not row.idempotency_key:
+        session.add(row)
+        await session.flush()
+        return row
+    # The unique index is the atomic arbiter — a SAVEPOINT lets us catch the
+    # conflict without poisoning the surrounding transaction, then return the
+    # winner. This is race-safe under the connectors' concurrent ingest.
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+        return row
+    except IntegrityError:
+        if row in session:
+            session.expunge(row)
+        existing = (
+            await session.execute(
+                select(EpisodeRow).where(
+                    EpisodeRow.subject_id == row.subject_id,
+                    EpisodeRow.idempotency_key == row.idempotency_key,
+                    EpisodeRow.tenant_id.is_(None)
+                    if row.tenant_id is None
+                    else EpisodeRow.tenant_id == row.tenant_id,
+                )
+            )
+        ).scalars().first()
+        if existing is None:
+            raise  # a non-idempotency constraint failed — don't swallow it
+        return existing
 
 
 async def list_episodes_by_subject(

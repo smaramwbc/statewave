@@ -58,10 +58,13 @@ _MAX_CONCURRENCY = 4  # Max parallel LLM calls
 #     raised LLMResponseError. The whole batch was discarded.
 #   - Multi-episode batches got 500 * episode_count but capped at 3000,
 #     still tight for ~15+ memories per batch.
-# gpt-4o-mini supports 16K output tokens. 8000 leaves real headroom and
-# costs nothing extra (only used tokens are billed).
-_MAX_TOKENS = 8000  # Response token limit per batch
-_TOKENS_PER_EPISODE = 1500  # Per-episode allocation inside the cap
+# The ceiling is configurable (settings.litellm_compile_max_tokens, default
+# 16000) and is a CAP, not a target — only generated tokens are billed. We floor
+# the per-call budget at half the ceiling even for a single-episode batch. That
+# headroom is essential for reasoning models (o-series, gpt-5.x, ...): they spend
+# part of the budget on hidden reasoning tokens before the JSON, so the old tight
+# 1500/episode cap truncated their output into invalid JSON (compile 502).
+_TOKENS_PER_EPISODE = 1500  # Per-episode allocation, floored below at half the ceiling
 
 _SYSTEM_PROMPT = """\
 You are a memory extraction engine for an AI context system called Statewave.
@@ -395,11 +398,12 @@ class LLMCompiler:
         gives us provider portability plus standardized timeout/retry/error
         mapping.
         """
-        # Adjust max tokens based on batch size. 1500/episode is the
-        # empirical headroom for a dense LoCoMo session (~15 memories
-        # at ~100 tokens each); the _MAX_TOKENS ceiling stops absurdly
-        # large batches from blowing past gpt-4o-mini's 16K output cap.
-        max_tokens = min(_MAX_TOKENS, _TOKENS_PER_EPISODE * episode_count)
+        # Size the budget to the batch, but floor at half the ceiling so even a
+        # single-episode batch leaves room for a reasoning model's hidden tokens
+        # (a tight cap truncates the JSON → invalid → compile 502). The ceiling is
+        # configurable and caps large batches below the model's output limit.
+        ceiling = settings.litellm_compile_max_tokens
+        max_tokens = min(ceiling, max(ceiling // 2, _TOKENS_PER_EPISODE * episode_count))
 
         try:
             parsed = await llm_adapter.acomplete_json(

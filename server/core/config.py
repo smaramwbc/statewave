@@ -78,6 +78,13 @@ class Settings(BaseSettings):
     litellm_timeout_seconds: float = 60.0
     litellm_max_retries: int = 2
     litellm_temperature: float = 0.1
+    # Output-token ceiling for the LLM compiler. This is a CAP, not a target
+    # (only generated tokens are billed), so it is generous by default: reasoning
+    # models (o-series, gpt-5.x, ...) spend part of the budget on hidden reasoning
+    # tokens before the JSON, and a small cap truncates their output into invalid
+    # JSON. 16000 is safe for gpt-4o-mini's 16K output limit — lower it for legacy
+    # models with smaller limits (gpt-4: 8K), raise it for heavy reasoning batches.
+    litellm_compile_max_tokens: int = 16000
 
     # Authentication (empty = disabled / open access)
     api_key: str | None = None

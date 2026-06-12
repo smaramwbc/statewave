@@ -335,19 +335,40 @@ async def aembed_query(
 # ─── Health ──────────────────────────────────────────────────────────
 
 
+def _is_output_limit_error(exc: BaseException) -> bool:
+    """True when a provider rejected the call only because the output/token cap
+    was hit. The round-trip still reached the model, so auth + connectivity are
+    proven — what `aping` cares about."""
+    msg = str(exc).lower()
+    return (
+        "max_tokens" in msg
+        or "max output" in msg
+        or "output limit" in msg
+        or "finish the message" in msg
+        or "max_completion_tokens" in msg
+    )
+
+
 async def aping(timeout: float = 10.0) -> bool:
     """Lightweight provider-reachability check. Returns True on success.
 
-    Uses a one-token completion to verify both auth and connectivity
-    without burning meaningful tokens. Re-raises typed errors so callers
-    can distinguish timeout vs auth failure if they want; otherwise just
-    catch StatewaveLLMError.
+    Uses a one-token completion to verify both auth and connectivity without
+    burning meaningful tokens. A reasoning model (o-series, gpt-5.x, ...) can
+    exhaust that tiny budget on hidden reasoning tokens before emitting output,
+    which the provider reports as a max-tokens/output-limit error — but that
+    round-trip still PROVES auth + connectivity, so we treat it as reachable.
+    Re-raises other typed errors so callers can distinguish timeout vs auth.
     """
-    await acomplete(
-        [{"role": "user", "content": "ping"}],
-        max_tokens=1,
-        timeout=timeout,
-    )
+    try:
+        await acomplete(
+            [{"role": "user", "content": "ping"}],
+            max_tokens=1,
+            timeout=timeout,
+        )
+    except LLMProviderError as exc:
+        if _is_output_limit_error(exc):
+            return True
+        raise
     return True
 
 

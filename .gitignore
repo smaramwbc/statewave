@@ -6,3 +6,6 @@ dist/
 .venv/
 .pytest_cache/
 AGENTS_INTERNAL.md
+.mcp.json
+.cursor/mcp.json
+.vscode/mcp.json

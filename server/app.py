@@ -101,6 +101,20 @@ async def _cleanup_loop():
 async def lifespan(app: FastAPI):
     # Configure tracing (no-op if opentelemetry not installed)
     setup_tracing()
+
+    # Apply any DB-stored settings overrides BEFORE we wire up modules that
+    # snapshot config (webhooks, llm singleton, …). Failures here log and
+    # continue — the env-only fallback keeps the server bootable even if
+    # the override layer is broken or hasn't been migrated yet.
+    try:
+        from server.core.dynamic_settings import apply_db_overrides_to_settings
+
+        applied = await apply_db_overrides_to_settings()
+        if applied:
+            logger.info("settings_db_overrides_applied", keys=sorted(applied.keys()))
+    except Exception as exc:
+        logger.warning("settings_db_overrides_skipped", reason=str(exc)[:200])
+
     # Configure webhooks
     from server.services import webhooks
 

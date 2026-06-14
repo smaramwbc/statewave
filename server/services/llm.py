@@ -349,6 +349,53 @@ def _is_output_limit_error(exc: BaseException) -> bool:
     )
 
 
+async def aping_with_overrides(
+    *,
+    model: str | None = None,
+    api_key: str | None = None,
+    api_base: str | None = None,
+    timeout: float = 10.0,
+) -> tuple[bool, str | None]:
+    """One-token reachability check against a CANDIDATE (key, model, base).
+
+    Used by the admin settings ``test_probe`` to validate proposed LLM
+    credentials without persisting them. Returns ``(ok, detail)`` so the
+    caller can surface failures in the UI without a typed exception
+    crossing the module boundary. The only place outside `services/llm.py`
+    that LiteLLM-shaped errors leak.
+
+    A reasoning-model max-tokens hit is treated as proven-reachable, same
+    as :func:`aping`."""
+    litellm = _ensure_litellm()
+    kw: dict[str, Any] = {
+        "model": model or settings.litellm_model,
+        "messages": [{"role": "user", "content": "ping"}],
+        "max_tokens": 1,
+        "num_retries": 0,
+    }
+    if api_key is not None:
+        kw["api_key"] = api_key
+    elif settings.litellm_api_key:
+        kw["api_key"] = settings.litellm_api_key
+    if api_base is not None:
+        kw["api_base"] = api_base
+    elif settings.litellm_api_base:
+        kw["api_base"] = settings.litellm_api_base
+
+    try:
+        await asyncio.wait_for(litellm.acompletion(**kw), timeout=timeout)
+    except asyncio.TimeoutError:
+        return False, f"timed out after {timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        classified = _classify(exc)
+        # max-tokens / output-limit means we DID reach the model — auth
+        # and connectivity are proven, so treat as ok.
+        if isinstance(classified, LLMProviderError) and _is_output_limit_error(classified):
+            return True, "reachable (output-limit hit on 1-token ping)"
+        return False, f"{type(classified).__name__}: {classified}"
+    return True, "ok"
+
+
 async def aping(timeout: float = 10.0) -> bool:
     """Lightweight provider-reachability check. Returns True on success.
 

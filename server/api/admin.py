@@ -3106,3 +3106,493 @@ async def patch_tenant_config(tenant_id: str, patch: TenantConfigPatch):
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
+
+
+# ─── Production-readiness check ──────────────────────────────────────────
+
+
+def _compute_readiness_issues(cfg: dict) -> list[dict]:
+    """Build the issues list from a config snapshot.
+
+    Pure function on a dict so the route can run it twice: once with
+    live `settings.X` (what the process is doing now), once with live
+    + DB overrides merged (what the next restart would look like).
+    Diffing the two lets us mark `fix_staged=True` on issues that are
+    queued but not yet active — which is the only reason an operator
+    who just clicked Save sees the same warning persist.
+    """
+    issues: list[dict] = []
+
+    # ─── Critical ──────────────────────────────────────────────────
+    api_key = cfg.get("api_key") or ""
+    if not api_key:
+        issues.append({
+            "id": "no_backend_auth",
+            "severity": "critical",
+            "title": "Backend authentication is disabled",
+            "summary": (
+                "Any client that can reach the backend can read and write "
+                "memories, run migrations, and view receipts. Enable an API "
+                "key before exposing this deployment outside localhost."
+            ),
+            "fix": {"kind": "wizard", "id": "enable-auth"},
+        })
+    elif api_key.startswith("dev-") or api_key in {
+        "dev-local-placeholder",
+        "change-me",
+        "your-api-key-here",
+    }:
+        issues.append({
+            "id": "dev_placeholder_api_key",
+            "severity": "critical",
+            "title": "Backend API key looks like a development placeholder",
+            "summary": (
+                "Rotate to a strong random key — the current value matches "
+                "a known dev/example default and is trivial to guess."
+            ),
+            "fix": {"kind": "wizard", "id": "enable-auth"},
+        })
+
+    # ─── High ──────────────────────────────────────────────────────
+    cors = cfg.get("cors_origins") or []
+    if cors == ["*"] or "*" in cors:
+        issues.append({
+            "id": "permissive_cors",
+            "severity": "high",
+            "title": "CORS allows any browser origin",
+            "summary": (
+                "Replace `[\"*\"]` with the explicit list of origins that "
+                "actually need browser access (e.g. your admin frontend, "
+                "internal apps). A wildcard is a XSS amplifier."
+            ),
+            "fix": {"kind": "setting", "key": "cors_origins"},
+        })
+
+    if cfg.get("debug"):
+        issues.append({
+            "id": "debug_logging",
+            "severity": "high",
+            "title": "Debug logging is enabled",
+            "summary": (
+                "Verbose logs can leak prompts, episode payloads, and "
+                "internal IDs. Turn off `debug` outside development."
+            ),
+            "fix": {"kind": "setting", "key": "debug"},
+        })
+
+    if cfg.get("embedding_provider") == "stub":
+        issues.append({
+            "id": "stub_embeddings",
+            "severity": "high",
+            "title": "Embeddings are using the deterministic stub",
+            "summary": (
+                "Stub embeddings produce hash-based vectors — semantic "
+                "search will return nonsense. Switch to a real provider "
+                "(LiteLLM with an API key) for production memory recall."
+            ),
+            "fix": {"kind": "setting", "key": "embedding_provider"},
+        })
+
+    # ─── Medium ────────────────────────────────────────────────────
+    if cfg.get("rate_limit_rpm", 0) == 0:
+        issues.append({
+            "id": "no_rate_limit",
+            "severity": "medium",
+            "title": "No rate limiting configured",
+            "summary": (
+                "`rate_limit_rpm = 0` disables the limiter entirely. A "
+                "noisy or buggy client can exhaust LLM quota or saturate "
+                "Postgres. A 60–600 RPM cap per tenant is typical."
+            ),
+            "fix": {"kind": "setting", "key": "rate_limit_rpm"},
+        })
+
+    if not cfg.get("strict_schema"):
+        issues.append({
+            "id": "lax_schema_check",
+            "severity": "medium",
+            "title": "Strict schema check is off",
+            "summary": (
+                "The server boots on a stale schema and only warns. Turn "
+                "this on in production so a missed migration fails the "
+                "deploy loudly instead of running with a half-applied "
+                "schema."
+            ),
+            "fix": {"kind": "setting", "key": "strict_schema"},
+        })
+
+    # ─── Low ───────────────────────────────────────────────────────
+    if cfg.get("region") is None:
+        issues.append({
+            "id": "no_region",
+            "severity": "low",
+            "title": "Server region is not pinned",
+            "summary": (
+                "Set `region` if you operate >1 region — the residency "
+                "layer compares per-tenant region pins against it. "
+                "Single-region deployments can ignore this."
+            ),
+            "fix": {"kind": "setting", "key": "region"},
+        })
+
+    return issues
+
+
+@router.get("/readiness-check")
+async def admin_readiness_check():
+    """Opinionated production-readiness scan.
+
+    Returns `{id, severity, title, summary, fix, fix_staged?}` issues.
+
+    `fix_staged` is true when the issue is still firing against the
+    LIVE process state, but a DB-stored override (queued by the
+    operator) would clear it on the next backend restart. The UI uses
+    it to render "Pending restart" affordances instead of the naïve
+    "fix did nothing" appearance — without it, an operator who just
+    saved `debug=false` keeps seeing the warning and assumes the save
+    was ignored.
+
+    Severity scale: see `_compute_readiness_issues`.
+    """
+    from server.core.dynamic_settings import _load_global_overrides
+    from server.db import engine as engine_module
+
+    # Live snapshot — what the process is doing RIGHT NOW. Reads
+    # straight off the pydantic Settings object so it reflects what
+    # the application code actually sees.
+    live_cfg = {
+        "api_key": settings.api_key,
+        "cors_origins": list(settings.cors_origins) if settings.cors_origins else [],
+        "debug": settings.debug,
+        "embedding_provider": settings.embedding_provider,
+        "rate_limit_rpm": settings.rate_limit_rpm,
+        "strict_schema": settings.strict_schema,
+        "region": settings.region,
+        "webhook_url": settings.webhook_url,
+    }
+    live_issues = _compute_readiness_issues(live_cfg)
+
+    # DB overrides — what the next restart would apply on top of env.
+    try:
+        async with engine_module.get_session_factory()() as session:
+            db_overrides = await _load_global_overrides(session)
+    except Exception as exc:
+        # If the override layer is unreachable (DB hiccup, migrations
+        # behind), the readiness check should still respond — staged
+        # detection just degrades to "no staged info". Beats 500ing
+        # the dashboard.
+        logger.warning("readiness_db_lookup_failed", error=str(exc)[:200])
+        db_overrides = {}
+
+    next_cfg = {**live_cfg, **db_overrides}
+    next_issue_ids = {i["id"] for i in _compute_readiness_issues(next_cfg)}
+
+    # An issue is "staged" iff it currently fires AND wouldn't fire on
+    # next restart. That captures both kind:'setting' and kind:'wizard'
+    # remediations uniformly — both flow through the DB override layer.
+    for issue in live_issues:
+        if issue["id"] not in next_issue_ids:
+            issue["fix_staged"] = True
+
+    return {"issues": live_issues}
+
+
+# ─── Connection info ─────────────────────────────────────────────────────
+
+
+@router.get("/connection-info")
+async def admin_connection_info():
+    """Lightweight self-introspection for the admin dashboard's
+    "Connection" card.
+
+    Returns whatever the backend can know about itself without doing
+    work — version, schema head, bind config, region, and whether auth
+    is configured. The admin-server's proxy URL (what hostname clients
+    use to reach this backend) is NOT here because the backend doesn't
+    know it; the admin server surfaces that via
+    `/api/admin/proxy-info`.
+
+    Reads are live: `auth_enabled` reflects the current effective
+    `api_key` (DB override → env), so flipping the toggle in the
+    Settings page shows up here immediately after a restart.
+    """
+    from server.app import get_app_version
+    from server.services.migrations import EXPECTED_HEAD
+
+    return {
+        "version": get_app_version(),
+        "schema_head": EXPECTED_HEAD,
+        "host": settings.host,
+        "port": settings.port,
+        "region": settings.region,
+        "auth_enabled": bool(settings.api_key),
+        "compiler_type": settings.compiler_type,
+        "embedding_provider": settings.embedding_provider,
+        "require_tenant": settings.require_tenant,
+    }
+
+
+# ─── Restart endpoint ───────────────────────────────────────────────────
+#
+# Used by the admin UI's "Restart backend" button when there are pending
+# non-hot-reloadable settings overrides. The pattern is exit-then-restart:
+# we schedule a delayed `os._exit(0)` (so the HTTP response completes
+# first) and rely on the container orchestrator's restart policy to
+# bring the process back. Works on:
+#
+#   - Docker / Compose with `restart: unless-stopped` / `restart: always`
+#   - Kubernetes (a Pod's container restarts on exit by default)
+#   - systemd with `Restart=on-success` or `Restart=always`
+#
+# Without a restart policy the container just stops — that's a deploy
+# misconfiguration, and the UI warns about it. The endpoint is gated
+# by the admin router (which is auth-protected upstream of any caller).
+# We deliberately use `os._exit(0)` rather than `sys.exit` so a stuck
+# background task can't keep the process alive past the requested exit.
+
+
+@router.post("/restart")
+async def admin_restart_endpoint(delay_seconds: float = Query(2.0, ge=0.5, le=10.0)):
+    """Exit the process so the orchestrator restarts it.
+
+    Returns 202 immediately; the actual exit happens after `delay_seconds`
+    so the response can flush. In-flight requests get the standard FastAPI
+    shutdown — they're allowed to finish if the worker grants the grace
+    period (~2s is enough for nearly all admin / readiness probes).
+
+    The endpoint is destructive in the "kicks every connected client off"
+    sense, but not in the "loses data" sense — the DB is the source of
+    truth, and pending overrides land at boot via `apply_db_overrides_to_settings`.
+    """
+    import asyncio
+    import os
+
+    logger.warning("admin_restart_requested", delay_seconds=delay_seconds)
+
+    async def _exit_after_delay() -> None:
+        await asyncio.sleep(delay_seconds)
+        logger.warning("admin_restart_exiting")
+        # `_exit` skips finalizers / atexit handlers — that's deliberate.
+        # Anything that NEEDS to flush before exit (audit rows, etc.) is
+        # already committed by the time the request handler returns;
+        # a stuck cleanup task should not be able to block the restart.
+        os._exit(0)
+
+    asyncio.create_task(_exit_after_delay())
+    return {
+        "ok": True,
+        "message": "Backend will exit shortly; orchestrator restart policy brings it back.",
+        "exit_in_seconds": delay_seconds,
+    }
+
+
+# ─── System settings (DB-backed override layer) ──────────────────────────
+#
+# These endpoints let the admin UI list, read, edit and revert the settings
+# catalogued in `server/core/settings_catalogue.py`. Values resolve at read
+# time with the precedence chain:
+#
+#     tenant_override → global_db → env (pydantic Settings) → default
+#
+# Every editable PATCH / DELETE / tenant write goes through
+# `server.core.dynamic_settings`, which appends an audit row and invalidates
+# the in-process resolution cache. Test probes are side-effect-free and live
+# at /admin/settings/test.
+
+
+class SettingPatchRequest(BaseModel):
+    value: object
+    changed_by: str | None = None
+    note: str | None = None
+
+
+class TenantSettingPatchRequest(BaseModel):
+    value: object
+    changed_by: str | None = None
+    note: str | None = None
+
+
+class SettingTestRequest(BaseModel):
+    key: str
+    value: object
+
+
+@router.get("/settings")
+async def list_settings_endpoint(
+    tenant_id: str | None = Query(None, description="Optional tenant scope for tenant-overridable settings"),
+):
+    """Return the effective value for every catalogued setting.
+
+    Source labels indicate where each value came from:
+
+      * ``tenant_db`` — overridden in `tenant_settings` for the given tenant
+      * ``global_db`` — overridden in `system_settings`
+      * ``env`` — env / `.env` (or hardcoded pydantic default)
+
+    Secrets are returned redacted (``•••<last-3>``). Use the audit log for
+    history.
+    """
+    from server.core.dynamic_settings import get_effective_snapshot
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        snapshot = await get_effective_snapshot(session, tenant_id=tenant_id)
+    return {"settings": snapshot, "tenant_id": tenant_id}
+
+
+@router.get("/settings/audit/log")
+async def settings_audit_endpoint(
+    key: str | None = Query(None, description="Filter to one setting key"),
+    limit: int = Query(100, ge=1, le=1000),
+):
+    """Recent settings changes, newest first."""
+    from server.core.dynamic_settings import list_audit
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        rows = await list_audit(session, key=key, limit=limit)
+    return {"entries": rows}
+
+
+@router.post("/settings/test")
+async def test_setting_endpoint(req: SettingTestRequest):
+    """Side-effect-free probe of a candidate setting value.
+
+    Used by the admin UI's "Test" button before committing a change to a
+    risky setting (LLM creds, webhook URL). Does NOT persist.
+    """
+    from server.core.dynamic_settings import test_probe
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        result = await test_probe(req.key, req.value, session=session)
+    return {"ok": result.ok, "detail": result.detail, "extra": result.extra}
+
+
+@router.patch("/settings/tenants/{tenant_id}/{key}")
+async def patch_tenant_setting_endpoint(
+    tenant_id: str, key: str, req: TenantSettingPatchRequest
+):
+    """UPSERT a per-tenant setting override."""
+    from server.core.dynamic_settings import (
+        SettingValidationError,
+        apply_tenant_override,
+    )
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            persisted = await apply_tenant_override(
+                tenant_id,
+                key,
+                req.value,
+                session,
+                changed_by=req.changed_by,
+                note=req.note,
+            )
+        except SettingValidationError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail={"code": "settings.invalid", "message": str(exc)})
+        await session.commit()
+    logger.info("tenant_setting_patched", tenant_id=tenant_id, key=key)
+    return {"tenant_id": tenant_id, "key": key, "value": persisted, "source": "tenant_db"}
+
+
+@router.delete("/settings/tenants/{tenant_id}/{key}")
+async def delete_tenant_setting_endpoint(
+    tenant_id: str,
+    key: str,
+    changed_by: str | None = Query(None),
+    note: str | None = Query(None),
+):
+    """Drop a per-tenant setting override → falls back to global/env."""
+    from server.core.dynamic_settings import (
+        SettingValidationError,
+        delete_tenant_override,
+    )
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            await delete_tenant_override(
+                tenant_id, key, session, changed_by=changed_by, note=note
+            )
+        except SettingValidationError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail={"code": "settings.invalid", "message": str(exc)})
+        await session.commit()
+    logger.info("tenant_setting_reverted", tenant_id=tenant_id, key=key)
+    return {"tenant_id": tenant_id, "key": key, "reverted_to": "global_or_env"}
+
+
+# These two MUST come last among `/settings/*` routes — FastAPI matches in
+# definition order, and `/settings/{key}` would otherwise shadow the static
+# routes above (`/settings/test`, `/settings/audit/log`, `/settings/tenants/...`).
+@router.get("/settings/{key}")
+async def get_setting_endpoint(
+    key: str,
+    tenant_id: str | None = Query(None),
+):
+    """Return one setting's effective value + metadata."""
+    from server.core.dynamic_settings import get_effective_snapshot
+    from server.core.settings_catalogue import get_spec
+    from server.db import engine as engine_module
+
+    if get_spec(key) is None:
+        raise HTTPException(status_code=404, detail=f"unknown setting key: {key!r}")
+
+    async with engine_module.get_session_factory()() as session:
+        snapshot = await get_effective_snapshot(session, tenant_id=tenant_id)
+    return snapshot[key]
+
+
+@router.patch("/settings/{key}")
+async def patch_setting_endpoint(key: str, req: SettingPatchRequest):
+    """UPSERT a global override + append an audit row."""
+    from server.core.dynamic_settings import (
+        SettingValidationError,
+        apply_global_override,
+    )
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            persisted = await apply_global_override(
+                key,
+                req.value,
+                session,
+                changed_by=req.changed_by,
+                note=req.note,
+            )
+        except SettingValidationError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail={"code": "settings.invalid", "message": str(exc)})
+        await session.commit()
+    logger.info("setting_patched", key=key, changed_by=req.changed_by)
+    return {"key": key, "value": persisted, "source": "global_db"}
+
+
+@router.delete("/settings/{key}")
+async def delete_setting_endpoint(
+    key: str,
+    changed_by: str | None = Query(None),
+    note: str | None = Query(None),
+):
+    """Drop a global override → setting reverts to env value."""
+    from server.core.dynamic_settings import (
+        SettingValidationError,
+        delete_global_override,
+    )
+    from server.db import engine as engine_module
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            await delete_global_override(
+                key, session, changed_by=changed_by, note=note
+            )
+        except SettingValidationError as exc:
+            await session.rollback()
+            raise HTTPException(status_code=400, detail={"code": "settings.invalid", "message": str(exc)})
+        await session.commit()
+    logger.info("setting_reverted", key=key, changed_by=changed_by)
+    return {"key": key, "reverted_to": "env"}

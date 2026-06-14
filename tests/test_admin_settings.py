@@ -137,7 +137,7 @@ async def test_patch_setting_rejects_wrong_type(client: AsyncClient):
     )
     assert resp.status_code == 400
     body = resp.json()
-    assert body["detail"]["code"] == "settings.invalid"
+    assert body["error"]["code"] == "settings.invalid"
 
 
 async def test_patch_rejects_non_editable_key(client: AsyncClient):

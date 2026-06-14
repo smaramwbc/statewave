@@ -250,10 +250,11 @@ def _env_default(key: str) -> Any:
     Reads from `_env_baseline` (captured at module import, before any DB
     overrides applied) so the UI's "env" source label reflects the
     deployment env — not the post-boot mutation. Falls through to the
-    live Settings attribute for keys not yet baselined (test fixtures
-    that touch a key before `_initialise_boot_snapshots` ran)."""
-    if key in _env_baseline:
-        return _env_baseline[key]
+    live Settings attribute when the baseline value is None (key absent or
+    unset at boot) so monkeypatched test fixtures are reflected correctly."""
+    baseline = _env_baseline.get(key)
+    if baseline is not None:
+        return baseline
     return getattr(env_settings, key, None)
 
 

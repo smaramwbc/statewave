@@ -213,3 +213,39 @@ def test_url_must_be_http_or_https():
     _validate_value(spec, "https://example.com/hook")
     # Empty string is allowed — that's the documented "disable" sentinel.
     _validate_value(spec, "")
+
+
+# ─── import count caps ───────────────────────────────────────────────────
+
+
+def test_import_count_limits_reject_non_positive():
+    """Setting any per-import count cap to 0 or negative blocks every import
+    because memory_packs enforces ``len(items) > limit``.  These three specs
+    must mirror the ``min_value=1`` already present on ``memory_import_max_bytes``
+    so the admin API rejects a misconfigured value before it silently kills
+    all imports."""
+    count_cap_keys = (
+        "memory_import_max_episodes",
+        "memory_import_max_memories",
+        "memory_import_max_subjects",
+    )
+    for key in count_cap_keys:
+        spec = get_spec(key)
+        assert spec is not None, f"missing catalogue entry for {key}"
+        with pytest.raises(SettingValidationError, match=key):
+            _validate_value(spec, 0)
+        with pytest.raises(SettingValidationError, match=key):
+            _validate_value(spec, -1)
+
+
+def test_import_count_limits_accept_positive():
+    count_cap_keys = (
+        "memory_import_max_episodes",
+        "memory_import_max_memories",
+        "memory_import_max_subjects",
+    )
+    for key in count_cap_keys:
+        spec = get_spec(key)
+        assert spec is not None
+        assert _validate_value(spec, 1) == 1
+        assert _validate_value(spec, 50_000) == 50_000

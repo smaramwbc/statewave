@@ -456,6 +456,7 @@ CATALOGUE: dict[str, SettingSpec] = {
         kind="int",
         hot_reloadable=True,
         description="Per-import episode count cap.",
+        min_value=1,
     ),
     "memory_import_max_memories": SettingSpec(
         key="memory_import_max_memories",
@@ -464,6 +465,7 @@ CATALOGUE: dict[str, SettingSpec] = {
         kind="int",
         hot_reloadable=True,
         description="Per-import memory count cap.",
+        min_value=1,
     ),
     "memory_import_max_subjects": SettingSpec(
         key="memory_import_max_subjects",
@@ -472,6 +474,7 @@ CATALOGUE: dict[str, SettingSpec] = {
         kind="int",
         hot_reloadable=True,
         description="Per-import subject count cap.",
+        min_value=1,
     ),
     # ─── Labeling ────────────────────────────────────────────────────────
     "auto_labeling_enabled": SettingSpec(

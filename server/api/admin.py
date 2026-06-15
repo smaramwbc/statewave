@@ -779,8 +779,7 @@ async def list_subject_episodes(
     offset: int = Query(0, ge=0),
 ):
     """List episodes for a subject with filtering, search, and pagination."""
-    from sqlalchemy import func, or_, select
-    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import Text, func, or_, select
 
     from server.db import engine as engine_module
     from server.db.tables import EpisodeRow
@@ -798,7 +797,7 @@ async def list_subject_episodes(
             # Cast payload to text for searching
             base = base.where(
                 or_(
-                    EpisodeRow.payload.cast(JSONB).astext.ilike(search_pattern, escape="\\"),
+                    EpisodeRow.payload.cast(Text).ilike(search_pattern, escape="\\"),
                     EpisodeRow.type.ilike(search_pattern, escape="\\"),
                     EpisodeRow.source.ilike(search_pattern, escape="\\"),
                     EpisodeRow.session_id.ilike(search_pattern, escape="\\"),

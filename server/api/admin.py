@@ -19,6 +19,17 @@ logger = structlog.stdlib.get_logger()
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+def _like_escape(s: str) -> str:
+    """Escape SQL LIKE metacharacters in *s* so it matches literally.
+
+    ``%`` and ``_`` are wildcards in SQL LIKE patterns; ``\\`` is the escape
+    prefix.  Callers must also pass ``escape="\\\\"`` to the SQLAlchemy
+    ``.ilike()`` / ``.like()`` / ``.not_like()`` call so the DB knows which
+    character introduces an escape sequence.
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 # ─── Response Models ─────────────────────────────────────────────────────────
 
 
@@ -391,13 +402,15 @@ async def list_subjects_admin(
             .outerjoin(health_cache, _same_subject_and_tenant(health_cache))
         )
 
-        # Exclude internal subjects
-        stmt = stmt.where(ep_stats.c.subject_id.not_like("_snapshot/%"))
-        stmt = stmt.where(ep_stats.c.subject_id.not_like("_bootstrap_tmp/%"))
+        # Exclude internal subjects — escape the leading ``_`` so it is
+        # matched literally, not as the single-character SQL wildcard.
+        stmt = stmt.where(ep_stats.c.subject_id.not_like(r"\_snapshot/%", escape="\\"))
+        stmt = stmt.where(ep_stats.c.subject_id.not_like(r"\_bootstrap_tmp/%", escape="\\"))
 
         # Apply filters
         if search:
-            stmt = stmt.where(ep_stats.c.subject_id.ilike(f"%{search}%"))
+            escaped = _like_escape(search)
+            stmt = stmt.where(ep_stats.c.subject_id.ilike(f"%{escaped}%", escape="\\"))
 
         if tenant_id:
             stmt = stmt.where(ep_stats.c.tenant_id == tenant_id)
@@ -711,12 +724,12 @@ async def list_subject_memories(
         if kind:
             base = base.where(MemoryRow.kind == kind)
         if search:
-            search_pattern = f"%{search}%"
+            search_pattern = f"%{_like_escape(search)}%"
             base = base.where(
                 or_(
-                    MemoryRow.content.ilike(search_pattern),
-                    MemoryRow.summary.ilike(search_pattern),
-                    MemoryRow.kind.ilike(search_pattern),
+                    MemoryRow.content.ilike(search_pattern, escape="\\"),
+                    MemoryRow.summary.ilike(search_pattern, escape="\\"),
+                    MemoryRow.kind.ilike(search_pattern, escape="\\"),
                 )
             )
 
@@ -781,14 +794,14 @@ async def list_subject_episodes(
         if type:
             base = base.where(EpisodeRow.type == type)
         if search:
-            search_pattern = f"%{search}%"
+            search_pattern = f"%{_like_escape(search)}%"
             # Cast payload to text for searching
             base = base.where(
                 or_(
-                    EpisodeRow.payload.cast(JSONB).astext.ilike(search_pattern),
-                    EpisodeRow.type.ilike(search_pattern),
-                    EpisodeRow.source.ilike(search_pattern),
-                    EpisodeRow.session_id.ilike(search_pattern),
+                    EpisodeRow.payload.cast(JSONB).astext.ilike(search_pattern, escape="\\"),
+                    EpisodeRow.type.ilike(search_pattern, escape="\\"),
+                    EpisodeRow.source.ilike(search_pattern, escape="\\"),
+                    EpisodeRow.session_id.ilike(search_pattern, escape="\\"),
                 )
             )
 

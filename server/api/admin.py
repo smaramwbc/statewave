@@ -1277,6 +1277,747 @@ async def memory_provenance(
     )
 
 
+# ─── Compiler Trace Inspector (feature #4) ───────────────────────────────────
+
+
+class CompilerTraceEpisode(BaseModel):
+    id: str
+    source: str
+    type: str
+    payload: dict
+    created_at: str
+    text_preview: str
+
+
+class CompilerTraceResponse(BaseModel):
+    memory_id: str
+    kind: str
+    content: str
+    summary: str
+    confidence: float
+    status: str
+    created_at: str
+    compiler: str
+    model: str | None
+    source_episode_count: int
+    reconstructed_input: list[CompilerTraceEpisode]
+
+
+@router.get(
+    "/subjects/{subject_id}/memories/{memory_id}/compiler-trace",
+    response_model=CompilerTraceResponse,
+)
+async def memory_compiler_trace(
+    subject_id: str,
+    memory_id: str,
+    tenant_id: str | None = Query(None),
+):
+    """Reconstruct the compiler trace for a memory.
+
+    The LLM compiler does not persist raw prompts/responses.  This
+    endpoint reconstructs the trace from what IS stored: the source
+    episodes that were fed in and the compiler/model metadata on the row.
+    """
+    import uuid as _uuid
+
+    from server.db import engine as engine_module
+    from server.db.repositories import get_episodes_by_ids
+    from server.db.tables import MemoryRow
+    from sqlalchemy import select
+
+    async with engine_module.get_session_factory()() as session:
+        try:
+            mem_uuid = _uuid.UUID(memory_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid memory_id format")
+        row = await session.scalar(
+            select(MemoryRow)
+            .where(MemoryRow.id == mem_uuid)
+            .where(MemoryRow.subject_id == subject_id)
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="memory not found")
+
+        episodes = []
+        if row.source_episode_ids:
+            episodes = list(await get_episodes_by_ids(session, row.source_episode_ids))
+
+    meta = row.metadata_ or {}
+    compiler = meta.get("compiler", "unknown")
+    model = meta.get("model")
+
+    def _ep_text(ep) -> str:
+        pay = ep.payload or {}
+        if isinstance(pay.get("text"), str):
+            return pay["text"][:500]
+        if isinstance(pay.get("content"), str):
+            return pay["content"][:500]
+        return str(pay)[:500]
+
+    return CompilerTraceResponse(
+        memory_id=str(row.id),
+        kind=row.kind,
+        content=row.content,
+        summary=row.summary,
+        confidence=row.confidence,
+        status=row.status,
+        created_at=row.created_at.isoformat(),
+        compiler=compiler,
+        model=model,
+        source_episode_count=len(row.source_episode_ids or []),
+        reconstructed_input=[
+            CompilerTraceEpisode(
+                id=str(ep.id),
+                source=ep.source,
+                type=ep.type,
+                payload=ep.payload,
+                created_at=ep.created_at.isoformat(),
+                text_preview=_ep_text(ep),
+            )
+            for ep in episodes
+        ],
+    )
+
+
+# ─── Memory Conflict Detector (feature #5) ───────────────────────────────────
+
+
+class ConflictPair(BaseModel):
+    memory_a_id: str
+    memory_a_kind: str
+    memory_a_content: str
+    memory_b_id: str
+    memory_b_kind: str
+    memory_b_content: str
+    similarity: float
+
+
+class ConflictsResponse(BaseModel):
+    pairs: list[ConflictPair]
+    total_memories_checked: int
+    embedding_available: bool
+    error: str | None
+
+
+@router.get(
+    "/subjects/{subject_id}/conflicts",
+    response_model=ConflictsResponse,
+)
+async def detect_memory_conflicts(
+    subject_id: str,
+    threshold: float = Query(default=0.85, ge=0.5, le=1.0),
+    limit: int = Query(default=20, ge=1, le=100),
+    tenant_id: str | None = Query(None),
+):
+    """Find memories that may conflict with or duplicate each other.
+
+    Computes pairwise cosine similarity across active memories that have
+    embeddings.  Pairs at or above `threshold` are returned ranked by
+    similarity — candidates for deduplication or contradiction review.
+    Capped at 150 memories for performance.
+    """
+    from server.core.config import settings as cfg
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+    from sqlalchemy import select
+
+    if cfg.embedding_provider == "stub":
+        return ConflictsResponse(
+            pairs=[],
+            total_memories_checked=0,
+            embedding_available=False,
+            error=(
+                "Conflict detection requires real embeddings. "
+                "Stub provider returns hash-based vectors."
+            ),
+        )
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = (
+            select(MemoryRow)
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.status == "active")
+            .where(MemoryRow.embedding.isnot(None))
+            .order_by(MemoryRow.created_at.desc())
+            .limit(150)
+        )
+        if tenant_id:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        rows = (await session.execute(stmt)).scalars().all()
+
+    if not rows:
+        return ConflictsResponse(
+            pairs=[],
+            total_memories_checked=0,
+            embedding_available=True,
+            error=None,
+        )
+
+    import numpy as np
+
+    ids = [str(r.id) for r in rows]
+    kinds = [r.kind for r in rows]
+    contents = [r.content for r in rows]
+    raw_vecs = [r.embedding for r in rows]
+    mat = np.array(
+        [v if isinstance(v, list) else list(v) for v in raw_vecs], dtype=np.float32
+    )
+    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+    norms = np.where(norms == 0, 1.0, norms)
+    mat = mat / norms
+
+    pairs: list[ConflictPair] = []
+    n = len(rows)
+    for i in range(n):
+        for j in range(i + 1, n):
+            sim = float(np.dot(mat[i], mat[j]))
+            if sim >= threshold:
+                pairs.append(
+                    ConflictPair(
+                        memory_a_id=ids[i],
+                        memory_a_kind=kinds[i],
+                        memory_a_content=contents[i],
+                        memory_b_id=ids[j],
+                        memory_b_kind=kinds[j],
+                        memory_b_content=contents[j],
+                        similarity=round(sim, 4),
+                    )
+                )
+
+    pairs.sort(key=lambda p: p.similarity, reverse=True)
+    return ConflictsResponse(
+        pairs=pairs[:limit],
+        total_memories_checked=len(rows),
+        embedding_available=True,
+        error=None,
+    )
+
+
+# ─── Memory Timeline Scrubber (feature #6) ───────────────────────────────────
+
+
+class TimelineEvent(BaseModel):
+    date: str
+    memories_added: int
+    cumulative_count: int
+
+
+class TimelineMemory(BaseModel):
+    id: str
+    kind: str
+    content_preview: str
+    confidence: float
+    status: str
+    created_at: str
+
+
+class MemoryTimelineResponse(BaseModel):
+    events: list[TimelineEvent]
+    snapshot_at: str | None
+    memories_at_snapshot: list[TimelineMemory]
+    subject_id: str
+
+
+@router.get(
+    "/subjects/{subject_id}/memory-timeline",
+    response_model=MemoryTimelineResponse,
+)
+async def memory_timeline(
+    subject_id: str,
+    snapshot_at: str | None = Query(
+        None, description="ISO-8601 datetime — omit for current state"
+    ),
+    tenant_id: str | None = Query(None),
+):
+    """Return a compile-event timeline for the memory scrubber.
+
+    `events` gives one entry per calendar day when memories were created
+    with a running cumulative count — use this to render the scrubber axis.
+
+    `memories_at_snapshot` lists all non-tombstoned memories that existed
+    at `snapshot_at` (defaults to now).
+    """
+    from datetime import datetime, timezone
+
+    from sqlalchemy import cast, func, select, text
+    from sqlalchemy.types import Date
+
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+
+    snap_dt: datetime | None = None
+    if snapshot_at:
+        try:
+            snap_dt = datetime.fromisoformat(snapshot_at.replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid snapshot_at — use ISO-8601."
+            )
+
+    async with engine_module.get_session_factory()() as session:
+        day_stmt = (
+            select(
+                cast(MemoryRow.created_at, Date).label("day"),
+                func.count().label("cnt"),
+            )
+            .where(MemoryRow.subject_id == subject_id)
+        )
+        if tenant_id:
+            day_stmt = day_stmt.where(MemoryRow.tenant_id == tenant_id)
+        day_stmt = day_stmt.group_by(text("day")).order_by(text("day"))
+        day_rows = (await session.execute(day_stmt)).all()
+
+        snap_stmt = (
+            select(MemoryRow)
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.status != "tombstoned")
+            .order_by(MemoryRow.created_at.desc())
+        )
+        if tenant_id:
+            snap_stmt = snap_stmt.where(MemoryRow.tenant_id == tenant_id)
+        if snap_dt:
+            snap_stmt = snap_stmt.where(MemoryRow.created_at <= snap_dt)
+        snap_rows = (await session.execute(snap_stmt)).scalars().all()
+
+    cumulative = 0
+    events: list[TimelineEvent] = []
+    for r in day_rows:
+        cumulative += r.cnt
+        events.append(
+            TimelineEvent(
+                date=str(r.day), memories_added=r.cnt, cumulative_count=cumulative
+            )
+        )
+
+    return MemoryTimelineResponse(
+        events=events,
+        snapshot_at=snap_dt.isoformat() if snap_dt else None,
+        memories_at_snapshot=[
+            TimelineMemory(
+                id=str(m.id),
+                kind=m.kind,
+                content_preview=m.content[:200],
+                confidence=m.confidence,
+                status=m.status,
+                created_at=m.created_at.isoformat(),
+            )
+            for m in snap_rows
+        ],
+        subject_id=subject_id,
+    )
+
+
+# ─── Policy Sandbox (feature #7) ─────────────────────────────────────────────
+
+
+class PolicySandboxRequest(BaseModel):
+    yaml_content: str
+    caller_id: str | None = None
+    caller_type: str | None = None
+
+
+class PolicySandboxResult(BaseModel):
+    memory_id: str
+    kind: str
+    content_preview: str
+    sensitivity_labels: list[str]
+    action: str
+    rule_id: str | None
+    matched_labels: list[str]
+
+
+class PolicySandboxResponse(BaseModel):
+    results: list[PolicySandboxResult]
+    total_memories: int
+    allowed: int
+    denied: int
+    redacted: int
+    error: str | None
+
+
+@router.post(
+    "/subjects/{subject_id}/policy-sandbox",
+    response_model=PolicySandboxResponse,
+)
+async def policy_sandbox(
+    subject_id: str,
+    req: PolicySandboxRequest,
+    tenant_id: str | None = Query(None),
+):
+    """Dry-run a YAML policy bundle against a subject's active memories.
+
+    Returns each memory with its policy decision (allow/deny/redact) so
+    operators can tune policy rules before applying them live.  The
+    subject's live policy is never modified.
+    """
+    from server.db import engine as engine_module
+    from server.db.repositories import list_active_memories_by_subject
+    from server.services.policy import PolicyContext, PolicyError, evaluate_memory, load_bundle
+
+    try:
+        bundle = load_bundle(req.yaml_content)
+    except PolicyError as exc:
+        return PolicySandboxResponse(
+            results=[],
+            total_memories=0,
+            allowed=0,
+            denied=0,
+            redacted=0,
+            error=f"Policy YAML is invalid: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return PolicySandboxResponse(
+            results=[],
+            total_memories=0,
+            allowed=0,
+            denied=0,
+            redacted=0,
+            error=f"Failed to parse policy: {exc}",
+        )
+
+    async with engine_module.get_session_factory()() as session:
+        rows = list(
+            await list_active_memories_by_subject(session, subject_id, tenant_id=tenant_id)
+        )
+
+    context = PolicyContext(
+        caller_id=req.caller_id,
+        caller_type=req.caller_type,
+        tenant_id=tenant_id,
+    )
+
+    results: list[PolicySandboxResult] = []
+    allowed = denied = redacted = 0
+    for mem in rows:
+        decision = evaluate_memory(
+            memory_labels=mem.sensitivity_labels or [],
+            bundle=bundle,
+            context=context,
+        )
+        if decision.action == "allow":
+            allowed += 1
+        elif decision.action == "deny":
+            denied += 1
+        else:
+            redacted += 1
+        results.append(
+            PolicySandboxResult(
+                memory_id=str(mem.id),
+                kind=mem.kind,
+                content_preview=mem.content[:200],
+                sensitivity_labels=mem.sensitivity_labels or [],
+                action=decision.action,
+                rule_id=decision.rule_id,
+                matched_labels=list(decision.matched_labels),
+            )
+        )
+
+    return PolicySandboxResponse(
+        results=results,
+        total_memories=len(rows),
+        allowed=allowed,
+        denied=denied,
+        redacted=redacted,
+        error=None,
+    )
+
+
+# ─── Memory Cluster View (feature #8) ────────────────────────────────────────
+
+
+class ClusterPoint(BaseModel):
+    memory_id: str
+    kind: str
+    content_preview: str
+    confidence: float
+    status: str
+    x: float
+    y: float
+
+
+class MemoryClustersResponse(BaseModel):
+    points: list[ClusterPoint]
+    total_memories: int
+    embedding_available: bool
+    error: str | None
+
+
+@router.get(
+    "/subjects/{subject_id}/memory-clusters",
+    response_model=MemoryClustersResponse,
+)
+async def memory_clusters(
+    subject_id: str,
+    tenant_id: str | None = Query(None),
+):
+    """Project all memory embeddings to 2D via PCA for cluster visualisation.
+
+    Returns (x, y) coordinates for each memory so the frontend can render
+    a scatter plot showing how memories are distributed and whether natural
+    clusters or outliers exist.
+    """
+    from server.core.config import settings as cfg
+    from server.db import engine as engine_module
+    from server.db.tables import MemoryRow
+    from sqlalchemy import select
+
+    if cfg.embedding_provider == "stub":
+        return MemoryClustersResponse(
+            points=[],
+            total_memories=0,
+            embedding_available=False,
+            error=(
+                "Cluster view requires real embeddings. "
+                "Stub provider vectors are not semantic."
+            ),
+        )
+
+    async with engine_module.get_session_factory()() as session:
+        stmt = (
+            select(MemoryRow)
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.embedding.isnot(None))
+            .order_by(MemoryRow.created_at.desc())
+            .limit(500)
+        )
+        if tenant_id:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        rows = (await session.execute(stmt)).scalars().all()
+
+    if not rows:
+        return MemoryClustersResponse(
+            points=[],
+            total_memories=0,
+            embedding_available=True,
+            error=None,
+        )
+
+    import numpy as np
+
+    raw_vecs = [r.embedding for r in rows]
+    mat = np.array(
+        [v if isinstance(v, list) else list(v) for v in raw_vecs], dtype=np.float32
+    )
+    mat -= mat.mean(axis=0)
+    if mat.shape[0] >= 2 and mat.shape[1] >= 2:
+        _, _, Vt = np.linalg.svd(mat, full_matrices=False)
+        coords = mat @ Vt[:2].T
+    else:
+        coords = np.zeros((len(rows), 2), dtype=np.float32)
+
+    for dim in range(2):
+        col = coords[:, dim]
+        span = float(col.max() - col.min())
+        if span > 0:
+            coords[:, dim] = (col - col.min()) / span * 2 - 1
+
+    return MemoryClustersResponse(
+        points=[
+            ClusterPoint(
+                memory_id=str(r.id),
+                kind=r.kind,
+                content_preview=r.content[:150],
+                confidence=r.confidence,
+                status=r.status,
+                x=round(float(coords[i, 0]), 4),
+                y=round(float(coords[i, 1]), 4),
+            )
+            for i, r in enumerate(rows)
+        ],
+        total_memories=len(rows),
+        embedding_available=True,
+        error=None,
+    )
+
+
+# ─── Receipts + Regression Tester (feature #9) ───────────────────────────────
+
+
+class AdminReceiptListItem(BaseModel):
+    receipt_id: str
+    as_of: str
+    created_at: str
+    mode: str
+    context_size_bytes: int
+    memory_count: int
+
+
+class AdminReceiptListResponse(BaseModel):
+    items: list[AdminReceiptListItem]
+    total: int
+
+
+class RegressionMemory(BaseModel):
+    memory_id: str
+    kind: str
+    content_preview: str
+    status: str
+    created_at: str
+    change: str
+
+
+class RegressionResponse(BaseModel):
+    receipt_id: str
+    receipt_as_of: str
+    stable: list[RegressionMemory]
+    dropped: list[RegressionMemory]
+    new_memories: list[RegressionMemory]
+
+
+def _is_valid_uuid(s: str) -> bool:
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(s)
+        return True
+    except ValueError:
+        return False
+
+
+@router.get(
+    "/subjects/{subject_id}/admin-receipts",
+    response_model=AdminReceiptListResponse,
+)
+async def list_subject_receipts_admin(
+    subject_id: str,
+    limit: int = Query(default=50, ge=1, le=200),
+    tenant_id: str | None = Query(None),
+):
+    """List state-assembly receipts for a subject (newest first).
+
+    Used by the Receipts tab to populate the receipt picker for the
+    regression tester.
+    """
+    from server.db import engine as engine_module
+    from server.db.repositories import list_receipts
+
+    async with engine_module.get_session_factory()() as session:
+        rows = list(
+            await list_receipts(session, subject_id, tenant_id=tenant_id, limit=limit)
+        )
+
+    items: list[AdminReceiptListItem] = []
+    for r in rows:
+        body = r.body if isinstance(r.body, dict) else {}
+        selected = body.get("selected_entries", [])
+        mem_count = sum(1 for e in selected if e.get("type") == "memory")
+        items.append(
+            AdminReceiptListItem(
+                receipt_id=r.receipt_id,
+                as_of=r.as_of.isoformat(),
+                created_at=r.created_at.isoformat(),
+                mode=r.mode or "standard",
+                context_size_bytes=r.context_size_bytes or 0,
+                memory_count=mem_count,
+            )
+        )
+
+    return AdminReceiptListResponse(items=items, total=len(items))
+
+
+@router.get(
+    "/subjects/{subject_id}/admin-receipts/{receipt_id}/regression",
+    response_model=RegressionResponse,
+)
+async def receipt_regression(
+    subject_id: str,
+    receipt_id: str,
+    tenant_id: str | None = Query(None),
+):
+    """Diff the memory set from a historical receipt against current state.
+
+    Returns which memories are still active (stable), which have since been
+    tombstoned/superseded (dropped), and which new memories appeared after
+    the receipt's as_of timestamp.
+    """
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from server.db import engine as engine_module
+    from server.db.repositories import get_receipt_by_id
+    from server.db.tables import MemoryRow
+
+    async with engine_module.get_session_factory()() as session:
+        receipt = await get_receipt_by_id(session, receipt_id, tenant_id=tenant_id)
+        if receipt is None or receipt.subject_id != subject_id:
+            raise HTTPException(status_code=404, detail="receipt not found")
+
+        body = receipt.body if isinstance(receipt.body, dict) else {}
+        selected = body.get("selected_entries", [])
+        receipt_mem_ids: list[str] = [
+            e["memory_id"]
+            for e in selected
+            if e.get("type") == "memory" and "memory_id" in e
+        ]
+
+        receipt_rows: list[MemoryRow] = []
+        if receipt_mem_ids:
+            uuids = [_uuid.UUID(mid) for mid in receipt_mem_ids if _is_valid_uuid(mid)]
+            if uuids:
+                stmt = select(MemoryRow).where(MemoryRow.id.in_(uuids))
+                receipt_rows = list((await session.execute(stmt)).scalars().all())
+
+        new_stmt = (
+            select(MemoryRow)
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.created_at > receipt.as_of)
+            .where(MemoryRow.status == "active")
+            .order_by(MemoryRow.created_at.asc())
+            .limit(100)
+        )
+        if tenant_id:
+            new_stmt = new_stmt.where(MemoryRow.tenant_id == tenant_id)
+        receipt_uuid_set = {
+            _uuid.UUID(mid) for mid in receipt_mem_ids if _is_valid_uuid(mid)
+        }
+        new_rows = [
+            r
+            for r in (await session.execute(new_stmt)).scalars().all()
+            if r.id not in receipt_uuid_set
+        ]
+
+    def _regmem(r: MemoryRow, change: str) -> RegressionMemory:
+        return RegressionMemory(
+            memory_id=str(r.id),
+            kind=r.kind,
+            content_preview=r.content[:200],
+            status=r.status,
+            created_at=r.created_at.isoformat(),
+            change=change,
+        )
+
+    stable = [_regmem(r, "stable") for r in receipt_rows if r.status == "active"]
+    dropped = [
+        _regmem(r, "tombstoned" if r.status == "tombstoned" else "superseded")
+        for r in receipt_rows
+        if r.status != "active"
+    ]
+    found_ids = {r.id for r in receipt_rows}
+    for mid in receipt_mem_ids:
+        if not _is_valid_uuid(mid):
+            continue
+        if _uuid.UUID(mid) not in found_ids:
+            dropped.append(
+                RegressionMemory(
+                    memory_id=mid,
+                    kind="unknown",
+                    content_preview="(memory no longer exists in DB)",
+                    status="deleted",
+                    created_at="",
+                    change="deleted",
+                )
+            )
+
+    return RegressionResponse(
+        receipt_id=receipt_id,
+        receipt_as_of=receipt.as_of.isoformat(),
+        stable=stable,
+        dropped=dropped,
+        new_memories=[_regmem(r, "new") for r in new_rows],
+    )
+
+
 # ─── Suggested-label review (auto-labeling, v0.9 #158) ───────────────────────
 
 

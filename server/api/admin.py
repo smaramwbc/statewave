@@ -909,6 +909,374 @@ async def list_citing_memories(
         )
 
 
+# ─── Retrieval simulator / activity / provenance ─────────────────────────────
+
+
+class RetrievalSimulateItem(BaseModel):
+    rank: int
+    memory_id: str
+    kind: str
+    content: str
+    summary: str
+    confidence: float
+    status: str
+    created_at: str
+    similarity: float
+    cosine_distance: float
+    estimated_tokens: int
+    within_budget: bool
+
+
+class RetrievalSimulateResponse(BaseModel):
+    results: list[RetrievalSimulateItem]
+    query: str
+    tokens_used: int
+    token_budget: int
+    embedding_available: bool
+    error: str | None
+
+
+class ActivityDay(BaseModel):
+    date: str
+    episode_count: int
+    memory_count: int
+
+
+class ActivityResponse(BaseModel):
+    days: list[ActivityDay]
+    subject_id: str
+    window_days: int
+
+
+class ProvenanceEpisode(BaseModel):
+    id: str
+    source: str
+    type: str
+    payload: dict
+    created_at: str
+
+
+class ProvenanceMemory(BaseModel):
+    id: str
+    kind: str
+    content: str
+    summary: str
+    confidence: float
+    status: str
+    created_at: str
+    source_episode_ids: list[str]
+
+
+class ProvenanceResponse(BaseModel):
+    memory: ProvenanceMemory
+    source_episodes: list[ProvenanceEpisode]
+    sibling_memories: list[ProvenanceMemory]
+
+
+@router.get(
+    "/subjects/{subject_id}/retrieval-simulate",
+    response_model=RetrievalSimulateResponse,
+)
+async def retrieval_simulate(
+    subject_id: str,
+    query: str = Query(..., min_length=1, description="Free-text query to simulate recall for"),
+    limit: int = Query(default=15, ge=1, le=50),
+    token_budget: int = Query(default=2000, ge=100, le=32000),
+    tenant_id: str | None = Query(None),
+):
+    """Simulate retrieval for a query against a subject's memory.
+
+    Embeds the query, scores every active memory by cosine similarity, and
+    returns the ranked list with scores + a within_budget flag so the
+    operator can see exactly which memories would be recalled — and which
+    would be cut — for a given token budget.
+
+    Returns embedding_available=False (and an empty results list) when the
+    configured embedding_provider is the non-semantic stub, or when
+    embeddings have not been generated for this subject yet.
+    """
+    from server.core.config import settings as cfg
+    from server.db import engine as engine_module
+    from server.db.repositories import search_memories_by_embedding
+    from server.db.tables import MemoryRow
+    from server.services import llm as llm_svc
+    from sqlalchemy import select
+
+    if cfg.embedding_provider == "stub":
+        return RetrievalSimulateResponse(
+            results=[],
+            query=query,
+            tokens_used=0,
+            token_budget=token_budget,
+            embedding_available=False,
+            error=(
+                "Retrieval simulation requires a real embedding provider. "
+                "The stub provider returns random vectors and cannot rank "
+                "memories by semantic similarity. Set "
+                "STATEWAVE_EMBEDDING_PROVIDER=litellm and configure "
+                "STATEWAVE_LITELLM_EMBEDDING_MODEL."
+            ),
+        )
+
+    try:
+        query_embedding = await llm_svc.aembed_query(query)
+    except Exception as exc:  # noqa: BLE001
+        return RetrievalSimulateResponse(
+            results=[],
+            query=query,
+            tokens_used=0,
+            token_budget=token_budget,
+            embedding_available=False,
+            error=f"Embedding failed: {exc}",
+        )
+
+    async with engine_module.get_session_factory()() as session:
+        # Check whether any embeddings exist for this subject at all.
+        has_emb = await session.scalar(
+            select(MemoryRow.id)
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.embedding.isnot(None))
+            .limit(1)
+        )
+        if has_emb is None:
+            return RetrievalSimulateResponse(
+                results=[],
+                query=query,
+                tokens_used=0,
+                token_budget=token_budget,
+                embedding_available=False,
+                error=(
+                    "No embeddings found for this subject. Memories receive "
+                    "embeddings during compilation. Run a compile job first."
+                ),
+            )
+
+        ranked = await search_memories_by_embedding(
+            session,
+            subject_id,
+            query_embedding,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+
+    items: list[RetrievalSimulateItem] = []
+    tokens_used = 0
+    for rank, (mem, distance) in enumerate(ranked, start=1):
+        similarity = round(1.0 - distance / 2.0, 4)
+        # ~4 chars per token is the standard LLM approximation
+        est_tokens = max(1, len(mem.content) // 4)
+        within_budget = (tokens_used + est_tokens) <= token_budget
+        if within_budget:
+            tokens_used += est_tokens
+        items.append(
+            RetrievalSimulateItem(
+                rank=rank,
+                memory_id=str(mem.id),
+                kind=mem.kind,
+                content=mem.content,
+                summary=mem.summary,
+                confidence=mem.confidence,
+                status=mem.status,
+                created_at=mem.created_at.isoformat(),
+                similarity=similarity,
+                cosine_distance=round(distance, 4),
+                estimated_tokens=est_tokens,
+                within_budget=within_budget,
+            )
+        )
+
+    return RetrievalSimulateResponse(
+        results=items,
+        query=query,
+        tokens_used=tokens_used,
+        token_budget=token_budget,
+        embedding_available=True,
+        error=None,
+    )
+
+
+@router.get(
+    "/subjects/{subject_id}/activity",
+    response_model=ActivityResponse,
+)
+async def subject_activity(
+    subject_id: str,
+    days: int = Query(default=90, ge=7, le=365),
+    tenant_id: str | None = Query(None),
+):
+    """Return episode + memory counts grouped by day for the past N days.
+
+    The response covers every day in the window (zero-filled so the
+    frontend can render a continuous calendar without filling gaps itself).
+    Days are returned oldest-first so a chart can consume them directly.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import cast, func, select, text
+    from sqlalchemy.types import Date
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow, MemoryRow
+
+    since = datetime.now(tz=timezone.utc) - timedelta(days=days)
+
+    async with engine_module.get_session_factory()() as session:
+        # Episode counts per day
+        ep_stmt = (
+            select(
+                cast(EpisodeRow.created_at, Date).label("day"),
+                func.count().label("cnt"),
+            )
+            .where(EpisodeRow.subject_id == subject_id)
+            .where(EpisodeRow.created_at >= since)
+        )
+        if tenant_id:
+            ep_stmt = ep_stmt.where(EpisodeRow.tenant_id == tenant_id)
+        ep_stmt = ep_stmt.group_by(text("day"))
+        ep_rows = (await session.execute(ep_stmt)).all()
+
+        # Memory counts per day
+        mem_stmt = (
+            select(
+                cast(MemoryRow.created_at, Date).label("day"),
+                func.count().label("cnt"),
+            )
+            .where(MemoryRow.subject_id == subject_id)
+            .where(MemoryRow.created_at >= since)
+        )
+        if tenant_id:
+            mem_stmt = mem_stmt.where(MemoryRow.tenant_id == tenant_id)
+        mem_stmt = mem_stmt.group_by(text("day"))
+        mem_rows = (await session.execute(mem_stmt)).all()
+
+    ep_by_day: dict[str, int] = {str(r.day): r.cnt for r in ep_rows}
+    mem_by_day: dict[str, int] = {str(r.day): r.cnt for r in mem_rows}
+
+    # Zero-fill the full window so the calendar is continuous
+    from datetime import date as date_type
+
+    start = since.date()
+    today = datetime.now(tz=timezone.utc).date()
+    result_days: list[ActivityDay] = []
+    cur = start
+    while cur <= today:
+        ds = str(cur)
+        result_days.append(
+            ActivityDay(
+                date=ds,
+                episode_count=ep_by_day.get(ds, 0),
+                memory_count=mem_by_day.get(ds, 0),
+            )
+        )
+        cur += timedelta(days=1)
+
+    return ActivityResponse(
+        days=result_days,
+        subject_id=subject_id,
+        window_days=days,
+    )
+
+
+@router.get(
+    "/subjects/{subject_id}/memories/{memory_id}/provenance",
+    response_model=ProvenanceResponse,
+)
+async def memory_provenance(
+    subject_id: str,
+    memory_id: str,
+    tenant_id: str | None = Query(None),
+):
+    """Return full provenance for a single memory.
+
+    Response contains:
+    - memory: the memory itself
+    - source_episodes: the episodes it was compiled from
+    - sibling_memories: other memories that share ≥1 source episode
+      (i.e. they were compiled from the same raw input, which helps
+       spot duplication or explain why a memory was split/merged)
+    """
+    import uuid as uuid_module
+
+    from sqlalchemy import any_, select
+
+    from server.db import engine as engine_module
+    from server.db.tables import EpisodeRow, MemoryRow
+
+    try:
+        mem_uuid = uuid_module.UUID(memory_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid memory_id format")
+
+    async with engine_module.get_session_factory()() as session:
+        mem_result = await session.execute(
+            select(MemoryRow).where(
+                MemoryRow.id == mem_uuid,
+                MemoryRow.subject_id == subject_id,
+            )
+        )
+        mem = mem_result.scalar_one_or_none()
+        if mem is None:
+            raise HTTPException(status_code=404, detail="Memory not found")
+
+        source_ep_ids: list[uuid_module.UUID] = list(mem.source_episode_ids or [])
+
+        # Fetch the source episodes
+        episodes: list[EpisodeRow] = []
+        if source_ep_ids:
+            ep_result = await session.execute(
+                select(EpisodeRow).where(EpisodeRow.id.in_(source_ep_ids))
+            )
+            episodes = list(ep_result.scalars().all())
+
+        # Sibling memories: share ≥1 source episode, are not this memory
+        sibling_rows: list[MemoryRow] = []
+        if source_ep_ids:
+            for ep_id in source_ep_ids:
+                sib_result = await session.execute(
+                    select(MemoryRow).where(
+                        MemoryRow.subject_id == subject_id,
+                        MemoryRow.id != mem_uuid,
+                        ep_id == any_(MemoryRow.source_episode_ids),
+                    )
+                )
+                sibling_rows.extend(sib_result.scalars().all())
+            # Deduplicate by id (a sibling may share multiple episodes)
+            seen: set[uuid_module.UUID] = set()
+            unique_siblings: list[MemoryRow] = []
+            for s in sibling_rows:
+                if s.id not in seen:
+                    seen.add(s.id)
+                    unique_siblings.append(s)
+            sibling_rows = unique_siblings
+
+    def _prov_memory(m: MemoryRow) -> ProvenanceMemory:
+        return ProvenanceMemory(
+            id=str(m.id),
+            kind=m.kind,
+            content=m.content,
+            summary=m.summary,
+            confidence=m.confidence,
+            status=m.status,
+            created_at=m.created_at.isoformat(),
+            source_episode_ids=[str(eid) for eid in (m.source_episode_ids or [])],
+        )
+
+    return ProvenanceResponse(
+        memory=_prov_memory(mem),
+        source_episodes=[
+            ProvenanceEpisode(
+                id=str(ep.id),
+                source=ep.source,
+                type=ep.type,
+                payload=ep.payload,
+                created_at=ep.created_at.isoformat(),
+            )
+            for ep in episodes
+        ],
+        sibling_memories=[_prov_memory(s) for s in sibling_rows],
+    )
+
+
 # ─── Suggested-label review (auto-labeling, v0.9 #158) ───────────────────────
 
 

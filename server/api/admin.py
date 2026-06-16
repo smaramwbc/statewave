@@ -1153,8 +1153,6 @@ async def subject_activity(
     mem_by_day: dict[str, int] = {str(r.day): r.cnt for r in mem_rows}
 
     # Zero-fill the full window so the calendar is continuous
-    from datetime import date as date_type
-
     start = since.date()
     today = datetime.now(tz=timezone.utc).date()
     result_days: list[ActivityDay] = []
@@ -1537,7 +1535,7 @@ async def memory_timeline(
     `memories_at_snapshot` lists all non-tombstoned memories that existed
     at `snapshot_at` (defaults to now).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from sqlalchemy import cast, func, select, text
     from sqlalchemy.types import Date

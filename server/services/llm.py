@@ -39,6 +39,8 @@ Public surface:
 
     acomplete(messages, *, model=None, temperature=None, max_tokens=None,
               response_format=None, timeout=None) -> str
+    acomplete_with_usage(messages, *, model=None, temperature=None,
+              max_tokens=None, timeout=None) -> tuple[str, dict | None]
     acomplete_json(messages, *, model=None, ...) -> dict
     aembed_texts(texts, *, model=None, dimensions=None) -> list[list[float]]
     aembed_query(text, *, model=None, dimensions=None) -> list[float]
@@ -230,6 +232,82 @@ async def acomplete(
         return resp.choices[0].message.content or ""
     except (AttributeError, IndexError, KeyError) as exc:
         raise LLMResponseError("LLM response missing expected choices/message") from exc
+
+
+def _extract_usage(resp: Any) -> dict[str, int] | None:
+    """Pull OpenAI-shape token usage off a LiteLLM completion response.
+
+    Returns ``None`` when the provider omits usage (some local models do),
+    so callers can render "tokens: n/a" rather than a misleading zero.
+    """
+    usage = getattr(resp, "usage", None)
+    if usage is None:
+        return None
+
+    def _as_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    prompt = _as_int(getattr(usage, "prompt_tokens", None))
+    completion = _as_int(getattr(usage, "completion_tokens", None))
+    total = _as_int(getattr(usage, "total_tokens", None)) or (prompt + completion)
+    if prompt == 0 and completion == 0 and total == 0:
+        return None
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+    }
+
+
+async def acomplete_with_usage(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+) -> tuple[str, dict[str, int] | None]:
+    """Like :func:`acomplete`, but also returns token usage when the
+    provider reports it: ``(reply, usage_or_none)``.
+
+    Powers the internal ``/v1/llm/complete`` route so first-party consoles
+    (the admin "Chat with Memory") can show token stats. Kept as a separate
+    function — rather than threading a flag through :func:`acomplete` — so
+    the hot compilation path stays byte-for-byte unchanged; the small amount
+    of duplicated call/error scaffolding is the deliberate cost of that
+    isolation.
+    """
+    litellm = _ensure_litellm()
+    chosen_model = model or settings.litellm_model
+    temp = temperature if temperature is not None else settings.litellm_temperature
+    timeout_s = timeout if timeout is not None else settings.litellm_timeout_seconds
+
+    kwargs: dict[str, Any] = {
+        "model": chosen_model,
+        "messages": messages,
+        "temperature": temp,
+        "num_retries": settings.litellm_max_retries,
+        **_common_kwargs(),
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    try:
+        resp = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout_s)
+    except asyncio.TimeoutError as exc:
+        raise LLMTimeoutError(f"LLM completion timed out after {timeout_s}s") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _classify(exc) from exc
+
+    try:
+        reply = resp.choices[0].message.content or ""
+    except (AttributeError, IndexError, KeyError) as exc:
+        raise LLMResponseError("LLM response missing expected choices/message") from exc
+
+    return reply, _extract_usage(resp)
 
 
 async def acomplete_json(

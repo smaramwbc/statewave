@@ -1,7 +1,7 @@
 """Tests for the internal /v1/llm/complete endpoint.
 
-The endpoint is a thin pass-through over `services.llm.acomplete`. We mock
-that function to keep these tests provider-free and fast.
+The endpoint is a thin pass-through over `services.llm.acomplete_with_usage`.
+We mock that function to keep these tests provider-free and fast.
 """
 
 from __future__ import annotations
@@ -25,9 +25,12 @@ async def _client_with(monkeypatch=None) -> AsyncClient:
 async def test_complete_chat_happy_path(monkeypatch):
     monkeypatch.setattr(settings, "litellm_model", "gpt-4o-mini")
     with patch(
-        "server.api.llm.acomplete",
+        "server.api.llm.acomplete_with_usage",
         new_callable=AsyncMock,
-        return_value="hello from llm",
+        return_value=(
+            "hello from llm",
+            {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
+        ),
     ) as mocked:
         async with await _client_with() as c:
             r = await c.post(
@@ -42,9 +45,15 @@ async def test_complete_chat_happy_path(monkeypatch):
                 },
             )
     assert r.status_code == 200
-    assert r.json() == {"reply": "hello from llm"}
-    # acomplete called with (messages_list, max_tokens=..., temperature=...) — no
-    # model kwarg, since callers must not pick the model.
+    # reply + usage + the server-resolved model (so first-party consoles can
+    # render token/model stats without holding their own provider key).
+    assert r.json() == {
+        "reply": "hello from llm",
+        "usage": {"prompt_tokens": 11, "completion_tokens": 4, "total_tokens": 15},
+        "model": "gpt-4o-mini",
+    }
+    # acomplete_with_usage called with (messages_list, max_tokens=...,
+    # temperature=...) — no model kwarg, since callers must not pick the model.
     args, kwargs = mocked.call_args
     assert args[0] == [
         {"role": "system", "content": "you are helpful"},
@@ -54,12 +63,37 @@ async def test_complete_chat_happy_path(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_complete_chat_usage_absent_when_provider_omits_it(monkeypatch):
+    """Some providers (e.g. local models) don't report token usage. The
+    route must surface `usage: null` rather than a misleading zero."""
+    monkeypatch.setattr(settings, "litellm_model", "ollama/llama3")
+    with patch(
+        "server.api.llm.acomplete_with_usage",
+        new_callable=AsyncMock,
+        return_value=("local reply", None),
+    ):
+        async with await _client_with() as c:
+            r = await c.post(
+                "/v1/llm/complete",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+    assert r.status_code == 200
+    assert r.json() == {
+        "reply": "local reply",
+        "usage": None,
+        "model": "ollama/llama3",
+    }
+
+
+@pytest.mark.asyncio
 async def test_complete_chat_caller_cannot_pick_model(monkeypatch):
     """The schema does not accept a `model` field — caller-supplied values
     are silently dropped (Pydantic's default for unknown fields)."""
     monkeypatch.setattr(settings, "litellm_model", "gpt-4o-mini")
     with patch(
-        "server.api.llm.acomplete", new_callable=AsyncMock, return_value="ok"
+        "server.api.llm.acomplete_with_usage",
+        new_callable=AsyncMock,
+        return_value=("ok", None),
     ) as mocked:
         async with await _client_with() as c:
             r = await c.post(
@@ -91,7 +125,7 @@ async def test_complete_chat_returns_503_when_no_model(monkeypatch):
 async def test_complete_chat_provider_error_returns_502(monkeypatch):
     monkeypatch.setattr(settings, "litellm_model", "gpt-4o-mini")
     with patch(
-        "server.api.llm.acomplete",
+        "server.api.llm.acomplete_with_usage",
         new_callable=AsyncMock,
         side_effect=LLMProviderError("rate limit hit at https://internal-config"),
     ):
@@ -111,7 +145,7 @@ async def test_complete_chat_provider_error_returns_502(monkeypatch):
 async def test_complete_chat_timeout_returns_504(monkeypatch):
     monkeypatch.setattr(settings, "litellm_model", "gpt-4o-mini")
     with patch(
-        "server.api.llm.acomplete",
+        "server.api.llm.acomplete_with_usage",
         new_callable=AsyncMock,
         side_effect=LLMTimeoutError("timed out talking to https://internal-config after 60s"),
     ):

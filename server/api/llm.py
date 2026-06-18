@@ -25,13 +25,13 @@ from fastapi import APIRouter, HTTPException
 
 from server.core.config import settings
 from server.schemas.requests import LLMCompleteRequest
-from server.schemas.responses import LLMCompleteResponse
+from server.schemas.responses import LLMCompleteResponse, LLMUsage
 from server.services.llm import (
     LLMProviderError,
     LLMResponseError,
     LLMTimeoutError,
     StatewaveLLMError,
-    acomplete,
+    acomplete_with_usage,
 )
 
 router = APIRouter(tags=["llm"])
@@ -52,7 +52,7 @@ async def complete_chat(body: LLMCompleteRequest) -> LLMCompleteResponse:
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
 
     try:
-        reply = await acomplete(
+        reply, usage = await acomplete_with_usage(
             messages,
             max_tokens=body.max_tokens,
             temperature=body.temperature,
@@ -72,4 +72,11 @@ async def complete_chat(body: LLMCompleteRequest) -> LLMCompleteResponse:
             detail={"code": "upstream_llm_error", "message": "Upstream LLM call failed."},
         ) from exc
 
-    return LLMCompleteResponse(reply=reply)
+    return LLMCompleteResponse(
+        reply=reply,
+        usage=LLMUsage(**usage) if usage else None,
+        # The model the server actually used. Safe to return on the success
+        # path (same X-API-Key trust boundary as all of /v1/*); the error
+        # paths above still never echo it.
+        model=settings.litellm_model or None,
+    )

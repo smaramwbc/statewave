@@ -215,11 +215,30 @@ class SLASummaryResponse(BaseModel):
     sessions: list[SessionSLAResponse] = Field(default_factory=list)
 
 
+class LLMUsage(BaseModel):
+    """Token usage for one completion, OpenAI-shape. Present when the
+    provider reports it; omitted (the whole object is ``None``) for
+    providers that don't surface usage — e.g. some local/Ollama setups."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
 class LLMCompleteResponse(BaseModel):
-    """Response body for `POST /v1/llm/complete`. Just the assistant text;
-    callers don't need usage/tokens for the widget-completion use case."""
+    """Response body for `POST /v1/llm/complete`.
+
+    `reply` is the assistant text. `usage` and `model` are optional metadata
+    so first-party consoles (the admin "Chat with Memory", which delegates
+    its LLM call here rather than holding its own provider key) can surface
+    token + model stats. Both are ``None`` when unavailable. Unlike the error
+    path — which deliberately never echoes the model identifier — returning
+    the configured model on the success path is safe: this endpoint sits
+    behind the same ``X-API-Key`` trust boundary as the rest of ``/v1/*``."""
 
     reply: str
+    usage: LLMUsage | None = None
+    model: str | None = None
 
 
 class TenantConfigResponse(BaseModel):

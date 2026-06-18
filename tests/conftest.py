@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Generator
+# Pin the test environment to match CI BEFORE any `server.*` import constructs
+# the Settings singleton. CI runs with no `.env`; a developer's local `.env`
+# (which may carry a live LiteLLM key) would otherwise leak into tests and
+# diverge them from CI — e.g. the settings-redaction tests would see the real
+# key instead of the value they monkeypatch. `setdefault` lets a developer
+# still point at a dedicated test env file via `STATEWAVE_ENV_FILE=.env.test`.
+import os
 
-import pytest
-from httpx import ASGITransport, AsyncClient
-from starlette.routing import BaseRoute
+os.environ.setdefault("STATEWAVE_ENV_FILE", "")
 
-from server.app import create_app
+from typing import Generator  # noqa: E402
+
+import pytest  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from starlette.routing import BaseRoute  # noqa: E402
+
+from server.app import create_app  # noqa: E402
 
 
 def iter_routes(app_or_router) -> Generator[BaseRoute, None, None]:

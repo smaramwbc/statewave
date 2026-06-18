@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 from server.core.webhook_events import parse_webhook_event_filter
+
+# Which dotenv file to load, if any. Defaults to `.env` so normal local runs
+# and deployments are unchanged. The test suite sets `STATEWAVE_ENV_FILE=""`
+# (see tests/conftest.py) so a developer's real `.env` — which may carry a
+# live LiteLLM key — never bleeds into tests and diverges them from CI, which
+# has no `.env`. An empty value disables dotenv loading entirely.
+_ENV_FILE = os.getenv("STATEWAVE_ENV_FILE", ".env") or None
 
 
 class Settings(BaseSettings):
@@ -378,7 +386,7 @@ class Settings(BaseSettings):
     memory_import_max_memories: int = 50_000
     memory_import_max_subjects: int = 100
 
-    model_config = {"env_prefix": "STATEWAVE_", "env_file": ".env", "extra": "ignore"}
+    model_config = {"env_prefix": "STATEWAVE_", "env_file": _ENV_FILE, "extra": "ignore"}
 
 
 settings = Settings()

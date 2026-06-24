@@ -157,8 +157,8 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 ## FAQ
 
-**How is this different from Mem0 / Zep?**
-Mem0 is lean and fast but loses on multi-hop reasoning in our bench. Zep extracts a graph but in our LoCoMo run its retrieval surface returned the same thread summary regardless of the query. Statewave compiles the context once per subject change, with provenance. See [statewave-bench](https://github.com/smaramwbc/statewave-bench) for row-level data and a 20-minute reproducibility command against your own keys.
+**How is this different from other memory systems?**
+Most memory layers store isolated facts and retrieve them per query; some extract a graph whose retrieval surface can return the same summary regardless of the question. Statewave compiles the context once per subject change, with provenance — which is what buys the higher multi-hop accuracy in our benchmarks.
 
 **Does it work with my model provider?**
 Yes — Statewave uses [LiteLLM](https://github.com/BerriAI/litellm) so any of 100+ providers work (OpenAI, Anthropic, Azure, Bedrock, Ollama, Groq, Cohere, Gemini, Mistral, …). Set `STATEWAVE_LITELLM_MODEL` to any LiteLLM identifier.
@@ -169,8 +169,8 @@ Yes. Statewave (server + SDKs) is Apache-2.0 — a permissive license with an ex
 **Can I self-host?**
 Yes — that's the default. Docker Compose, Helm chart, or bare-metal. See [Deployment guide](https://github.com/smaramwbc/statewave-docs/blob/main/deployment/guide.md).
 
-**Why does it cost more tokens per answer than Mem0?**
-Compiled context bundles are denser than Mem0's fact-store retrieval — that's what buys the higher multi-hop accuracy. If your queries are mostly single-hop and you're cost-sensitive, Mem0 may be the right call. The bench tells you when each system wins.
+**Why does it cost more tokens per answer than a plain fact store?**
+Compiled context bundles are denser than fact-store retrieval — that's what buys the higher multi-hop accuracy. If your queries are mostly single-hop and you're cost-sensitive, a lighter fact store may be the right call.
 
 ## Connectors
 

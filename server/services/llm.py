@@ -171,19 +171,56 @@ def _classify(exc: BaseException) -> StatewaveLLMError:
     return LLMProviderError(str(exc) or type(exc).__name__)
 
 
-def _common_kwargs() -> dict[str, Any]:
+def _common_kwargs(model: str | None = None) -> dict[str, Any]:
     """Per-call kwargs that come from settings — api_key, api_base.
 
     The api_key is passed explicitly to LiteLLM rather than mutating
     `os.environ`, so multiple Statewave instances in one process can
     target different providers without leaking credentials between them.
+
+    Provider-aware routing (v9, mixed-vendor deployments): if `model`
+    begins with `claude-`, we DO NOT pass `api_key` — LiteLLM will read
+    `ANTHROPIC_API_KEY` from the env automatically. For any other model
+    (including OpenAI embedding models like text-embedding-3-small), we
+    pass `settings.litellm_api_key` as before. This lets a single
+    deployment run an Anthropic compiler against a Claude model AND
+    keep an OpenAI embedding model on the same server without the OpenAI
+    key being silently passed to the Anthropic API.
     """
     kw: dict[str, Any] = {}
-    if settings.litellm_api_key:
+    is_claude = bool(model and model.startswith("claude-"))
+    if settings.litellm_api_key and not is_claude:
         kw["api_key"] = settings.litellm_api_key
     if settings.litellm_api_base:
         kw["api_base"] = settings.litellm_api_base
     return kw
+
+
+# gpt-5 family and o-series reasoning models reject any explicit temperature
+# other than the default (1) — passing 0.1 raises BadRequestError. Omit the
+# param for them and let the model use its default.
+_RESTRICTED_TEMP_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _omit_temperature(model: str | None) -> bool:
+    m = (model or "").lower()
+    if m.startswith("openai/"):
+        m = m[len("openai/"):]
+    return any(m.startswith(p) for p in _RESTRICTED_TEMP_PREFIXES)
+
+
+def _reasoning_kwargs(model: str | None) -> dict[str, Any]:
+    """``reasoning_effort`` for gpt-5/o-series reasoning models, when configured.
+
+    Only emitted for reasoning models (the same set that rejects temperature), so
+    non-reasoning chat models and the embedding path are unaffected. Setting it to
+    "minimal" stops reasoning tokens from consuming the whole response budget —
+    the cause of empty JSON on complex compile/reconcile prompts — and is far
+    faster and cheaper.
+    """
+    if settings.litellm_reasoning_effort and _omit_temperature(model):
+        return {"reasoning_effort": settings.litellm_reasoning_effort}
+    return {}
 
 
 # ─── Chat completion ─────────────────────────────────────────────────
@@ -212,10 +249,12 @@ async def acomplete(
     kwargs: dict[str, Any] = {
         "model": chosen_model,
         "messages": messages,
-        "temperature": temp,
         "num_retries": settings.litellm_max_retries,
-        **_common_kwargs(),
+        **_common_kwargs(chosen_model),
+        **_reasoning_kwargs(chosen_model),
     }
+    if not _omit_temperature(chosen_model):
+        kwargs["temperature"] = temp
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if response_format is not None:
@@ -288,10 +327,12 @@ async def acomplete_with_usage(
     kwargs: dict[str, Any] = {
         "model": chosen_model,
         "messages": messages,
-        "temperature": temp,
         "num_retries": settings.litellm_max_retries,
-        **_common_kwargs(),
+        **_common_kwargs(chosen_model),
+        **_reasoning_kwargs(chosen_model),
     }
+    if not _omit_temperature(chosen_model):
+        kwargs["temperature"] = temp
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
@@ -320,13 +361,38 @@ async def acomplete_json(
 ) -> Any:
     """Chat completion that returns parsed JSON.
 
-    Sets `response_format={"type": "json_object"}` and parses the resulting
-    string. Strips markdown fences if the model wraps the JSON in them.
-    Raises LLMResponseError on invalid JSON.
+    Provider-aware: Anthropic models (`claude-*`) use forced **tool use**
+    (LiteLLM passes through `tools` + `tool_choice` to Anthropic; the
+    model is REQUIRED to call the `emit_json` tool with a valid JSON
+    `payload` arg). All other providers use `response_format=json_object`,
+    which OpenAI / Azure / etc. honor natively.
+
+    Why the split: with `response_format=json_object` alone, Anthropic
+    sometimes returns conversational preamble ("I'll break this down…")
+    when the user message contains conversational content (e.g. an
+    extraction prompt followed by a long chat transcript). Tool use is
+    the only Anthropic-native way to FORCE structured output —
+    `response_format` is a soft instruction the model can still ignore;
+    `tool_choice={"type": "tool", "name": "..."}` is a hard constraint.
+
+    Raises LLMResponseError if the response is missing the tool call
+    (Anthropic) or if the resulting string fails to parse as JSON.
     """
+    chosen_model = model or settings.litellm_model
+    is_anthropic = chosen_model.startswith("claude-") or chosen_model.startswith("anthropic/")
+
+    if is_anthropic:
+        return await _acomplete_json_anthropic_tool_use(
+            messages,
+            model=chosen_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
     raw = await acomplete(
         messages,
-        model=model,
+        model=chosen_model,
         temperature=temperature,
         max_tokens=max_tokens,
         response_format={"type": "json_object"},
@@ -339,6 +405,105 @@ async def acomplete_json(
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise LLMResponseError(f"LLM returned invalid JSON: {cleaned[:200]}") from exc
+
+
+# Generic free-form tool the JSON-forced path uses. We don't constrain
+# the schema beyond `type: object` so callers can stuff any shape into
+# the `payload` — the compiler, e.g., expects `{"memories": [...]}`,
+# while a future eval pipeline might want `{"score": 0.7}`. Schema
+# enforcement happens at the caller boundary, not here.
+_EMIT_JSON_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "emit_json",
+        "description": (
+            "Emit the structured JSON response for this task. ALWAYS call "
+            "this function. Do not respond with plain text."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "type": "object",
+                    "description": "The full JSON payload requested by the user message.",
+                    "additionalProperties": True,
+                }
+            },
+            "required": ["payload"],
+        },
+    },
+}
+
+
+async def _acomplete_json_anthropic_tool_use(
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
+) -> Any:
+    """Anthropic-specific JSON-forcing path via LiteLLM tool use.
+
+    Forces the model to emit a single `emit_json` tool call whose
+    `payload` argument is the structured response. Returns the parsed
+    `payload` dict; raises LLMResponseError if Anthropic returns text
+    or a missing/malformed tool call.
+    """
+    litellm = _ensure_litellm()
+    temp = temperature if temperature is not None else settings.litellm_temperature
+    timeout_s = timeout if timeout is not None else settings.litellm_timeout_seconds
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "temperature": temp,
+        "num_retries": settings.litellm_max_retries,
+        "tools": [_EMIT_JSON_TOOL],
+        "tool_choice": {"type": "function", "function": {"name": "emit_json"}},
+        **_common_kwargs(model),
+    }
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    try:
+        resp = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout_s)
+    except asyncio.TimeoutError as exc:
+        raise LLMTimeoutError(f"LLM completion timed out after {timeout_s}s") from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _classify(exc) from exc
+
+    # LiteLLM normalizes Anthropic tool_use → OpenAI-shaped tool_calls.
+    try:
+        message = resp.choices[0].message
+        tool_calls = getattr(message, "tool_calls", None) or []
+    except (AttributeError, IndexError) as exc:
+        raise LLMResponseError("Anthropic JSON tool: missing choices/message") from exc
+
+    if not tool_calls:
+        # Defensive: if the model ignored tool_choice and returned text,
+        # report it as malformed (caller will surface the snippet).
+        content = getattr(message, "content", "") or ""
+        raise LLMResponseError(
+            "Anthropic JSON tool: model returned text instead of tool_call: "
+            f"{str(content)[:200]}"
+        )
+
+    call = tool_calls[0]
+    raw_args = getattr(getattr(call, "function", None), "arguments", None)
+    if not raw_args:
+        raise LLMResponseError("Anthropic JSON tool: tool_call has no arguments")
+    try:
+        parsed = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+    except json.JSONDecodeError as exc:
+        raise LLMResponseError(
+            f"Anthropic JSON tool: arguments unparseable: {str(raw_args)[:200]}"
+        ) from exc
+    if isinstance(parsed, dict) and "payload" in parsed:
+        return parsed["payload"]
+    # Defensive: some LiteLLM versions may pass arguments through
+    # without the `payload` wrapper — accept the bare dict.
+    return parsed
 
 
 # ─── Embeddings ──────────────────────────────────────────────────────
@@ -363,8 +528,16 @@ async def aembed_texts(
         "model": chosen_model,
         "input": texts,
         "dimensions": dim,
-        **_common_kwargs(),
+        **_common_kwargs(chosen_model),
     }
+    # Embedder may target a dedicated endpoint (e.g. a local Qwen server) distinct
+    # from the chat/extraction provider. A custom OpenAI-compatible endpoint
+    # controls its own output width and may reject the `dimensions` param via
+    # LiteLLM validation; the server is configured to emit
+    # ``settings.embedding_dimensions`` directly, so drop it here.
+    if settings.litellm_embedding_api_base:
+        kwargs["api_base"] = settings.litellm_embedding_api_base
+        kwargs.pop("dimensions", None)
 
     try:
         resp = await asyncio.wait_for(litellm.aembedding(**kwargs), timeout=timeout_s)

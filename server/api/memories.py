@@ -69,6 +69,8 @@ async def _compile_one_batch(
     case — a legitimate "extracted nothing" — and does mark the episodes
     compiled.
     """
+    from server.core.config import settings
+
     episodes = await repo.list_uncompiled_episodes(
         session, subject_id, tenant_id=tenant_id, limit=batch_size
     )
@@ -86,9 +88,51 @@ async def _compile_one_batch(
             None, functools.partial(compiler.compile, list(episodes))
         )
 
+    # Near-duplicate dedup (runs BEFORE reconcile). Full-conversation windowed
+    # compile produces many restated/overlapping facts; this cheap, deterministic
+    # pass collapses them so (a) retrieval isn't diluted by near-duplicates and
+    # (b) reconcile + entity population run on a far smaller set. Non-destructive
+    # (provenance unioned) and fail-open — returns the candidates unchanged on any
+    # error. Stapled embeddings on survivors are reused for the memory.embedding
+    # column below. See server/services/dedup.py.
+    if settings.dedup_compile_enabled and new_rows:
+        try:
+            from server.services.dedup import dedup_candidates
+
+            new_rows = await dedup_candidates(new_rows)
+        except Exception:
+            logger.warning("dedup_failed", subject_id=subject_id, exc_info=True)
+
+    # Phase 4 + 5b — context-aware reconcile. One LLM call
+    # decides, per freshly-extracted candidate, whether it is new, a duplicate
+    # (dropped), a newer value of an existing memory, or a contradiction — and
+    # supersedes the stale/contradicted existing memories. Runs BEFORE the
+    # candidates are added to the session, so the "existing" view it reads is
+    # exactly the committed memory (candidates can't pollute it). Fail-open:
+    # `reconcile_compile_batch` returns the candidates unchanged on any error,
+    # so a reconcile failure can never lose a memory. Gated for ablation/bench.
+    reconcile_superseded_ids: set = set()
+    if settings.reconcile_compile_enabled and new_rows:
+        try:
+            from server.services.reconcile import reconcile_compile_batch
+
+            new_rows, reconcile_superseded_ids = await reconcile_compile_batch(
+                session, subject_id, new_rows, tenant_id=tenant_id
+            )
+        except Exception:
+            logger.warning("reconcile_failed", subject_id=subject_id, exc_info=True)
+            reconcile_superseded_ids = set()
+
     for row in new_rows:
         row.tenant_id = tenant_id
         session.add(row)
+    if reconcile_superseded_ids:
+        await repo.mark_memories_superseded(session, list(reconcile_superseded_ids))
+        logger.info(
+            "reconcile_superseded",
+            subject_id=subject_id,
+            superseded=len(reconcile_superseded_ids),
+        )
     await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
     superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
@@ -99,10 +143,50 @@ async def _compile_one_batch(
     for row in new_rows:
         await session.refresh(row)
 
+    # Only backfill rows that don't already carry an embedding. Dedup's semantic
+    # pass computes and staples embeddings onto its surviving canonicals, so those
+    # are persisted with the row above and need no second embedding round-trip.
+    rows_needing_embedding = [r for r in new_rows if getattr(r, "embedding", None) is None]
     schedule_embedding_backfill(
-        [row.id for row in new_rows],
-        [row.content for row in new_rows],
+        [row.id for row in rows_needing_embedding],
+        [row.content for row in rows_needing_embedding],
     )
+
+    # Phase 2 of the cross-session retrieval improvements: populate the per-subject
+    # entity store from this batch's newly-compiled memories so Phase 3
+    # retrieval (entity boost) has something to query. Best-effort — a
+    # failure here must not roll back the compile commit above. The function
+    # fans out LLM extraction calls in parallel + does ONE batched embedding
+    # round-trip. It is one LLM call per memory, the dominant cost on large
+    # full-conversation compiles, so it is skipped entirely when entity-boost
+    # retrieval is not in use (settings.entity_population_enabled).
+    if settings.entity_population_enabled:
+        try:
+            from server.services.entities import (
+                MemoryForEntities,
+                populate_entities_for_memories,
+            )
+
+            active_new_rows = [r for r in new_rows if r.id not in superseded_ids]
+            touched = await populate_entities_for_memories(
+                session,
+                [MemoryForEntities(id=r.id, content=r.content) for r in active_new_rows],
+                subject_id=subject_id,
+                tenant_id=tenant_id,
+            )
+            if touched:
+                await session.commit()
+                logger.info(
+                    "entities_populated",
+                    subject_id=subject_id,
+                    touched=touched,
+                    memories=len(active_new_rows),
+                )
+        except Exception:
+            # Phase 3 retrieval handles an empty entity store as a no-op,
+            # so the compile result for the caller is identical with or
+            # without this step. Logged at WARNING for operator visibility.
+            logger.warning("entity_population_failed", subject_id=subject_id, exc_info=True)
 
     await webhooks.fire(
         "memories.compiled",
@@ -306,12 +390,74 @@ async def search_memories(
     kind: str | None = Query(None),
     query: str | None = Query(None, alias="q"),
     semantic: bool = Query(False, description="Use semantic similarity search when available"),
-    limit: int = Query(20, ge=1, le=100),
+    hybrid: bool = Query(
+        True,
+        description=(
+            "Blend semantic cosine with Postgres BM25 (ts_rank_cd) and entity "
+            "boost for hybrid retrieval. Requires semantic=true and a non-empty "
+            "query. Default flipped to True on 2026-06-19 — v10 bench validated "
+            "this as a strict improvement across LoCoMo (+2.1), LongMemEval "
+            "(+16.0 vs Phase-1 hybrid), and BEAM (+1.8). Pass hybrid=False to "
+            "force the pre-2026-06-19 pure-pgvector path."
+        ),
+    ),
+    entity_weight: float = Query(
+        0.0,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "Weight of the entity-boost lane in the hybrid blend. Default 0.0 — "
+            "the entity lane is OFF by default. The published Statewave "
+            "benchmark results (LoCoMo 0.905, LongMemEval 0.967) ran with "
+            "entity_weight=0, and the entity lane showed no generalizable gain "
+            "(it can regress temporal_reasoning on generic-entity questions). "
+            "Pass a positive value (e.g. 0.3-1.0) to weight entity matches more "
+            "heavily for entity-centric workloads. Only consulted when "
+            "hybrid=true."
+        ),
+    ),
+    entity_max_distance: float = Query(
+        0.3,
+        ge=0.0,
+        le=2.0,
+        description=(
+            "Maximum cosine distance for an entity to count as 'matching' the "
+            "query. Default 0.3 as of 2026-06-19 — corresponds to cosine "
+            "similarity ≥ 0.7, tight enough to reject weak matches that "
+            "pollute the boost lane on summarization / temporal questions. "
+            "Pass 0.5 for the pre-2026-06-19 looser threshold. Only consulted "
+            "when hybrid=true."
+        ),
+    ),
+    rerank: bool = Query(
+        False,
+        description=(
+            "LLM-rerank a hybrid candidate pool to surface the precise answer "
+            "fact (single-fact precision). Retrieves `rerank_pool` candidates, "
+            "an LLM scores relevance to the query, returns the best `limit`. "
+            "Requires hybrid=true + a query. Fail-open to hybrid order."
+        ),
+    ),
+    rerank_pool: int = Query(
+        60, ge=1, le=1000,
+        description="Candidate pool size fed to the reranker when rerank=true.",
+    ),
+    limit: int = Query(20, ge=1, le=500),
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):
-    with span("search_memories", {"subject_id": subject_id, "semantic": semantic}):
-        # Try semantic search if requested and query text is provided
+    with span(
+        "search_memories",
+        {
+            "subject_id": subject_id,
+            "semantic": semantic,
+            "hybrid": hybrid,
+            "entity_weight": entity_weight,
+            "entity_max_distance": entity_max_distance,
+            "rerank": rerank,
+        },
+    ):
+        # Try semantic / hybrid search if requested and query text is provided
         if semantic and query:
             provider = get_embedding_provider()
             if provider:
@@ -324,6 +470,39 @@ async def search_memories(
                     query_embedding = await cached_embed_query(
                         get_session_factory(), provider, query
                     )
+                    if hybrid:
+                        # Hybrid retrieval: semantic + BM25 +
+                        # entity-boost. See repositories.search_memories_hybrid
+                        # for the blend formula. `entity_weight=0` disables
+                        # the entity lane, falling back to Phase-1
+                        # (semantic+BM25) — useful for ablations.
+                        # When reranking, pull a larger candidate pool by hybrid
+                        # similarity, then let the LLM reranker pick the best
+                        # `limit` (fixes single-fact precision — the answer fact
+                        # ranking mid-pack). Otherwise retrieve `limit` directly.
+                        pool = max(limit, rerank_pool) if rerank else limit
+                        hybrid_results = await repo.search_memories_hybrid(
+                            session,
+                            subject_id,
+                            query,
+                            query_embedding,
+                            tenant_id=tenant_id,
+                            kind=kind,
+                            limit=pool,
+                            entity_weight=entity_weight,
+                            use_entity_boost=entity_weight > 0.0,
+                            entity_max_distance=entity_max_distance,
+                        )
+                        rows = [row for row, _score, _bd in hybrid_results]
+                        if rerank and len(rows) > limit:
+                            from server.services.reranker import rerank_memories
+
+                            rows = await rerank_memories(query, rows, limit)
+                        else:
+                            rows = rows[:limit]
+                        return SearchMemoriesResponse(
+                            memories=[_to_response(row) for row in rows]
+                        )
                     results = await repo.search_memories_by_embedding(
                         session,
                         subject_id,

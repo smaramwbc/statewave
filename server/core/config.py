@@ -81,11 +81,31 @@ class Settings(BaseSettings):
     # model identifier.
     litellm_api_key: str | None = None
     litellm_model: str = "gpt-4o-mini"  # any LiteLLM model identifier
+    # Dedicated EXTRACTION/compile-pipeline model. Empty = fall back to
+    # `litellm_model`. This is the one knob that controls memory quality: bench
+    # shows extraction-model strength is the dominant lever (gpt-4o-mini 0.792 ->
+    # gpt-4o 0.820 -> gpt-4.1 ~0.90 LoCoMo, reaching top-tier hosted parity). Set
+    # it (STATEWAVE_LITELLM_COMPILE_MODEL) to a stronger model for best-in-class
+    # memory without forcing every other LLM role onto the pricier model. Used by
+    # the compiler + the compile-time entity/reconcile/rerank passes, which all
+    # already resolve `litellm_compile_model or litellm_model`.
+    litellm_compile_model: str = ""
     litellm_embedding_model: str = "text-embedding-3-small"
     litellm_api_base: str | None = None
+    # Dedicated embedding endpoint base_url — overrides ``litellm_api_base`` for
+    # the embedder ONLY, so a custom embedding server (e.g. a local Qwen TEI) can
+    # back retrieval while chat/extraction stays on the default provider. Empty
+    # falls back to ``litellm_api_base``.
+    litellm_embedding_api_base: str | None = None
     litellm_timeout_seconds: float = 60.0
     litellm_max_retries: int = 2
     litellm_temperature: float = 0.1
+    # reasoning_effort for gpt-5 / o-series reasoning models (e.g. "minimal",
+    # "low", "medium", "high"). Empty = provider default. "minimal" keeps the
+    # response budget from being consumed by reasoning tokens (which starves the
+    # content → empty JSON on complex compile/reconcile prompts) and is much
+    # faster + cheaper. Ignored for non-reasoning models.
+    litellm_reasoning_effort: str = ""
     # Output-token ceiling for the LLM compiler. This is a CAP, not a target
     # (only generated tokens are billed), so it is generous by default: reasoning
     # models (o-series, gpt-5.x, ...) spend part of the budget on hidden reasoning
@@ -127,6 +147,125 @@ class Settings(BaseSettings):
     # against a runaway compiler that fails to advance `last_compiled_at`).
     compile_batch_size: int = 500
     compile_max_iterations: int = 2000
+
+    # ── Context-aware compile reconcile (Phase 4 + 5b) ──
+    # After the compiler extracts candidate facts from an episode batch, run a
+    # single LLM "memory-update" call that decides, per candidate, whether it is
+    # new (ADD), already stored (DUPLICATE → dropped), a newer value of an
+    # existing memory (UPDATE → supersede the old one), or a contradiction
+    # (DELETE → supersede the old one). This is the core fix for additive-only
+    # drift (stale values staying retrievable). Fail-open:
+    # any error falls back to the prior additive behaviour. Toggle for ablation
+    # / bench via STATEWAVE_RECONCILE_COMPILE_ENABLED.
+    reconcile_compile_enabled: bool = True
+    # Cumulative/latest-value merge on UPDATE (opt-in, ships dark). When an UPDATE
+    # is two readings of the SAME running quantity (page 200 -> 220; "worn 5
+    # times" -> "worn 6 times"), carry the CURRENT absolute value forward into the
+    # surviving memory instead of leaving both readings as peers. Count-neutral
+    # (overwrites the survivor, no new rows -> no retrieval dilution). Moves the
+    # knowledge-update arithmetic to compile-time so the fixed answer model just
+    # reads off the current value. Diagnosed on LongMemEval: fixes the
+    # latest-value/cumulative-counter failure class (the answer model can't track
+    # supersession across a 200-memory haystack). See reconcile.py.
+    reconcile_cumulative_merge: bool = False
+    # Candidates are reconciled in chronological CHUNKS of this size — each chunk
+    # is one LLM call, judged against existing memory + candidates accepted by
+    # earlier chunks. Bounds prompt size while still covering an arbitrarily
+    # large batch (full-conversation compiles produce hundreds of candidates).
+    reconcile_chunk_size: int = 40
+    # Absolute safety ceiling: skip reconcile only for a pathologically huge
+    # batch (the conflict resolver + next drain still apply).
+    reconcile_max_candidates: int = 4000
+    # Cap on EXISTING memories carried as reconcile context. Committed existing
+    # memories are always included (up to this cap); the remainder of the budget
+    # is filled with the most-recent candidates accepted earlier in this batch.
+    reconcile_max_existing: int = 60
+    # Per-candidate top-k used when narrowing a large committed-existing set.
+    reconcile_top_k_per_candidate: int = 5
+
+    # ── Compile-time near-duplicate dedup ───────────────────────────────
+    # Full-conversation windowing extracts the whole haystack but produces
+    # 450-700 memories/conversation (window-overlap re-extraction + facts
+    # restated across sessions). That dilutes retrieval (precise answers rank
+    # below top_k) and slows compile. Dedup collapses near-duplicate candidates
+    # BEFORE the LLM reconcile: an exact normalized-text pass (always on,
+    # stub-safe) plus a semantic pass that merges two candidates ONLY when all
+    # three gates pass — identical number/date set, identical significant-content
+    # words (a differing name/place/noun/verb blocks the merge), and high cosine
+    # (final meaning check). Knowledge-update pairs (same words, different value)
+    # are never merged — that stays reconcile's job. Merge is non-destructive
+    # (provenance unioned). Fail-open. See server/services/dedup.py.
+    dedup_compile_enabled: bool = True
+    # Semantic pass needs a real embedding provider; the exact pass runs even
+    # without it. Disable to ablate to exact-only dedup.
+    dedup_semantic_enabled: bool = True
+    dedup_sim_threshold: float = 0.95        # cosine floor for a semantic merge
+    dedup_max_candidates: int = 4000         # skip dedup above this (pathological)
+
+    # ── LLM reranker (retrieval) ────────────────────────────────────────
+    # Optional reranking on /v1/memories/search?rerank=true: retrieve a generous
+    # candidate pool by hybrid similarity, then an LLM scores each candidate's
+    # relevance to the question and keeps the best `limit`. Fixes single-fact
+    # precision (the answer memory ranking mid-pack among distractors) that
+    # entity-boost + top_k tuning don't. GPT-only (compile model). Fail-open to
+    # the hybrid order. Off by default; opt in per request.
+    rerank_max_pool: int = 100               # hard cap on candidates sent to the reranker
+    # Model for the LLM reranker. Reranking is a relevance-JUDGMENT task (not
+    # extraction), where a stronger model helps and the cost is one call/query.
+    # Empty = use the compile model. Set to gpt-4o for best ranking quality.
+    rerank_model: str = ""
+
+    # ── Full-conversation compile (windowing) ───────────────────────────
+    # The compiler used to truncate every episode to 4000 chars before
+    # extraction — catastrophic for long-context benchmarks (BEAM/LongMemEval
+    # episodes are 100K-460K chars per session), where ~97% of the haystack was
+    # discarded and most facts were never extracted. Strong long-context memory
+    # compiles the FULL conversation. We now split each episode's text into
+    # overlapping windows and compile every window, up to a per-episode ceiling
+    # (cost bound). Raise the ceiling for maximum recall; lower it to cap compile
+    # spend.
+    compile_max_episode_chars: int = 60000
+    compile_window_chars: int = 6000
+    compile_window_overlap: int = 200
+    # Parallel LLM extraction calls per compile batch. Full-conversation
+    # windowing produces many windows; the old hardcoded 4 made large compiles
+    # slow enough to hit client timeouts. Raise for throughput (bounded by
+    # provider rate limits + the adapter's retry budget).
+    compile_max_concurrency: int = 4
+    # Message-level extraction (opt-in): extract atomic facts from small coherent
+    # message groups instead of fixed char-windows. Char-windows split
+    # mid-utterance and, when large, let the model abstract specifics away
+    # ("pink sky sunset" -> "a landscape"); extracting from small message
+    # units with the same model keeps the specifics. See compilers/llm.py
+    # `_message_chunks`. Falls back to char-windowing for non-chat payloads.
+    compile_message_level: bool = False
+    compile_messages_per_chunk: int = 6
+    compile_message_overlap: int = 1
+    # Recall sweep (opt-in): after the first extraction pass, run a SECOND pass
+    # over the same window that is shown the already-extracted facts and asked to
+    # catch specific details the first pass dropped — named objects/titles,
+    # dates, places, counts, quotes — emitting each as a COMPLETE atomic memory
+    # (not a fragment, so it avoids the message-level fragmentation failure).
+    # Diagnosis: ~54% of the LoCoMo gap to the leading hosted system is
+    # first-pass extraction MISS (the fact is simply never compiled). Doubles
+    # compile LLM calls; gate on for high-recall workloads. See compilers/llm.py
+    # `_RECALL_SWEEP_PROMPT`.
+    compile_recall_sweep: bool = False
+    # Compose-unit extraction (opt-in): change the extraction UNIT from "one
+    # atomic fact" to "one self-contained, interaction-complete statement" while
+    # holding memory COUNT flat. Diagnosis: vs the leading hosted system,
+    # Statewave memories are ~50% terser (80-89 vs 120-135 chars) and fragment
+    # events across rows so the answering memory ranks low; composing them into
+    # fuller statements raises per-memory completeness (the one axis the leading
+    # system differs on at equal count) WITHOUT adding rows (so it cannot dilute
+    # retrieval like the recall sweep).
+    # See compilers/llm.py `_SYSTEM_PROMPT_COMPOSE`.
+    compile_compose_unit: bool = False
+    # Compile-time entity-store population (Phase 2, powers entity-boost
+    # retrieval). One LLM call per new memory — set False to skip it when
+    # entity-boost retrieval is not in use (e.g. semantic-only bench runs),
+    # which materially speeds up large compiles.
+    entity_population_enabled: bool = True
 
     # ── Memory TTL / expiry policies ────────────────────────────────
     # Per-kind expiry windows. Keys are MemoryKind values

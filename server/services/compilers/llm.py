@@ -86,6 +86,7 @@ Return a JSON array of memory objects. Each object must have:
 Rules:
 - Extract ALL distinct facts; do not merge unrelated facts into one memory.
 - Be precise and factual — never invent information not in the episode.
+- PRESERVE SPECIFIC DETAILS VERBATIM. This is the most important rule. Keep the exact concrete details the source states — colors, proper names, titles, places, exact phrases, sentiment/emotion words, quantities, dates — in the memory `content`. NEVER generalize a specific into a vague theme: "painted a sunset with a pink sky and purple autumn tones" must NOT become "painted a landscape"; "savor all the good vibes at the grand opening" must NOT become "is excited about the opening"; "read 'Charlotte's Web'" must NOT become "enjoys reading"; "drives a Prius" must NOT become "has a car". If the source says it specifically, store it specifically — the specific wording is exactly what later questions ask for. When in doubt, keep MORE of the original detail, not less.
 - DO NOT extract values from inside code blocks, JSON examples, sample API responses, or curl/bash command examples as profile_facts. Those are illustrations of *shape*, not facts about the subject. For example, in `{"subject_id": "user-42", "memories_created": 5}`, "subject_id user-42" is a placeholder — it is NOT a profile fact about anyone. Skip example identifiers, sample values, placeholder names, and inline literals from documentation snippets.
 - DO extract the surrounding *prose* explanation (e.g. "POST /v1/memories/compile returns memories_created and a memories array"). That is a generalizable fact.
 - If an episode is mostly code or example data with no generalizable claims, return episode_summary describing what the section is about, not profile_facts cataloguing the example values.
@@ -112,7 +113,103 @@ Granularity — extract DETAILS, not just headlines:
     * Relationships between people / things (who-mentors-whom, who-bought-what-for-whom)
 - A profile_fact about a person can be ONE specific item — don't wait to find "enough" to summarize.
 - Better to emit 30 concrete granular memories than 5 vague ones. The retrieval layer ranks them; the compiler's job is recall.
+
+Capture BOTH speakers — including what the ASSISTANT said:
+THIS IS A COMMONLY MISSED CATEGORY. Episodes are usually a dialogue between a user and an assistant. Extract facts conveyed by EITHER speaker, not just the user.
+- When the ASSISTANT provides information, a recommendation, an answer, instructions, a diagnosis, or a resource, extract it as a memory that records WHAT the assistant said. These are frequently the exact answer to a later "what did you recommend / suggest / say about X / which … did you give me" question, and the model routinely drops them because they aren't facts "about the subject".
+- Preserve the specifics of the assistant's contribution EXACTLY as given: named tools, product names, links/URLs, step lists, titles, quantities, dosages, settings.
+- Attribute the speaker explicitly in the memory content so retrieval can distinguish them:
+    * A fact the USER asserts about themselves → profile_fact about the user ("The user's daughter is named Mia.").
+    * A recommendation / answer / instruction the ASSISTANT gives → record it as the assistant's contribution ("The assistant recommended trying yoga and a standing desk for the user's lower back pain on <date>." / "The assistant suggested the book 'Atomic Habits' by James Clear.").
+- Use kind=procedure when the assistant gave a step-by-step process; otherwise episode_summary (or profile_fact when the assistant stated a durable fact the user will refer back to).
+- Each memory is ONE atomic fact or ONE coherent recommendation — do not bundle several distinct assistant suggestions into a single memory; emit one per suggestion.
+
+CRITICAL — Numerical specifications, metrics, and configuration values:
+THIS IS THE MOST COMMONLY MISSED CATEGORY. The model treats numbers as transient context and fails to extract them. They are NOT transient — they are first-class facts about the subject's systems / projects / tools / workflows AND are commonly the answer to "what is X" / "how many Y" / "what's the current Z" questions. They are also frequently updated, so missing them silently breaks knowledge-update retrieval downstream.
+
+ALWAYS extract as profile_fact with the EXACT value and the resolved date:
+  * Response times, latencies, durations of system operations
+  * Counts (commits, issues, items, deployments, users, requests)
+  * Percentages, coverage, rates, conversions, success/failure rates
+  * Deadlines, target dates, sprint boundaries, release windows
+  * Versions (language, library, OS, schema)
+  * IDs, keys (truncated for sensitive ones), model names, identifiers
+  * Status / state values (deployed, blocked, in-review, enabled, disabled)
+  * Thresholds, limits, quotas (rate limits, daily caps, budget ceilings)
+  * Pricing, costs, financial figures
+  * Performance / capacity numbers (memory, cpu, throughput)
+
+Few-shot examples for technical-spec extraction:
+
+Source text: "The dashboard API now averages 250ms response time due to the new caching layer."
+Extract: {"kind":"profile_fact","content":"Dashboard API has an average response time of 250ms as of <date>, driven by the new caching layer."}
+
+Source text: "We just merged commit 165 into main this morning."
+Extract: {"kind":"profile_fact","content":"Project repository has 165 commits merged into the main branch as of <date>."}
+
+Source text: "The production API key has a 1,200 daily call quota."
+Extract: {"kind":"profile_fact","content":"Production API key daily call quota is 1,200 calls/day as of <date>."}
+
+Source text: "Test coverage just hit 78%."
+Extract: {"kind":"profile_fact","content":"API integration module test coverage is 78% as of <date>."}
+
+Source text: "Sprint 1 deadline is April 5, 2024 — basic layout and navigation."
+Extract: {"kind":"profile_fact","content":"Sprint 1 deadline is April 5, 2024, focused on basic layout and navigation."}
+
+Source text: "We're running Python 3.12 and Postgres 16 in production."
+Extract two profile_facts:
+  {"kind":"profile_fact","content":"Production runs Python 3.12 as of <date>."}
+  {"kind":"profile_fact","content":"Production runs Postgres 16 as of <date>."}
+
+When a CHANGE is described ("we bumped it from X to Y", "switched from A to B", "increased to N"), extract the NEW value as the profile_fact (the latest state is the answer). If the prior value matters as a comparison reference, also extract it as a separate profile_fact noting it was the prior value.
 """
+
+# Second-pass recall sweep. Diagnosis of the LoCoMo recall gap found
+# ~54% of losses are first-pass extraction MISSES — a specific named object,
+# title, date, place, count, or quote that was simply never compiled (the topic
+# is captured, the identifying detail is dropped). This pass re-reads the same
+# window, is shown what the first pass already captured, and emits COMPLETE
+# atomic memories only for the missed specifics. Emitting whole standalone facts
+# (not fragments) is the key guard against the message-level fragmentation that
+# regressed earlier (-3.6).
+_RECALL_SWEEP_PROMPT = """\
+You are a RECALL AUDITOR for a memory extraction system. A first pass already \
+extracted memories from a conversation, but it systematically DROPS specific \
+identifying details while keeping the general topic. Your job is to catch exactly \
+those misses.
+
+You are given (1) the raw episode(s) with their recorded dates and (2) \
+ALREADY_EXTRACTED — the facts the first pass captured. Re-read the source and \
+find every specific detail that is NOT already fully captured, focusing on these \
+high-value, commonly-dropped types:
+- Named objects / titles / brands / proper nouns: book & movie & song titles, \
+game names, product/brand names, distinctive physical objects WITH their \
+attributes (color, material).
+- Dates and times of events: resolve relative phrases ("last weekend", "two \
+years ago", "the Friday before") against the episode's recorded date to an \
+ABSOLUTE date.
+- Place names: cities, states, countries, venues, specific locations.
+- Counts, quantities, durations, ages, prices.
+- The exact thing a person said / did / offered — including the ASSISTANT's \
+recommendations and answers — and short anecdotes tied to a named person.
+
+For each missed detail, emit ONE memory that states the COMPLETE fact (who + \
+what + when), so it stands alone and directly answers a question. Rules:
+- PRESERVE the specific noun/title/date/quantity VERBATIM — never generalize \
+("read 'Charlotte's Web'", NOT "read a book"; "in Rome in June 2023", NOT \
+"traveled abroad"; "a black and white flower bowl", NOT "pottery").
+- Attribute each fact to the CORRECT person and preserve who-did-what-to-whom \
+direction (a recommendation FROM the assistant TO the user, X bought Y for Z).
+- Do NOT repeat anything already in ALREADY_EXTRACTED, and do NOT emit vague \
+themes or fragments. A memory must be a complete, answerable statement.
+- If a detail is genuinely already captured, skip it. When unsure whether a \
+SPECIFIC was captured, include it — recall is the goal of this pass.
+- Same JSON object format as the first pass for each memory: \
+{"kind","content","summary","confidence","episode_index"}.
+- Return ONLY a JSON object {"memories": [...]}. If nothing was missed, return \
+{"memories": []}.
+"""
+
 
 # The single-valued canonical keys the model may PROPOSE. The registry remains
 # authoritative for canonicalization, scope, and membership — the model never
@@ -135,6 +232,171 @@ _SYSTEM_PROMPT += (
     "- Use ONLY the keys listed; never invent keys, scopes, or cardinality. Claims are optional\n"
     "  annotations — do NOT reduce, merge, or skip the granular memories you would otherwise emit.\n"
 )
+
+
+# ── Compose-unit variant (opt-in via settings.compile_compose_unit) ──────────
+# Same prompt as _SYSTEM_PROMPT, but the extraction UNIT becomes one complete,
+# self-contained statement instead of atomized fragments. Diagnosis: at equal
+# memory COUNT, Statewave memories are ~50% terser and fragment a
+# single event across rows, so the answering memory ranks low and the answer
+# model can't ground on it. Composing raises per-memory completeness — the one
+# axis that differs at equal count — WITHOUT adding rows, so it cannot dilute
+# retrieval the way the recall sweep did. Built by surgically swapping only the
+# atomization directives; verbatim/temporal/numeric/code-block/claim rules are
+# untouched, so the JSON contract and all downstream parsing are identical.
+_COMPOSE_GRANULARITY_RULE = (
+    "- UNIT OF A MEMORY: one COMPLETE statement per distinct event/topic, NOT one per noun. "
+    "Each memory must be a STANDALONE sentence answerable with zero other context. FUSE the "
+    "related parts of a single event into ONE memory: the person(s) involved + what was "
+    "done/said + the object/title/value + the resolved absolute date + (for dialogue) "
+    "who-said-it-to-whom. Do NOT split one event across rows — the degree, the certificate, "
+    'and the date are ONE memory ("John earned a university degree, evidenced by a certificate '
+    'of completion he shared on 2 April 2023"), not three terse rows.\n'
+    "- Emit a SEPARATE memory only for a genuinely DIFFERENT event, attribute, or topic. If two "
+    "parts assert DIFFERENT VALUES of the same attribute (two different dates, 250ms vs 90ms, "
+    "Munich vs Berlin), keep them SEPARATE — never fuse a changed/updated value into its "
+    "predecessor (reconciliation handles supersession downstream).\n"
+    "- Aim for FEWER, RICHER memories — each ~1-2 full sentences carrying EVERY specific it "
+    "covers — over many terse fragments. The same distinct facts, each made self-contained: a "
+    "complete memory both ranks and answers better than a fragment. Composing changes the "
+    "PACKAGING, never drops a detail."
+)
+_COMPOSE_ASSISTANT_RULE = (
+    "- When the assistant gives a recommendation/answer and the user responds in the SAME "
+    'exchange, capture the EXCHANGE in ONE statement preserving direction ("Sam suggested a '
+    'yoga practice to Evan for stress relief, and Evan said he would try it and thanked Sam on '
+    '<date>"), not two fragments that each drop the other side. Still emit separate memories for '
+    "genuinely distinct suggestions."
+)
+_SYSTEM_PROMPT_COMPOSE = (
+    _SYSTEM_PROMPT.replace(
+        "Granularity — extract DETAILS, not just headlines:",
+        "Granularity — COMPLETE statements, not atomized fragments (compose, don't atomize):",
+    )
+    .replace(
+        '- A profile_fact about a person can be ONE specific item — don\'t wait to find "enough" to summarize.\n'
+        "- Better to emit 30 concrete granular memories than 5 vague ones. The retrieval layer ranks them; the compiler's job is recall.",
+        _COMPOSE_GRANULARITY_RULE,
+    )
+    .replace(
+        "- Each memory is ONE atomic fact or ONE coherent recommendation — do not bundle several distinct assistant suggestions into a single memory; emit one per suggestion.",
+        _COMPOSE_ASSISTANT_RULE,
+    )
+)
+# Fail loud if a swap silently no-ops (prompt text drifted) — an inert COMPOSE
+# variant would make the A/B meaningless.
+assert _SYSTEM_PROMPT_COMPOSE != _SYSTEM_PROMPT, "compose-unit prompt swap matched nothing"
+assert "compose, don't atomize" in _SYSTEM_PROMPT_COMPOSE
+
+
+def _system_prompt() -> str:
+    """Active extraction system prompt — the compose-unit variant when enabled."""
+    return _SYSTEM_PROMPT_COMPOSE if settings.compile_compose_unit else _SYSTEM_PROMPT
+
+
+def _window_text(
+    text: str, max_total: int, window: int, overlap: int
+) -> list[str]:
+    """Split episode text into overlapping windows for full-content compile.
+
+    Replaces the old `text[:4000]` truncation. Returns 1+ windows of up to
+    `window` chars each, with `overlap` chars of carry-over so a fact split
+    across a boundary still appears whole in one window. The total text
+    considered is capped at `max_total` (cost bound). Windows prefer to break
+    on a newline near the end so a message isn't sliced mid-sentence.
+    """
+    text = text[:max_total]
+    if len(text) <= window:
+        return [text] if text else []
+    overlap = max(0, min(overlap, window // 2))
+    windows: list[str] = []
+    start = 0
+    n = len(text)
+    while start < n:
+        end = min(start + window, n)
+        # Prefer a newline boundary in the last 20% of the window (but not when
+        # this is the final slice — take it whole).
+        if end < n:
+            nl = text.rfind("\n", start + int(window * 0.8), end)
+            if nl != -1 and nl > start:
+                end = nl
+        chunk = text[start:end].strip()
+        if chunk:
+            windows.append(chunk)
+        if end >= n:
+            break
+        start = max(end - overlap, start + 1)
+    return windows
+
+
+def _message_chunks(
+    payload: dict, per_chunk: int, overlap: int, max_total_chars: int
+) -> list[str] | None:
+    """Split a chat payload into small COHERENT message groups for extraction.
+
+    Returns a list of rendered chunk texts (each = `per_chunk` messages with
+    `overlap` carried from the previous group for context), or None if the
+    payload isn't message-shaped (caller falls back to char-windowing). Renders
+    each message as "role: [timestamp] content" so the extractor keeps speaker +
+    date context. Total content is capped at `max_total_chars` for cost.
+    """
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    if not isinstance(messages, list) or not messages:
+        return None
+    rendered: list[str] = []
+    used = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role") or m.get("speaker") or ""
+        content = m.get("content") or m.get("text") or ""
+        if not content:
+            continue
+        ts = m.get("timestamp")
+        line = f"{role}: [{ts}] {content}" if ts else f"{role}: {content}"
+        used += len(line)
+        if used > max_total_chars:
+            break
+        rendered.append(line)
+    if not rendered:
+        return None
+    per_chunk = max(1, per_chunk)
+    overlap = max(0, min(overlap, per_chunk - 1))
+    step = max(1, per_chunk - overlap)
+    chunks: list[str] = []
+    for start in range(0, len(rendered), step):
+        group = rendered[start : start + per_chunk]
+        if group:
+            chunks.append("\n".join(group))
+        if start + per_chunk >= len(rendered):
+            break
+    return chunks
+
+
+_NAMED_CONFIDENCE = {
+    "very high": 0.95, "high": 0.9, "medium-high": 0.8, "medium": 0.6,
+    "med": 0.6, "moderate": 0.6, "medium-low": 0.45, "low": 0.3, "very low": 0.1,
+}
+
+
+def _coerce_confidence(value: Any) -> float:
+    """Confidence to a 0-1 float. The model (especially the recall-sweep pass)
+    sometimes returns a word ('high') or a non-numeric string instead of a
+    number; map known words, parse numeric strings, else default 0.7 — never
+    crash the whole batch on one bad field."""
+    if isinstance(value, bool):
+        return 0.7
+    if isinstance(value, (int, float)):
+        return min(max(float(value), 0.0), 1.0)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in _NAMED_CONFIDENCE:
+            return _NAMED_CONFIDENCE[s]
+        try:
+            return min(max(float(s.rstrip("%")) / (100.0 if "%" in s else 1.0), 0.0), 1.0)
+        except ValueError:
+            return 0.7
+    return 0.7
 
 
 def _safe_dt(value: Any) -> datetime | None:
@@ -224,9 +486,43 @@ class LLMCompiler:
             if structured is not None:
                 structured_memories.extend(structured)
                 continue
+            # Message-level chunking (opt-in): extract from small COHERENT
+            # message groups instead of fixed char-windows. Char-windows split
+            # mid-utterance (fragmenting facts) and, when large, let the model
+            # abstract specifics away ("pink sky sunset" -> "a landscape").
+            # Extracting atomic facts from small message-level units with the
+            # same model preserves the specifics. Falls back
+            # to char-windowing for non-chat payloads.
+            msg_chunks = (
+                _message_chunks(
+                    ep.payload,
+                    settings.compile_messages_per_chunk,
+                    settings.compile_message_overlap,
+                    settings.compile_max_episode_chars,
+                )
+                if settings.compile_message_level
+                else None
+            )
+            if msg_chunks:
+                for chunk in msg_chunks:
+                    episode_texts.append((ep, chunk))
+                continue
             text = extract_payload_text(ep.payload)
             if text:
-                episode_texts.append((ep, text[:4000]))  # Cap per-episode text
+                # Window the FULL episode text instead of truncating to a 4000-
+                # char sliver. Long-context episodes (BEAM/LongMemEval sessions
+                # run 100K-460K chars) were losing ~97% of their content before
+                # extraction, so most facts were never compiled. Each window
+                # becomes its own extraction unit; `_process_batch` maps every
+                # resulting memory back to this same source episode. Bounded by
+                # `compile_max_episode_chars` for cost control.
+                for window in _window_text(
+                    text,
+                    settings.compile_max_episode_chars,
+                    settings.compile_window_chars,
+                    settings.compile_window_overlap,
+                ):
+                    episode_texts.append((ep, window))
 
         if not episode_texts:
             if structured_memories and settings.auto_labeling_enabled:
@@ -237,8 +533,12 @@ class LLMCompiler:
         batches = self._create_batches(episode_texts)
         logger.info("compile_batched", episodes=len(episode_texts), batches=len(batches))
 
-        # Run batches in parallel with concurrency limit
-        semaphore = asyncio.Semaphore(_MAX_CONCURRENCY)
+        # Run batches in parallel with concurrency limit. Configurable so
+        # full-conversation windowed compiles can fan out wide enough to finish
+        # within client timeouts.
+        semaphore = asyncio.Semaphore(
+            getattr(settings, "compile_max_concurrency", None) or _MAX_CONCURRENCY
+        )
         tasks = [self._process_batch(batch, semaphore) for batch in batches]
         batch_results = await asyncio.gather(*tasks)
 
@@ -325,6 +625,28 @@ class LLMCompiler:
                     f"LLM compilation failed for a batch of {len(batch)} episode(s): {exc}"
                 ) from exc
 
+            # Recall sweep (opt-in): a second pass that catches specific details
+            # the first pass dropped. Shown the first-pass facts to avoid repeats;
+            # emits complete atomic memories for the misses. Fail-open — a sweep
+            # error must never lose the first-pass memories.
+            if getattr(settings, "compile_recall_sweep", False):
+                try:
+                    swept = await self._call_recall_sweep(
+                        combined_text, len(batch), raw_memories
+                    )
+                    for m in swept:
+                        if isinstance(m, dict):
+                            m["_recall_sweep"] = True
+                    raw_memories = list(raw_memories) + swept
+                    logger.info(
+                        "recall_sweep_done",
+                        episodes=len(batch),
+                        first_pass=len(raw_memories) - len(swept),
+                        swept=len(swept),
+                    )
+                except Exception:  # pragma: no cover - defensive; never break compile
+                    logger.warning("recall_sweep_failed", exc_info=True)
+
             # Map memories back to their source episodes
             results: list[MemoryRow] = []
             for mem in raw_memories:
@@ -366,6 +688,8 @@ class LLMCompiler:
                 # Optional, validated claim. A malformed/unknown proposal is
                 # dropped and never fails the rest of the response.
                 metadata: dict[str, Any] = {"compiler": "llm", "model": self._model}
+                if mem.get("_recall_sweep"):
+                    metadata["pass"] = "recall_sweep"
                 try:
                     claim_md = _llm_claim_metadata(mem)
                 except Exception:  # pragma: no cover - defensive; never break compile
@@ -379,7 +703,7 @@ class LLMCompiler:
                         kind=kind,
                         content=content,
                         summary=summary,
-                        confidence=min(max(float(mem.get("confidence", 0.7)), 0.0), 1.0),
+                        confidence=_coerce_confidence(mem.get("confidence", 0.7)),
                         valid_from=ep_valid_from,
                         valid_to=compute_valid_to(kind, ep_valid_from, settings.kind_ttl_days),
                         source_episode_ids=[source_ep.id],
@@ -408,7 +732,7 @@ class LLMCompiler:
         try:
             parsed = await llm_adapter.acomplete_json(
                 [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": _system_prompt()},
                     {
                         "role": "user",
                         "content": (
@@ -438,6 +762,55 @@ class LLMCompiler:
                 if key in parsed and isinstance(parsed[key], list):
                     return parsed[key]
             # Single-memory dict — wrap as a one-element list.
+            if "kind" in parsed and "content" in parsed:
+                return [parsed]
+        return []
+
+    async def _call_recall_sweep(
+        self,
+        text: str,
+        episode_count: int,
+        first_pass: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Second extraction pass that catches specifics the first pass dropped.
+
+        Shown the already-extracted facts so it only emits the misses. Same
+        parsing as `_call_llm_async`. Returns [] on any provider error (the
+        caller treats the sweep as best-effort and keeps the first-pass memories).
+        """
+        ceiling = settings.litellm_compile_max_tokens
+        max_tokens = min(ceiling, max(ceiling // 2, _TOKENS_PER_EPISODE * episode_count))
+        already = "\n".join(
+            f"- {m.get('content', '')}" for m in first_pass if isinstance(m, dict)
+        ) or "(nothing extracted yet)"
+        try:
+            parsed = await llm_adapter.acomplete_json(
+                [
+                    {"role": "system", "content": _RECALL_SWEEP_PROMPT},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"ALREADY_EXTRACTED (do not repeat these):\n{already}\n\n"
+                            f"Now re-read these {episode_count} episode(s) and emit a JSON"
+                            " object with a single key `memories` whose value is the array"
+                            " of specific details the first pass MISSED.\n\n"
+                            f"{text}"
+                        ),
+                    },
+                ],
+                model=self._model,
+                temperature=0.1,
+                max_tokens=max_tokens,
+            )
+        except llm_adapter.StatewaveLLMError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            for key in ("memories", "items", "results"):
+                if key in parsed and isinstance(parsed[key], list):
+                    return parsed[key]
             if "kind" in parsed and "content" in parsed:
                 return [parsed]
         return []

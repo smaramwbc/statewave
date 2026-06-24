@@ -48,6 +48,13 @@ async def delete_subject(
     # if the subject id is later reused.
     await repo.delete_resolutions_by_subject(session, subject_id, tenant_id=tenant_id)
     await repo.delete_health_cache_by_subject(session, subject_id, tenant_id=tenant_id)
+    # Phase 2: subject_entities is OUT-OF-BAND from memories (no FK
+    # since N entities can point at M memories, neither owns the other),
+    # so the cascade has to be explicit here too. Without this, a
+    # re-ingested subject would inherit stale entity rows pointing at
+    # memory_ids that no longer exist — Phase 3 retrieval would surface
+    # boost from ghost memories.
+    await repo.delete_entities_by_subject(session, subject_id, tenant_id=tenant_id)
     await session.commit()
     await webhooks.fire(
         "subject.deleted",

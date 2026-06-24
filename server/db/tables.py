@@ -6,14 +6,13 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text, func, text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy import Boolean, Computed, DateTime, Float, Index, Integer, String, Text, func, text
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, validates
 
-# Embedding dimensionality must match `LiteLLMEmbeddingProvider.dimensions`
-# and the `vector(N)` type in the schema. text-embedding-3-small at 1536
-# dims is the project default; bumping requires a migration that ALTERs
-# the column TYPE and rebuilds the HNSW index.
+# Embedding dimensionality must match the embedder output and the `vector(N)`
+# type in the schema. Fixed at 1536 (text-embedding-3-small), matching the
+# `vector(1536)` columns created in migration 0013.
 EMBEDDING_DIMENSIONS = 1536
 
 
@@ -128,6 +127,14 @@ class MemoryRow(Base):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIMENSIONS), nullable=True
     )
+    # Postgres-generated tsvector for the BM25 lane of hybrid retrieval.
+    # Mirrors migration 0027 (GENERATED ALWAYS ... STORED) so a `create_all`
+    # schema (tests) matches the migrated production schema.
+    content_tsvector: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', content)", persisted=True),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -135,7 +142,65 @@ class MemoryRow(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
-    __table_args__ = (Index("ix_memories_subject_kind", "subject_id", "kind"),)
+    __table_args__ = (
+        Index("ix_memories_subject_kind", "subject_id", "kind"),
+        Index("ix_memories_content_tsvector", "content_tsvector", postgresql_using="gin"),
+    )
+
+
+class SubjectEntityRow(Base):
+    """Per-subject entity store powering cross-session entity-boost retrieval.
+
+    Phase 2 of the cross-session retrieval improvements. Each row represents a distinct
+    entity (proper noun / compound noun phrase) extracted from any
+    compiled memory for the subject. `linked_memory_ids` is the N-to-M
+    edge to the memories the entity appears in — the retrieval lane
+    looks up entities matching the question, then boosts every memory in
+    any matched entity's `linked_memory_ids`. This is the mechanism that
+    lets retrieval bridge sessions when the same entity is mentioned in
+    multiple compiled memories without semantic similarity having to
+    catch every variation.
+
+    Populated at compile time (post-memory-insert hook) and at one-off
+    backfill for memories that pre-date this column. Schema mirrors
+    migration 0028 — see the migration docstring for index choices and
+    dedup behavior.
+    """
+
+    __tablename__ = "subject_entities"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    entity_text: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_normalized: Mapped[str] = mapped_column(Text, nullable=False)
+    entity_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(EMBEDDING_DIMENSIONS), nullable=True
+    )
+    linked_memory_ids: Mapped[list[uuid.UUID]] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    __table_args__ = (
+        Index("ix_subject_entities_subject_id", "subject_id"),
+        Index(
+            "ix_subject_entities_subject_normalized",
+            "subject_id",
+            "entity_normalized",
+        ),
+    )
 
 
 class WebhookEventRow(Base):

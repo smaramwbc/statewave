@@ -22,6 +22,7 @@ from server.db.tables import (
     QueryEmbeddingCacheRow,
     ReceiptRow,
     ResolutionRow,
+    SubjectEntityRow,
     SubjectHealthCacheRow,
     TenantConfigRow,
 )
@@ -415,6 +416,335 @@ async def search_memories_by_embedding(
     stmt = stmt.order_by(distance_expr).limit(limit)
     result = await session.execute(stmt)
     return [(row, float(distance)) for row, distance in result.all()]
+
+
+async def search_memories_hybrid(
+    session: AsyncSession,
+    subject_id: str,
+    query_text: str,
+    query_embedding: list[float],
+    *,
+    tenant_id: str | None = None,
+    kind: str | None = None,
+    limit: int = 20,
+    semantic_weight: float = 1.0,
+    bm25_weight: float = 1.0,
+    entity_weight: float = 1.0,
+    use_entity_boost: bool = True,
+    candidate_multiplier: int = 4,
+    entity_max_distance: float = 0.5,
+) -> list[tuple[MemoryRow, float, dict[str, float]]]:
+    """Hybrid retrieval: semantic cosine + Postgres BM25 ts_rank_cd +
+    cross-session entity boost, blended additively after sigmoid-style
+    normalization of each signal. Returns (row, final_score,
+    score_breakdown) tuples, ordered by final_score descending.
+
+    Why this exists: blending THREE retrieval signals — semantic
+    similarity, BM25 keyword rank, and an entity boost — recalls more
+    of the right memories than any single signal alone. Pure-pgvector
+    retrieval — what `search_memories_by_embedding` does — under-finds
+    memories whose surface form matches the question verbatim AND
+    memories that share an entity with the question but weren't picked
+    up by either semantic or BM25. The entity-boost lane is what
+    bridges across sessions: an entity ("Caroline", "the navy blazer")
+    is the natural join key when a question references something
+    mentioned in a memory the embedding cosine missed.
+
+    Scoring:
+      semantic_sim   = 1 - cosine_distance / 2     # [0, 1], 1 = identical
+      bm25_norm      = ts_rank / (1 + ts_rank)     # [0, 1), sigmoid-ish
+      entity_norm    = max boost from any matched entity              # [0, 1]
+                       (boost per entity = 1 - cosine_distance, capped)
+      final_score    = (semantic_weight * semantic_sim +
+                        bm25_weight    * bm25_norm    +
+                        (entity_weight * entity_norm if use_entity_boost else 0)) /
+                       (sum of active weights)
+
+    The defaults give equal weighting to semantic, BM25, and entity.
+    Operators can shift the blend via the weight kwargs — useful for
+    ablations + bench sweeps. Setting `use_entity_boost=False` reverts
+    to pure Phase-1 (semantic + BM25) behavior, which is what the
+    fallback path uses when the entity store is empty for the subject.
+
+    Entity boost mechanics (Phase 3):
+      1. Look up entities for the subject whose embedding cosine is
+         within `entity_max_distance` of the query embedding.
+      2. For each matched entity, collect its `linked_memory_ids`.
+      3. For each memory in the candidate set, the entity score is the
+         MAX boost across all matched entities pointing at it (so an
+         entity that's an exact query match boosts more than one that's
+         a paraphrase). Capped at 1.0.
+      4. Memories pointed at by a matched entity that AREN'T in the
+         semantic+BM25 candidate set get pulled in too (this is the
+         cross-session connective tissue that lifts multi-session recall).
+
+    `candidate_multiplier` controls how many candidates we draw from
+    each lane before re-blending (default 4× the final `limit`).
+    """
+    candidate_limit = max(limit * candidate_multiplier, limit)
+
+    # ── Semantic candidates ─────────────────────────────────────────────
+    distance_expr = MemoryRow.embedding.cosine_distance(query_embedding)
+    sem_stmt = (
+        select(MemoryRow, distance_expr.label("distance"))
+        .where(MemoryRow.subject_id == subject_id)
+        .where(MemoryRow.status == "active")
+        .where(MemoryRow.embedding.isnot(None))
+    )
+    sem_stmt = _unexpired(sem_stmt)
+    sem_stmt = _tenant_filter(sem_stmt, MemoryRow.tenant_id, tenant_id)
+    if kind:
+        sem_stmt = sem_stmt.where(MemoryRow.kind == kind)
+    sem_stmt = sem_stmt.order_by(distance_expr).limit(candidate_limit)
+    sem_rows = (await session.execute(sem_stmt)).all()
+
+    # ── BM25 candidates ─────────────────────────────────────────────────
+    # ts_rank_cd over the generated content_tsvector column (migration 0027).
+    # `plainto_tsquery` is the safe-for-untrusted-input variant — it
+    # treats the query as a phrase, no operator injection.
+    bm25_rank_expr = func.ts_rank_cd(
+        text("memories.content_tsvector"),
+        func.plainto_tsquery("english", query_text),
+    ).label("bm25_rank")
+    bm25_filter = text("memories.content_tsvector @@ plainto_tsquery('english', :q)")
+    bm25_stmt = (
+        select(MemoryRow, bm25_rank_expr)
+        .where(MemoryRow.subject_id == subject_id)
+        .where(MemoryRow.status == "active")
+        .where(bm25_filter)
+    )
+    bm25_stmt = _unexpired(bm25_stmt)
+    bm25_stmt = _tenant_filter(bm25_stmt, MemoryRow.tenant_id, tenant_id)
+    if kind:
+        bm25_stmt = bm25_stmt.where(MemoryRow.kind == kind)
+    bm25_stmt = bm25_stmt.order_by(bm25_rank_expr.desc()).limit(candidate_limit)
+    bm25_rows = (await session.execute(bm25_stmt, {"q": query_text})).all()
+
+    # ── Entity boost lane (Phase 3) ─────────────────────────────────────
+    # Look up subject entities matching the query embedding; for each,
+    # collect the memories they point at. A memory's entity boost is the
+    # max (1 - distance) across all matched entities pointing at it.
+    entity_boost_by_memory_id: dict[uuid.UUID, float] = {}
+    pulled_in_by_entity: dict[uuid.UUID, MemoryRow] = {}
+    if use_entity_boost:
+        entity_matches = await search_entities_by_embedding(
+            session,
+            subject_id,
+            query_embedding,
+            tenant_id=tenant_id,
+            limit=candidate_limit,
+            max_distance=entity_max_distance,
+        )
+        if entity_matches:
+            # Per-entity boost (higher when query is closer to the entity).
+            for entity_row, distance in entity_matches:
+                per_entity_boost = max(0.0, 1.0 - float(distance))
+                for mem_id in entity_row.linked_memory_ids:
+                    prior = entity_boost_by_memory_id.get(mem_id, 0.0)
+                    if per_entity_boost > prior:
+                        entity_boost_by_memory_id[mem_id] = per_entity_boost
+            # Pull in entity-only memories not already in semantic / BM25
+            # candidate sets. (One DB roundtrip for all of them.)
+            sem_ids = {row.id for row, _d in sem_rows}
+            bm25_ids = {row.id for row, _r in bm25_rows}
+            missing_ids = [
+                mid
+                for mid in entity_boost_by_memory_id
+                if mid not in sem_ids and mid not in bm25_ids
+            ]
+            if missing_ids:
+                pull_stmt = (
+                    select(MemoryRow)
+                    .where(MemoryRow.id.in_(missing_ids))
+                    .where(MemoryRow.subject_id == subject_id)
+                    .where(MemoryRow.status == "active")
+                )
+                pull_stmt = _unexpired(pull_stmt)
+                pull_stmt = _tenant_filter(pull_stmt, MemoryRow.tenant_id, tenant_id)
+                if kind:
+                    pull_stmt = pull_stmt.where(MemoryRow.kind == kind)
+                pull_stmt = pull_stmt.limit(candidate_limit)
+                for row in (await session.execute(pull_stmt)).scalars().all():
+                    pulled_in_by_entity[row.id] = row
+
+    # ── Build the merged candidate set ──────────────────────────────────
+    # Map id → (row, semantic_sim, bm25_norm, entity_norm). Each lane
+    # contributes independently; missing-signal scores stay 0.
+    by_id: dict[uuid.UUID, dict] = {}
+    for row, distance in sem_rows:
+        sim = max(0.0, 1.0 - float(distance) / 2.0)
+        by_id[row.id] = {"row": row, "semantic": sim, "bm25": 0.0, "entity": 0.0}
+    for row, raw_rank in bm25_rows:
+        norm = float(raw_rank) / (1.0 + float(raw_rank))
+        if row.id in by_id:
+            by_id[row.id]["bm25"] = norm
+        else:
+            by_id[row.id] = {"row": row, "semantic": 0.0, "bm25": norm, "entity": 0.0}
+    for mem_id, row in pulled_in_by_entity.items():
+        if mem_id not in by_id:
+            by_id[mem_id] = {"row": row, "semantic": 0.0, "bm25": 0.0, "entity": 0.0}
+    for mem_id, boost in entity_boost_by_memory_id.items():
+        if mem_id in by_id:
+            by_id[mem_id]["entity"] = boost
+
+    # ── Blend + rank ────────────────────────────────────────────────────
+    active_entity_w = entity_weight if use_entity_boost else 0.0
+    weight_sum = max(semantic_weight + bm25_weight + active_entity_w, 1e-9)
+    scored: list[tuple[MemoryRow, float, dict[str, float]]] = []
+    for entry in by_id.values():
+        final = (
+            semantic_weight * entry["semantic"]
+            + bm25_weight * entry["bm25"]
+            + active_entity_w * entry["entity"]
+        ) / weight_sum
+        scored.append(
+            (
+                entry["row"],
+                final,
+                {
+                    "semantic": entry["semantic"],
+                    "bm25": entry["bm25"],
+                    "entity": entry["entity"],
+                    "combined": final,
+                },
+            )
+        )
+    scored.sort(key=lambda t: t[1], reverse=True)
+    return scored[:limit]
+
+
+# ---------------------------------------------------------------------------
+# Subject entities (Phase 2 — cross-session entity-boost retrieval)
+# ---------------------------------------------------------------------------
+
+
+async def upsert_entity_with_link(
+    session: AsyncSession,
+    *,
+    subject_id: str,
+    tenant_id: str | None,
+    entity_text: str,
+    entity_normalized: str,
+    entity_kind: str | None,
+    embedding: list[float] | None,
+    memory_id: uuid.UUID,
+    dedup_cosine_threshold: float = 0.95,
+) -> SubjectEntityRow:
+    """Insert or merge an entity row for (subject_id, normalized text /
+    cosine-similar embedding), appending memory_id to linked_memory_ids.
+
+    Dedup order:
+      1. Exact match on (subject_id, entity_normalized) — cheapest.
+         If found, append memory_id and return.
+      2. If miss AND embedding provided, cosine-distance probe against
+         all entities for the same subject; merge if any row is within
+         `dedup_cosine_threshold` (default 0.95).
+      3. Otherwise insert a new row with [memory_id] as the initial
+         linkage.
+
+    The cosine probe uses pgvector's `<=>` operator and reads the HNSW
+    index from migration 0028 — sub-millisecond at our scales. The
+    same-normalization fast path skips the probe entirely for the
+    ~80% of duplicates that are trivial casing/whitespace variants.
+
+    Idempotent on repeated memory_id linkage: if memory_id is already
+    in linked_memory_ids, the append is a no-op (Postgres array
+    `array_append` would duplicate; we guard with `NOT (memory_id =
+    ANY(linked_memory_ids))`).
+    """
+    # Step 1: exact-match dedup
+    exact_stmt = select(SubjectEntityRow).where(
+        SubjectEntityRow.subject_id == subject_id,
+        SubjectEntityRow.entity_normalized == entity_normalized,
+    )
+    if tenant_id is not None:
+        exact_stmt = exact_stmt.where(SubjectEntityRow.tenant_id == tenant_id)
+    exact = (await session.execute(exact_stmt)).scalar_one_or_none()
+    if exact is not None:
+        if memory_id not in exact.linked_memory_ids:
+            # SQLAlchemy doesn't detect mutations to ARRAY columns
+            # in-place; rebuild + reassign so the update flushes.
+            exact.linked_memory_ids = [*exact.linked_memory_ids, memory_id]
+        return exact
+
+    # Step 2: semantic dedup (only if we have an embedding to compare with)
+    if embedding is not None:
+        distance_expr = SubjectEntityRow.embedding.cosine_distance(embedding)
+        near_stmt = (
+            select(SubjectEntityRow, distance_expr.label("distance"))
+            .where(SubjectEntityRow.subject_id == subject_id)
+            .where(SubjectEntityRow.embedding.isnot(None))
+        )
+        if tenant_id is not None:
+            near_stmt = near_stmt.where(SubjectEntityRow.tenant_id == tenant_id)
+        near_stmt = near_stmt.order_by(distance_expr).limit(1)
+        near_row = (await session.execute(near_stmt)).first()
+        if near_row is not None:
+            existing_row, distance = near_row
+            # Cosine distance ≤ (1 - threshold) ⇒ similarity ≥ threshold.
+            if float(distance) <= (1.0 - dedup_cosine_threshold):
+                if memory_id not in existing_row.linked_memory_ids:
+                    existing_row.linked_memory_ids = [
+                        *existing_row.linked_memory_ids,
+                        memory_id,
+                    ]
+                return existing_row
+
+    # Step 3: insert fresh
+    fresh = SubjectEntityRow(
+        subject_id=subject_id,
+        tenant_id=tenant_id,
+        entity_text=entity_text,
+        entity_normalized=entity_normalized,
+        entity_kind=entity_kind,
+        embedding=embedding,
+        linked_memory_ids=[memory_id],
+    )
+    session.add(fresh)
+    return fresh
+
+
+async def search_entities_by_embedding(
+    session: AsyncSession,
+    subject_id: str,
+    query_embedding: list[float],
+    *,
+    tenant_id: str | None = None,
+    limit: int = 20,
+    max_distance: float = 0.5,
+) -> list[tuple[SubjectEntityRow, float]]:
+    """Find entities for a subject whose embedding is close to the query.
+    Returns (entity_row, cosine_distance) tuples ordered by distance asc.
+
+    `max_distance` is the cosine-distance cutoff (default 0.5 → cosine
+    similarity ≥ 0.5). Tighter than 0.5 misses paraphrased entities;
+    looser pollutes the boost lane with weak matches. Phase 3 retrieval
+    callers can tune this per-bench.
+    """
+    distance_expr = SubjectEntityRow.embedding.cosine_distance(query_embedding)
+    stmt = (
+        select(SubjectEntityRow, distance_expr.label("distance"))
+        .where(SubjectEntityRow.subject_id == subject_id)
+        .where(SubjectEntityRow.embedding.isnot(None))
+        .where(distance_expr <= max_distance)
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(SubjectEntityRow.tenant_id == tenant_id)
+    stmt = stmt.order_by(distance_expr).limit(limit)
+    rows = (await session.execute(stmt)).all()
+    return [(row, float(dist)) for row, dist in rows]
+
+
+async def delete_entities_by_subject(
+    session: AsyncSession, subject_id: str, *, tenant_id: str | None = None
+) -> int:
+    """Wipe every entity row for a subject. Mirrors
+    `delete_memories_by_subject` — used by the same cleanup path so
+    delete_subject(subject_id) removes both memories AND entities."""
+    stmt = delete(SubjectEntityRow).where(SubjectEntityRow.subject_id == subject_id)
+    stmt = _tenant_filter(stmt, SubjectEntityRow.tenant_id, tenant_id)
+    result = await session.execute(stmt)
+    return result.rowcount  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------

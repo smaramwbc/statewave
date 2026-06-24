@@ -46,6 +46,12 @@ def get_compiler() -> BaseCompiler:
     elif settings.compiler_type == "llm":
         from server.services.compilers.llm import LLMCompiler
 
-        return LLMCompiler(model=settings.litellm_model)
+        # Extraction model = the dedicated compile override when set, else the
+        # general model. Extraction-model strength is the dominant memory-quality
+        # lever (see config.litellm_compile_model), so this is the one knob to
+        # raise for cloud-parity memory.
+        return LLMCompiler(
+            model=settings.litellm_compile_model or settings.litellm_model
+        )
     else:
         raise ValueError(f"Unknown compiler type: {settings.compiler_type}")

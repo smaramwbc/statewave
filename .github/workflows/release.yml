@@ -16,24 +16,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out statewave
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: statewave
 
       - name: Check out statewave-py
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: smaramwbc/statewave-py
           path: statewave-py
 
       - name: Check out statewave-ts
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: smaramwbc/statewave-ts
           path: statewave-ts
 
       - name: Check out statewave-docs
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: smaramwbc/statewave-docs
           path: statewave-docs
@@ -57,18 +57,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out statewave
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: statewave
 
       - name: Check out statewave-docs
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: smaramwbc/statewave-docs
           path: statewave-docs
 
       - name: Check out statewave-web
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: smaramwbc/statewave-web
           path: statewave-web
@@ -88,7 +88,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3

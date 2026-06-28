@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 import structlog
 from fastapi import APIRouter, Header, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from server.core.config import settings
 from server.schemas.requests import TenantConfigPatch
@@ -2927,7 +2927,7 @@ class BulkDeleteFilter(BaseModel):
     subject_id_prefix: str | None = None
     """Match subjects whose id starts with this prefix (e.g. 'demo_web_')."""
 
-    older_than_days: int | None = None
+    older_than_days: int | None = Field(default=None, ge=1)
     """Match subjects whose most recent episode is older than N days."""
 
     tenant_id: str | None = None
@@ -2999,8 +2999,9 @@ async def _matching_subjects(
     from server.db.tables import EpisodeRow, MemoryRow
 
     async with engine_module.get_session_factory()() as session:
-        # Aggregate per (subject_id, tenant_id) from episodes — this is the
-        # authoritative grouping used elsewhere in admin.
+        # Aggregate per (subject_id, tenant_id) from both episodes and
+        # memories. Some subjects can be memory-only after import/clone flows,
+        # and a destructive admin preview must account for them too.
         ep_stmt = select(
             EpisodeRow.subject_id,
             EpisodeRow.tenant_id,
@@ -3008,7 +3009,8 @@ async def _matching_subjects(
             func.max(EpisodeRow.created_at).label("last_episode_at"),
         ).group_by(EpisodeRow.subject_id, EpisodeRow.tenant_id)
         if f.subject_id_prefix:
-            ep_stmt = ep_stmt.where(EpisodeRow.subject_id.like(f"{f.subject_id_prefix}%"))
+            prefix_pattern = f"{_like_escape(f.subject_id_prefix)}%"
+            ep_stmt = ep_stmt.where(EpisodeRow.subject_id.like(prefix_pattern, escape="\\"))
         if f.tenant_id:
             ep_stmt = ep_stmt.where(EpisodeRow.tenant_id == f.tenant_id)
         if f.older_than_days is not None:
@@ -3022,35 +3024,63 @@ async def _matching_subjects(
                 sub.c.last_episode_at,
             ).where(sub.c.last_episode_at < cutoff)
 
-        rows = (await session.execute(ep_stmt)).all()
+        ep_rows = (await session.execute(ep_stmt)).all()
 
-        # Memory counts per subject — separate query for clarity.
+        mem_stmt = select(
+            MemoryRow.subject_id,
+            MemoryRow.tenant_id,
+            func.count().label("mem_count"),
+        ).group_by(MemoryRow.subject_id, MemoryRow.tenant_id)
+        if f.subject_id_prefix:
+            prefix_pattern = f"{_like_escape(f.subject_id_prefix)}%"
+            mem_stmt = mem_stmt.where(MemoryRow.subject_id.like(prefix_pattern, escape="\\"))
+        if f.tenant_id:
+            mem_stmt = mem_stmt.where(MemoryRow.tenant_id == f.tenant_id)
+        mem_rows = (await session.execute(mem_stmt)).all()
+
+        def _row_matches_filter(subject_id: str, tenant_id: str | None) -> bool:
+            if f.subject_id_prefix and not subject_id.startswith(f.subject_id_prefix):
+                return False
+            if f.tenant_id and tenant_id != f.tenant_id:
+                return False
+            return True
+
+        ep_counts: dict[tuple[str, str | None], int] = {}
+        last_episode_at: dict[tuple[str, str | None], datetime | None] = {}
+        for r in ep_rows:
+            if not _row_matches_filter(r.subject_id, r.tenant_id):
+                continue
+            key = (r.subject_id, r.tenant_id)
+            ep_counts[key] = r.ep_count
+            last_episode_at[key] = r.last_episode_at
+
         mem_counts: dict[tuple[str, str | None], int] = {}
-        if rows:
-            mem_stmt = (
-                select(
-                    MemoryRow.subject_id,
-                    MemoryRow.tenant_id,
-                    func.count().label("mem_count"),
-                )
-                .where(MemoryRow.subject_id.in_([r.subject_id for r in rows]))
-                .group_by(MemoryRow.subject_id, MemoryRow.tenant_id)
-            )
-            for m in (await session.execute(mem_stmt)).all():
-                mem_counts[(m.subject_id, m.tenant_id)] = m.mem_count
+        for m in mem_rows:
+            if not _row_matches_filter(m.subject_id, m.tenant_id):
+                continue
+            mem_counts[(m.subject_id, m.tenant_id)] = m.mem_count
 
-    total_eps = sum(r.ep_count for r in rows)
-    total_mems = sum(mem_counts.values())
+    if f.older_than_days is not None:
+        # Age is defined by the most recent episode. Memory-only subjects do
+        # not have a last episode timestamp, so only the age-filtered episode
+        # aggregate can admit keys for this selector.
+        matched_keys = set(ep_counts)
+    else:
+        matched_keys = set(ep_counts) | set(mem_counts)
+
+    total_eps = sum(ep_counts.get(key, 0) for key in matched_keys)
+    total_mems = sum(mem_counts.get(key, 0) for key in matched_keys)
 
     matches: list[BulkDeleteSample] = []
-    for r in rows:
+    for subject_id, tenant_id in sorted(matched_keys, key=lambda k: (k[0], k[1] or "")):
+        last_seen = last_episode_at.get((subject_id, tenant_id))
         matches.append(
             BulkDeleteSample(
-                subject_id=r.subject_id,
-                tenant_id=r.tenant_id,
-                episode_count=r.ep_count,
-                memory_count=mem_counts.get((r.subject_id, r.tenant_id), 0),
-                last_episode_at=r.last_episode_at.isoformat() if r.last_episode_at else None,
+                subject_id=subject_id,
+                tenant_id=tenant_id,
+                episode_count=ep_counts.get((subject_id, tenant_id), 0),
+                memory_count=mem_counts.get((subject_id, tenant_id), 0),
+                last_episode_at=last_seen.isoformat() if last_seen else None,
             )
         )
     return matches, total_eps, total_mems
@@ -3120,6 +3150,33 @@ async def preview_bulk_delete(filter: BulkDeleteFilter):
     )
 
 
+async def _delete_subject_key(session, subject_id: str, tenant_id: str | None) -> tuple[int, int]:
+    """Delete exactly one concrete (subject_id, tenant_id) key.
+
+    Repository delete helpers keep their public single-tenant behavior where
+    tenant_id=None means "no tenant filter". Bulk delete works from concrete
+    preview samples, so None must instead mean the global tenant key.
+    """
+    from sqlalchemy import delete
+
+    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectHealthCacheRow
+
+    async def _delete_from(row_model) -> int:
+        stmt = delete(row_model).where(row_model.subject_id == subject_id)
+        if tenant_id is None:
+            stmt = stmt.where(row_model.tenant_id.is_(None))
+        else:
+            stmt = stmt.where(row_model.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        return int(result.rowcount or 0)
+
+    ep_n = await _delete_from(EpisodeRow)
+    mem_n = await _delete_from(MemoryRow)
+    await _delete_from(ResolutionRow)
+    await _delete_from(SubjectHealthCacheRow)
+    return ep_n, mem_n
+
+
 @router.post("/subjects/bulk-delete", response_model=BulkDeleteResult)
 async def commit_bulk_delete(req: BulkDeleteCommitRequest):
     """Commit a previously previewed filtered bulk delete.
@@ -3129,8 +3186,6 @@ async def commit_bulk_delete(req: BulkDeleteCommitRequest):
     request is rejected with 409 — the operator must re-preview.
     """
     from server.db import engine as engine_module
-    from server.db import repositories as repo
-
     if not req.confirm:
         raise HTTPException(status_code=400, detail="confirm must be true to commit a bulk delete")
     if _filter_is_empty(req):
@@ -3162,18 +3217,7 @@ async def commit_bulk_delete(req: BulkDeleteCommitRequest):
     async with engine_module.get_session_factory()() as session:
         for s in matches:
             try:
-                ep_n = await repo.delete_episodes_by_subject(
-                    session, s.subject_id, tenant_id=s.tenant_id
-                )
-                mem_n = await repo.delete_memories_by_subject(
-                    session, s.subject_id, tenant_id=s.tenant_id
-                )
-                await repo.delete_resolutions_by_subject(
-                    session, s.subject_id, tenant_id=s.tenant_id
-                )
-                await repo.delete_health_cache_by_subject(
-                    session, s.subject_id, tenant_id=s.tenant_id
-                )
+                ep_n, mem_n = await _delete_subject_key(session, s.subject_id, s.tenant_id)
                 await session.commit()
                 deleted_subjects += 1
                 deleted_eps += ep_n

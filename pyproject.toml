@@ -39,7 +39,7 @@ llm = [
 ]
 otel = [
     "opentelemetry-api>=1.43.0,<2",
-    "opentelemetry-sdk>=1.42.1,<2",
+    "opentelemetry-sdk>=1.43.0,<2",
     "opentelemetry-exporter-otlp>=1.43.0,<2",
 ]
 

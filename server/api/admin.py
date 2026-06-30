@@ -537,7 +537,21 @@ async def get_subject_detail(
         mem_count = await session.scalar(mem_count_stmt) or 0
 
         if ep_count == 0 and mem_count == 0:
-            raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
+            # Subject is known (e.g. referenced in compile_jobs) but has no data yet.
+            # Return zeroed stats rather than 404 so the admin UI can render the page.
+            return SubjectDetailResponse(
+                subject_id=subject_id,
+                tenant_id=tenant_id,
+                summary=SubjectSummary(
+                    episode_count=0,
+                    memory_count=0,
+                    session_count=0,
+                    first_seen_at=None,
+                    last_activity_at=None,
+                ),
+                health=None,
+                sla=None,
+            )
 
         # Get timestamps
         time_stmt = select(
@@ -2757,6 +2771,24 @@ async def purge_compile_jobs(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"deleted": deleted}
+
+
+@router.delete("/jobs/{job_id}")
+async def delete_compile_job(job_id: str):
+    """Delete a single terminal compile job by ID.
+
+    Only completed or failed jobs can be deleted — pending/running jobs
+    may still be held by the worker.
+    """
+    from server.services.compile_jobs_durable import delete_job
+
+    try:
+        found = await delete_job(job_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not found:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found")
+    return {"deleted": 1}
 
 
 @router.post("/jobs/reset-stuck")

@@ -307,6 +307,28 @@ async def purge_jobs(
         return count
 
 
+async def delete_job(job_id: str) -> bool:
+    """Delete a single terminal compile job by ID.
+
+    Returns True if the job was found and deleted, False if not found.
+    Raises ValueError if the job is not in a terminal state (completed/failed).
+    """
+    async with get_session_factory()() as session:
+        row = await session.get(CompileJobRow, job_id)
+        if row is None:
+            return False
+        if row.status not in TERMINAL_JOB_STATUSES:
+            raise ValueError(
+                f"Cannot delete job {job_id!r} with status {row.status!r} — "
+                "only terminal jobs (completed, failed) can be deleted"
+            )
+        subject_id = row.subject_id
+        await session.delete(row)
+        await session.commit()
+        logger.info("compile_job_deleted", job_id=job_id, subject_id=subject_id)
+        return True
+
+
 async def reset_stuck_jobs(threshold_minutes: int = 30) -> int:
     """Reset jobs stuck in `running` state back to `pending`.
 

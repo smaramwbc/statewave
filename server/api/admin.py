@@ -537,8 +537,20 @@ async def get_subject_detail(
         mem_count = await session.scalar(mem_count_stmt) or 0
 
         if ep_count == 0 and mem_count == 0:
-            # Subject is known (e.g. referenced in compile_jobs) but has no data yet.
-            # Return zeroed stats rather than 404 so the admin UI can render the page.
+            # Subject has no episodes or memories. Return 200 with zeroed stats only
+            # if it is referenced by at least one compile job (e.g. a staging subject
+            # that was purged after a successful build-swap cycle). Otherwise 404 —
+            # the subject genuinely does not exist.
+            from server.db.tables import CompileJobRow
+
+            job_exists_stmt = select(func.count()).select_from(CompileJobRow).where(
+                CompileJobRow.subject_id == subject_id
+            )
+            if tenant_id:
+                job_exists_stmt = job_exists_stmt.where(CompileJobRow.tenant_id == tenant_id)
+            job_count = await session.scalar(job_exists_stmt) or 0
+            if job_count == 0:
+                raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
             return SubjectDetailResponse(
                 subject_id=subject_id,
                 tenant_id=tenant_id,

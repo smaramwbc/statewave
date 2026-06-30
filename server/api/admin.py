@@ -3163,14 +3163,26 @@ async def delete_subject_admin(
     from server.db import engine as engine_module
     from server.db import repositories as repo
 
+    from sqlalchemy import delete as sa_delete
+
+    from server.db.tables import CompileJobRow
+
     async with engine_module.get_session_factory()() as session:
         ep_count = await repo.delete_episodes_by_subject(session, subject_id, tenant_id=tenant_id)
         mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
         await repo.delete_resolutions_by_subject(session, subject_id, tenant_id=tenant_id)
         await repo.delete_health_cache_by_subject(session, subject_id, tenant_id=tenant_id)
+
+        # Also clean up any compile jobs for this subject (including pending/running).
+        job_stmt = sa_delete(CompileJobRow).where(CompileJobRow.subject_id == subject_id)
+        if tenant_id:
+            job_stmt = job_stmt.where(CompileJobRow.tenant_id == tenant_id)
+        job_result = await session.execute(job_stmt)
+        job_count = job_result.rowcount or 0
+
         await session.commit()
 
-    if ep_count == 0 and mem_count == 0:
+    if ep_count == 0 and mem_count == 0 and job_count == 0:
         raise HTTPException(status_code=404, detail=f"Subject '{subject_id}' not found")
 
     await webhooks.fire(

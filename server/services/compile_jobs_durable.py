@@ -305,3 +305,31 @@ async def purge_jobs(
             tenant_id=tenant_id,
         )
         return count
+
+
+async def reset_stuck_jobs(threshold_minutes: int = 30) -> int:
+    """Reset jobs stuck in `running` state back to `pending`.
+
+    A job is stuck when it has been `running` for longer than
+    `threshold_minutes` — the worker that claimed it crashed or was
+    restarted before it could mark the job completed or failed.
+    Resetting to `pending` makes the next available worker pick it up
+    and rerun it cleanly.
+
+    Returns the count of jobs reset.
+    """
+    from datetime import timedelta
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=threshold_minutes)
+
+    async with get_session_factory()() as session:
+        result = await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.status == "running")
+            .where(CompileJobRow.started_at < cutoff)
+            .values(status="pending", started_at=None)
+        )
+        await session.commit()
+        count = result.rowcount or 0  # type: ignore[attr-defined]
+        logger.info("compile_jobs_stuck_reset", reset=count, threshold_minutes=threshold_minutes)
+        return count

@@ -2759,6 +2759,26 @@ async def purge_compile_jobs(
     return {"deleted": deleted}
 
 
+@router.post("/jobs/reset-stuck")
+async def reset_stuck_compile_jobs(
+    threshold_minutes: int = Query(
+        30, ge=1, le=1440, description="Jobs running longer than this many minutes are reset"
+    ),
+):
+    """Reset stuck compile jobs back to pending so a worker can retry them.
+
+    A job is stuck when its worker crashed or was restarted mid-run and
+    never marked the job completed or failed. This endpoint finds all jobs
+    that have been in `running` state longer than `threshold_minutes` and
+    resets them to `pending`, clearing `started_at` so they can be
+    reclaimed by the next available worker.
+    """
+    from server.services.compile_jobs_durable import reset_stuck_jobs
+
+    reset = await reset_stuck_jobs(threshold_minutes=threshold_minutes)
+    return {"reset": reset}
+
+
 # ─── Tenant Audit ───
 
 

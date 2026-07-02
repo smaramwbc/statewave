@@ -14,7 +14,7 @@ classifiers = [
     "Intended Audience :: Developers",
 ]
 dependencies = [
-    "fastapi>=0.138.0,<1",
+    "fastapi>=0.139.0,<1",
     "uvicorn[standard]>=0.49.0,<1",
     "pydantic>=2.13.4,<3",
     "pydantic-settings>=2.14.2,<3",

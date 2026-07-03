@@ -383,7 +383,11 @@ async def assemble_context(
             needed_episode_ids.add(sid)
     if needed_episode_ids:
         try:
-            src_episodes = await repo.get_episodes_by_ids(session, list(needed_episode_ids))
+            src_episodes = await repo.get_episodes_by_ids(
+                session,
+                list(needed_episode_ids),
+                tenant_id=tenant_id,
+            )
             ep_breadcrumb_by_id: dict[uuid.UUID, str] = {}
             for ep in src_episodes:
                 payload = ep.payload or {}

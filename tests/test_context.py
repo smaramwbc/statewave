@@ -358,6 +358,7 @@ def _mock_semantic_repos(
     async def _embed_query(_session_factory, _provider, _task):
         return [0.0] * 16  # shape doesn't matter — we mock the search
 
+    get_episodes_by_ids = AsyncMock(return_value=[])
     with (
         patch(
             "server.services.context.repo.search_memories",
@@ -387,11 +388,18 @@ def _mock_semantic_repos(
         ),
         patch(
             "server.services.context.repo.get_episodes_by_ids",
-            new_callable=AsyncMock,
-            return_value=[],
+            new=get_episodes_by_ids,
+        ),
+        patch(
+            "server.services.context.policy_service.resolve_active_bundle",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "server.services.receipts.repo.get_tenant_config",
+            new=AsyncMock(return_value=None),
         ),
     ):
-        yield
+        yield {"get_episodes_by_ids": get_episodes_by_ids}
 
 
 @pytest.mark.asyncio
@@ -519,3 +527,32 @@ async def test_lexical_bonus_does_not_override_strong_kind_signal_alone():
 
     assert str(fact.id) in result.provenance["fact_ids"]
     assert str(proc.id) in result.provenance["procedure_ids"]
+
+
+@pytest.mark.asyncio
+async def test_breadcrumb_source_episode_lookup_is_scoped_to_context_tenant():
+    episode_id = uuid.uuid4()
+    memory = _make_memory_row(
+        kind="procedure",
+        content="Install the tenant-scoped package from the private docs.",
+    )
+    memory.source_episode_ids = [episode_id]
+
+    with _mock_semantic_repos(
+        fact_rows=[],
+        procedure_rows=[memory],
+        summary_rows=[],
+        semantic_results=[],
+    ) as mocks:
+        session = AsyncMock()
+        await assemble_context(
+            session,
+            "statewave-support-docs",
+            "install private docs",
+            max_tokens=4000,
+            tenant_id="tenant-a",
+        )
+
+    mocks["get_episodes_by_ids"].assert_awaited_once_with(
+        session, [episode_id], tenant_id="tenant-a"
+    )

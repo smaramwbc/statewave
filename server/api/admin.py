@@ -1353,17 +1353,26 @@ async def memory_compiler_trace(
             mem_uuid = _uuid.UUID(memory_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid memory_id format")
-        row = await session.scalar(
+        stmt = (
             select(MemoryRow)
             .where(MemoryRow.id == mem_uuid)
             .where(MemoryRow.subject_id == subject_id)
         )
+        if tenant_id is not None:
+            stmt = stmt.where(MemoryRow.tenant_id == tenant_id)
+        row = await session.scalar(stmt)
         if row is None:
             raise HTTPException(status_code=404, detail="memory not found")
 
         episodes = []
         if row.source_episode_ids:
-            episodes = list(await get_episodes_by_ids(session, row.source_episode_ids))
+            episodes = list(
+                await get_episodes_by_ids(
+                    session,
+                    row.source_episode_ids,
+                    tenant_id=tenant_id,
+                )
+            )
 
     meta = row.metadata_ or {}
     compiler = meta.get("compiler", "unknown")

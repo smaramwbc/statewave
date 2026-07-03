@@ -226,10 +226,13 @@ async def mark_episodes_compiled(
 async def get_episodes_by_ids(
     session: AsyncSession,
     ids: list[uuid.UUID],
+    *,
+    tenant_id: str | None = None,
 ) -> Sequence[EpisodeRow]:
     if not ids:
         return []
     stmt = select(EpisodeRow).where(EpisodeRow.id.in_(ids))
+    stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.scalars().all()
 

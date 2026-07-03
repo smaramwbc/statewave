@@ -6,11 +6,34 @@ signatures accept tenant_id correctly.
 
 from __future__ import annotations
 
+import uuid
 from unittest.mock import MagicMock
 
-from server.db.repositories import _tenant_filter
+import pytest
+from sqlalchemy.dialects import postgresql
+
+from server.db.repositories import _tenant_filter, get_episodes_by_ids
 from server.db.tables import EpisodeRow, MemoryRow
 from server.core.dependencies import get_tenant_id
+
+
+class _ScalarRows:
+    def all(self):
+        return []
+
+
+class _ExecuteResult:
+    def scalars(self):
+        return _ScalarRows()
+
+
+class _CaptureSession:
+    def __init__(self):
+        self.statement = None
+
+    async def execute(self, statement):
+        self.statement = statement
+        return _ExecuteResult()
 
 
 class TestTenantFilter:
@@ -29,6 +52,17 @@ class TestTenantFilter:
         stmt.where.return_value = stmt
         _tenant_filter(stmt, EpisodeRow.tenant_id, "tenant-a")
         stmt.where.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_episodes_by_ids_applies_tenant_filter():
+    session = _CaptureSession()
+
+    await get_episodes_by_ids(session, [uuid.uuid4()], tenant_id="tenant-a")
+
+    compiled = session.statement.compile(dialect=postgresql.dialect())
+    assert "episodes.tenant_id =" in str(compiled)
+    assert "tenant-a" in compiled.params.values()
 
 
 class TestGetTenantIdDependency:

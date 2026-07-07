@@ -1231,12 +1231,13 @@ async def memory_provenance(
         raise HTTPException(status_code=400, detail="Invalid memory_id format")
 
     async with engine_module.get_session_factory()() as session:
-        mem_result = await session.execute(
-            select(MemoryRow).where(
-                MemoryRow.id == mem_uuid,
-                MemoryRow.subject_id == subject_id,
-            )
+        mem_stmt = select(MemoryRow).where(
+            MemoryRow.id == mem_uuid,
+            MemoryRow.subject_id == subject_id,
         )
+        if tenant_id is not None:
+            mem_stmt = mem_stmt.where(MemoryRow.tenant_id == tenant_id)
+        mem_result = await session.execute(mem_stmt)
         mem = mem_result.scalar_one_or_none()
         if mem is None:
             raise HTTPException(status_code=404, detail="Memory not found")
@@ -1246,22 +1247,24 @@ async def memory_provenance(
         # Fetch the source episodes
         episodes: list[EpisodeRow] = []
         if source_ep_ids:
-            ep_result = await session.execute(
-                select(EpisodeRow).where(EpisodeRow.id.in_(source_ep_ids))
-            )
+            ep_stmt = select(EpisodeRow).where(EpisodeRow.id.in_(source_ep_ids))
+            if tenant_id is not None:
+                ep_stmt = ep_stmt.where(EpisodeRow.tenant_id == tenant_id)
+            ep_result = await session.execute(ep_stmt)
             episodes = list(ep_result.scalars().all())
 
         # Sibling memories: share ≥1 source episode, are not this memory
         sibling_rows: list[MemoryRow] = []
         if source_ep_ids:
             for ep_id in source_ep_ids:
-                sib_result = await session.execute(
-                    select(MemoryRow).where(
-                        MemoryRow.subject_id == subject_id,
-                        MemoryRow.id != mem_uuid,
-                        ep_id == any_(MemoryRow.source_episode_ids),
-                    )
+                sib_stmt = select(MemoryRow).where(
+                    MemoryRow.subject_id == subject_id,
+                    MemoryRow.id != mem_uuid,
+                    ep_id == any_(MemoryRow.source_episode_ids),
                 )
+                if tenant_id is not None:
+                    sib_stmt = sib_stmt.where(MemoryRow.tenant_id == tenant_id)
+                sib_result = await session.execute(sib_stmt)
                 sibling_rows.extend(sib_result.scalars().all())
             # Deduplicate by id (a sibling may share multiple episodes)
             seen: set[uuid_module.UUID] = set()

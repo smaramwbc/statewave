@@ -446,6 +446,17 @@ async def search_memories(
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):
+    """Search a subject's memories by text or semantic similarity.
+
+    The `search_mode` field in the response reports which path actually ran,
+    so callers can tell whether semantic search really executed:
+    - `semantic`: embedding (or hybrid) search ran.
+    - `text`: plain text search — either `semantic` was not requested, or it
+      was requested without a `q` query (in which case it is ignored).
+    - `text_fallback`: `semantic` was requested with a `q`, but could not run
+      (no embedding provider configured, or the provider errored), so text
+      search ran instead. Check the server logs for the underlying cause.
+    """
     with span(
         "search_memories",
         {
@@ -457,6 +468,10 @@ async def search_memories(
             "rerank": rerank,
         },
     ):
+        # `search_mode` records which path actually ran (issue #281): text is
+        # the default; the semantic branch upgrades it to "semantic" on success
+        # or "text_fallback" if semantic was requested but could not run.
+        search_mode = "text"
         # Try semantic / hybrid search if requested and query text is provided
         if semantic and query:
             provider = get_embedding_provider()
@@ -501,7 +516,8 @@ async def search_memories(
                         else:
                             rows = rows[:limit]
                         return SearchMemoriesResponse(
-                            memories=[_to_response(row) for row in rows]
+                            memories=[_to_response(row) for row in rows],
+                            search_mode="semantic",
                         )
                     results = await repo.search_memories_by_embedding(
                         session,
@@ -512,17 +528,26 @@ async def search_memories(
                         limit=limit,
                     )
                     return SearchMemoriesResponse(
-                        memories=[_to_response(row) for row, _dist in results]
+                        memories=[_to_response(row) for row, _dist in results],
+                        search_mode="semantic",
                     )
                 except Exception:
                     logger.warning("semantic_search_failed_falling_back", exc_info=True)
-                    # Fall through to text search
+                    # Semantic was requested but errored — fall through to text
+                    # search and tell the caller it was a fallback.
+                    search_mode = "text_fallback"
+            else:
+                # Semantic requested with a query, but no embedding provider is
+                # configured — text search runs instead of semantic.
+                search_mode = "text_fallback"
 
         # Default: exact/text search
         rows = await repo.search_memories(
             session, subject_id, tenant_id=tenant_id, kind=kind, query=query, limit=limit
         )
-        return SearchMemoriesResponse(memories=[_to_response(r) for r in rows])
+        return SearchMemoriesResponse(
+            memories=[_to_response(r) for r in rows], search_mode=search_mode
+        )
 
 
 def _to_response(row) -> MemoryResponse:

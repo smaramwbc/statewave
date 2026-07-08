@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -67,6 +67,17 @@ class CompileMemoriesResponse(BaseModel):
 
 class SearchMemoriesResponse(BaseModel):
     memories: list[MemoryResponse]
+    search_mode: Literal["semantic", "text", "text_fallback"] = Field(
+        "text",
+        description=(
+            "Which search path actually ran: 'semantic' (embedding/hybrid "
+            "search executed), 'text' (plain text search — semantic was not "
+            "requested, or requested without a q), or 'text_fallback' "
+            "(semantic was requested with a q but could not run — no embedding "
+            "provider configured, or the provider errored — so text search ran "
+            "instead)."
+        ),
+    )
 
 
 class SessionInfo(BaseModel):

@@ -56,15 +56,21 @@ async def delete_subject(
     # boost from ghost memories.
     await repo.delete_entities_by_subject(session, subject_id, tenant_id=tenant_id)
     await session.commit()
-    await webhooks.fire(
-        "subject.deleted",
-        {
-            "subject_id": subject_id,
-            "episodes_deleted": ep_count,
-            "memories_deleted": mem_count,
-        },
-        tenant_id=tenant_id,
-    )
+    # Only fire the webhook when something was actually deleted (issue #282):
+    # deleting a missing subject (or the same subject twice) is a no-op, so a
+    # subject.deleted event with zero counts would be a spurious deletion
+    # signal to consumers (cache invalidation, audit, compliance records).
+    # The HTTP response stays 200 with honest zero counts either way.
+    if ep_count + mem_count > 0:
+        await webhooks.fire(
+            "subject.deleted",
+            {
+                "subject_id": subject_id,
+                "episodes_deleted": ep_count,
+                "memories_deleted": mem_count,
+            },
+            tenant_id=tenant_id,
+        )
     return DeleteSubjectResponse(
         subject_id=subject_id,
         episodes_deleted=ep_count,

@@ -327,3 +327,105 @@ async def test_get_event_status_without_tenant_filter_returns_event():
     ):
         result = await webhooks.get_event_status(row.id)
     assert result is not None and result["id"] == str(row.id)
+
+
+# ── purge_events (issue #279) ────────────────────────────────────────────────
+#
+# purge_events() is an operator-facing DESTRUCTIVE delete. These tests lock in
+# its two safety guards (no-filter, terminal-status) and its filter scoping so a
+# future refactor that drops a guard turns CI red.
+
+
+class _CaptureSession:
+    """Async-context session that records the statement passed to execute() and
+    reports a fixed rowcount, so tests can assert what the DELETE targets
+    without a live database."""
+
+    def __init__(self, rowcount: int = 0):
+        self.executed = None
+        self.committed = False
+        self._rowcount = rowcount
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def execute(self, statement):
+        self.executed = statement
+        return SimpleNamespace(rowcount=self._rowcount)
+
+    async def commit(self):
+        self.committed = True
+
+
+def _purge_sql(session) -> str:
+    """The captured DELETE rendered with literal values inlined, for asserting
+    on the WHERE clause."""
+    from sqlalchemy.dialects import postgresql
+
+    return str(
+        session.executed.compile(
+            dialect=postgresql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+
+
+async def test_purge_events_requires_at_least_one_filter():
+    """No-filter guard: purge_events() with no filters raises ValueError instead
+    of wiping every delivered + dead-letter event in one call."""
+    with pytest.raises(ValueError, match="at least one filter"):
+        await webhooks.purge_events()
+
+
+async def test_purge_events_rejects_non_terminal_status():
+    """Terminal-status guard: 'pending' is rejected — those events may still be
+    in flight in the delivery loop."""
+    with pytest.raises(ValueError, match="must be one of"):
+        await webhooks.purge_events(status="pending")
+
+
+async def test_purge_events_status_filter_targets_only_that_status():
+    """purge_events(status='delivered') deletes only delivered rows (dead_letter
+    is left untouched) and returns the deleted row count."""
+    session = _CaptureSession(rowcount=3)
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: session
+    ):
+        count = await webhooks.purge_events(status="delivered")
+
+    assert count == 3
+    assert session.committed
+    sql = _purge_sql(session)
+    assert "'delivered'" in sql
+    assert "'dead_letter'" not in sql  # only the requested status is purged
+
+
+async def test_purge_events_without_status_targets_all_terminal_only():
+    """With only an event_type filter, both terminal statuses are in scope and
+    'pending' never is."""
+    session = _CaptureSession(rowcount=2)
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: session
+    ):
+        count = await webhooks.purge_events(event_type="episode.created")
+
+    assert count == 2
+    sql = _purge_sql(session)
+    assert "'delivered'" in sql and "'dead_letter'" in sql
+    assert "'pending'" not in sql
+    assert "'episode.created'" in sql  # event_type filter applied
+
+
+async def test_purge_events_tenant_filter_applied():
+    """tenant_id filter scopes the delete to a single tenant."""
+    session = _CaptureSession(rowcount=1)
+    with patch(
+        "server.services.webhooks.get_session_factory", return_value=lambda: session
+    ):
+        count = await webhooks.purge_events(tenant_id="tenant-a")
+
+    assert count == 1
+    assert "'tenant-a'" in _purge_sql(session)

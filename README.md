@@ -4,7 +4,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![PyPI](https://img.shields.io/pypi/v/statewave)](https://pypi.org/project/statewave/)
-[![Docker Pulls](https://img.shields.io/docker/pulls/statewavedev/statewave)](https://hub.docker.com/r/statewavedev/statewave)
+[![Docker](https://img.shields.io/badge/docker-statewavedev%2Fstatewave-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/r/statewavedev/statewave)
 
 Statewave is the open-source memory runtime that gives AI agents reproducible, provenance-tagged context — without sampling-noise from query-time retrieval.
 

@@ -18,6 +18,7 @@ Exit codes:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
@@ -26,9 +27,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-async def main() -> int:
-    from server.services.migrations import check_migration_status
+def _status_prefix(kind: str, plain: bool) -> str:
+    if plain:
+        return {"error": "ERROR:", "success": "OK:", "warning": "WARN:"}[kind]
+    return {"error": "\u274c", "success": "\u2705", "warning": "\u26a0\ufe0f"}[kind]
 
+async def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="use ASCII status prefixes instead of Unicode symbols",
+    )
+    args = parser.parse_args(argv)
+
+    from server.services.migrations import check_migration_status
     print("=" * 60)
     print("  Statewave Migration Preflight Check")
     print("=" * 60)
@@ -37,7 +50,7 @@ async def main() -> int:
     status = await check_migration_status()
 
     if status.error:
-        print(f"❌ ERROR: {status.error}")
+        print(f"{_status_prefix('error', args.plain)} ERROR: {status.error}")
         print()
         print("Action: Fix the error above before proceeding.")
         return 1
@@ -54,16 +67,16 @@ async def main() -> int:
         print()
 
     if status.is_compatible:
-        print("✅ Schema is up to date. No migration needed.")
+        print(f"{_status_prefix('success', args.plain)} Schema is up to date. No migration needed.")
         return 0
 
     if status.current_revision is None:
-        print("⚠️  Fresh database detected. All migrations will be applied.")
+        print(f"{_status_prefix('warning', args.plain)} Fresh database detected. All migrations will be applied.")
         print()
         print("  Recommendation: proceed with `alembic upgrade head`")
         return 0
 
-    print(f"⚠️  {status.pending_count} migration(s) pending.")
+    print(f"{_status_prefix('warning', args.plain)} {status.pending_count} migration(s) pending.")
     print()
     print("  Pre-migration checklist:")
     print("    1. Back up the database")
@@ -75,7 +88,7 @@ async def main() -> int:
     print("  Rollback if needed:")
     print(f"    alembic downgrade {status.current_revision}")
     print()
-    print("✅ Safe to proceed with migration.")
+    print(f"{_status_prefix('success', args.plain)} Safe to proceed with migration.")
     return 0
 
 

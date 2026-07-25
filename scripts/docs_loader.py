@@ -61,7 +61,7 @@ SUBJECT_ID = "statewave-support-docs"
 PACK_VERSION = 1
 DEFAULT_BASE_URL = "https://github.com/smaramwbc/statewave-docs/blob/main"
 
-_HEADING_RE = re.compile(r"^(#{1,3})\s+(.+?)\s*$")
+_HEADING_RE = re.compile(r"^(#{1,3})[ \t]+(.*?)(?:[ \t]+#+[ \t]*)?$")
 _FENCE_RE = re.compile(r"^\s*```")
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9\s-]")
 _SLUG_SPACE_RE = re.compile(r"\s+")

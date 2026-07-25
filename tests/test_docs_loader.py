@@ -70,6 +70,23 @@ leaf body
     assert by_title["Leaf"].heading_path == ("Top", "Middle", "Leaf")
 
 
+def test_atx_closing_hashes_are_excluded_from_titles():
+    md = "## Getting Started ##\n\nbody\n"
+
+    section = chunk_markdown(md, "x.md")[0]
+
+    assert section.title == "Getting Started"
+    assert section.heading_path == ("Getting Started",)
+    assert section.url.endswith("#getting-started")
+
+
+def test_heading_hash_without_a_preceding_space_is_preserved():
+    md = "## C#\n\nbody\n"
+
+    section = chunk_markdown(md, "x.md")[0]
+
+    assert section.title == "C#"
+
 def test_heading_only_sections_are_dropped():
     md = """# Doc
 

@@ -10,11 +10,10 @@ primary_region = 'ord'
   STATEWAVE_LITELLM_MODEL = "gpt-4o-mini"
   STATEWAVE_LITELLM_EMBEDDING_MODEL = "text-embedding-3-small"
   STATEWAVE_EMBEDDING_DIMENSIONS = "1536"
-  # Production seeds the docs pack via the dedicated GitHub Actions
-  # refresh workflow (purge + rebuild on docs-repo push). The image
-  # itself doesn't bundle the corpus, so the start-time auto-bootstrap
-  # would silently skip — but disable it explicitly to avoid any
-  # confusion in the Fly logs.
+  # The optional /docs bootstrap is disabled in this image because there is
+  # no mounted documentation corpus. start.sh keeps the support subject
+  # current instead by idempotently reseeding the bundled starter pack after
+  # the API is ready.
   STATEWAVE_BOOTSTRAP_DOCS_PACK = "false"
 
 [http_service]

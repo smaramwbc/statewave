@@ -39,7 +39,7 @@ jobs:
           path: statewave-docs
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -74,7 +74,7 @@ jobs:
           path: statewave-web
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 

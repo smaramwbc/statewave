@@ -56,3 +56,57 @@ jobs:
 
       - name: Integration tests
         run: pytest tests/integration/ -v
+
+  # The test job installs the package from the source tree, so it never
+  # exercises the image we actually ship. A PR can be green and still produce a
+  # container that exits during boot — which docker-publish would then push as
+  # `latest`. Build the image and prove it serves /healthz before that happens.
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: statewave
+          POSTGRES_PASSWORD: statewave
+          POSTGRES_DB: statewave
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U statewave"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build image
+        run: docker build -t statewave:smoke .
+
+      - name: Start container
+        run: |
+          docker run -d --name statewave-smoke --network host \
+            -e STATEWAVE_DATABASE_URL=postgresql+asyncpg://statewave:statewave@localhost:5432/statewave \
+            statewave:smoke
+
+      - name: Probe /healthz
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS http://localhost:8100/healthz > /dev/null 2>&1; then
+              echo "Container healthy after ${i}s."
+              exit 0
+            fi
+            if [ -z "$(docker ps -q --filter name=statewave-smoke --filter status=running)" ]; then
+              echo "::error::Container exited during boot (code $(docker inspect -f '{{.State.ExitCode}}' statewave-smoke))."
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::Timed out waiting for /healthz."
+          exit 1
+
+      - name: Container logs
+        if: always()
+        run: docker logs statewave-smoke || true

@@ -60,6 +60,15 @@ packages = ["server"]
 target-version = "py311"
 line-length = 100
 
+[tool.ruff.lint]
+# Pin the rule set explicitly instead of inheriting ruff's defaults, which
+# change between releases: 0.16 widened the default selection from 59 rules to
+# 413 and turned a routine version bump into 460 lint errors. These four
+# prefixes are exactly what ruff enforced by default through 0.15, so this
+# records the rules we already meet rather than changing the lint contract.
+# Widening the selection is tracked separately in #314.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"

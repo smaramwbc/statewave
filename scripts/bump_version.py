@@ -154,7 +154,10 @@ def cmd_check() -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("version", nargs="?", help="new version, e.g. 0.8.0")
     group.add_argument("--check", action="store_true", help="verify only, do not edit")

@@ -22,9 +22,17 @@ dependencies = [
     "asyncpg>=0.31.0,<1",
     "alembic>=1.18.5,<2",
     "pgvector>=0.5.0,<1",
+    # Used directly by the conflict-detection and clustering admin endpoints.
+    # It used to arrive transitively via pgvector, but pgvector 0.5.0 dropped
+    # the dependency, so it has to be declared explicitly.
+    "numpy>=1.26,<3",
     "tiktoken>=0.13.0,<1",
     "structlog>=26.1.0,<27",
     "pyyaml>=6.0.3,<7",
+    # Used directly by webhook delivery. It happened to be installed via the
+    # `llm` extra's dependency graph, so a core-only install had no httpx and
+    # webhook delivery raised ModuleNotFoundError.
+    "httpx>=0.28.1,<1",
 ]
 
 [project.optional-dependencies]

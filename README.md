@@ -1,3 +1,5 @@
+🚀 **Statewave is live on Product Hunt today.** If you're already running it, we'd love your honest take — [join the discussion](https://www.producthunt.com/products/statewave)
+
 # Statewave
 
 [![CI](https://github.com/smaramwbc/statewave/workflows/CI/badge.svg)](https://github.com/smaramwbc/statewave/actions/workflows/ci.yml)

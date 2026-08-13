@@ -20,7 +20,7 @@ dependencies = [
     "pydantic-settings>=2.14.2,<3",
     "sqlalchemy[asyncio]>=2.0.51,<3",
     "asyncpg>=0.31.0,<1",
-    "alembic>=1.18.5,<2",
+    "alembic>=1.19.1,<2",
     "pgvector>=0.5.0,<1",
     # Used directly by the conflict-detection and clustering admin endpoints.
     # It used to arrive transitively via pgvector, but pgvector 0.5.0 dropped

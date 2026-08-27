@@ -26,7 +26,7 @@ dependencies = [
     # It used to arrive transitively via pgvector, but pgvector 0.5.0 dropped
     # the dependency, so it has to be declared explicitly.
     "numpy>=2.4.6,<3",
-    "tiktoken>=0.13.0,<1",
+    "tiktoken>=0.14.0,<1",
     "structlog>=26.1.0,<27",
     "pyyaml>=6.0.3,<7",
     # Used directly by webhook delivery. It happened to be installed via the

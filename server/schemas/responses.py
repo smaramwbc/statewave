@@ -169,6 +169,8 @@ class TimelineResponse(BaseModel):
     subject_id: str
     episodes: list[EpisodeResponse]
     memories: list[MemoryResponse]
+    episodes_has_more: bool = False
+    memories_has_more: bool = False
 
 
 class DeleteSubjectResponse(BaseModel):

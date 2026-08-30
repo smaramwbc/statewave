@@ -42,6 +42,14 @@ async def create_resolution(
 
     result = await repo.upsert_resolution(session, row)
     await session.commit()
+    # `commit()` expires every instance in the session, so reading a column off
+    # `result` afterwards is lazy IO — which raises MissingGreenlet on the async
+    # engine and surfaces as a 500. It only bites on the UPDATE path: the INSERT
+    # path returns the instance this request just constructed, whose attributes
+    # are still populated locally, while the UPDATE path returns the row
+    # `upsert_resolution` loaded from the database. Same pattern as
+    # `POST /v1/episodes`, which refreshes for the same reason.
+    await session.refresh(result)
 
     return ResolutionResponse.from_row(result)
 

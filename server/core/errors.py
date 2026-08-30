@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = structlog.stdlib.get_logger()
@@ -39,7 +40,14 @@ def _request_id(request: Request) -> str | None:
     return getattr(request.state, "request_id", None)
 
 
-def _error_json(code: str, message: str, request: Request, details: Any = None, status: int = 500):
+def _error_json(
+    code: str,
+    message: str,
+    request: Request,
+    details: Any = None,
+    status: int = 500,
+    headers: dict[str, str] | None = None,
+):
     body = ErrorResponse(
         error=ErrorDetail(
             code=code,
@@ -48,7 +56,9 @@ def _error_json(code: str, message: str, request: Request, details: Any = None, 
             request_id=_request_id(request),
         )
     )
-    return JSONResponse(status_code=status, content=body.model_dump(exclude_none=True))
+    return JSONResponse(
+        status_code=status, content=body.model_dump(exclude_none=True), headers=headers
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +107,24 @@ def register_exception_handlers(app: FastAPI) -> None:
             message=message,
             request=request,
             status=exc.status_code,
+        )
+
+    @app.exception_handler(OperationalError)
+    async def operational_error_handler(request: Request, exc: OperationalError):
+        # A DB outage is not a bug in the handling endpoint; /readyz already
+        # reports 503 for the identical condition (ReadinessResult.http_status),
+        # so this keeps both surfaces agreeing on what a DB outage means.
+        logger.error(
+            "database_unavailable",
+            request_id=_request_id(request),
+            exc_msg=str(exc),
+        )
+        return _error_json(
+            code="service_unavailable",
+            message="The database is temporarily unavailable. Please retry shortly.",
+            request=request,
+            status=503,
+            headers={"Retry-After": "5"},
         )
 
     @app.exception_handler(Exception)

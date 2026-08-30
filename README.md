@@ -150,7 +150,7 @@ See the full [getting started guide](https://github.com/smaramwbc/statewave-docs
 | `POST` | `/v1/memories/compile` | Compile memories from episodes (idempotent) |
 | `GET` | `/v1/memories/search` | Search by kind, text, or semantic similarity |
 | `POST` | `/v1/context` | Assemble ranked, token-bounded context bundle |
-| `GET` | `/v1/timeline` | Chronological subject timeline |
+| `GET` | `/v1/timeline` | Chronological subject timeline (`newest_first` for recent history) |
 | `GET` | `/v1/subjects` | List known subjects with episode/memory counts |
 | `DELETE` | `/v1/subjects/{id}` | Permanently delete all data for a subject |
 | `POST` | `/v1/resolutions` | Track issue resolution state per session |

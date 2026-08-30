@@ -80,16 +80,20 @@ async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
         if row in session:
             session.expunge(row)
         existing = (
-            await session.execute(
-                select(EpisodeRow).where(
-                    EpisodeRow.subject_id == row.subject_id,
-                    EpisodeRow.idempotency_key == row.idempotency_key,
-                    EpisodeRow.tenant_id.is_(None)
-                    if row.tenant_id is None
-                    else EpisodeRow.tenant_id == row.tenant_id,
+            (
+                await session.execute(
+                    select(EpisodeRow).where(
+                        EpisodeRow.subject_id == row.subject_id,
+                        EpisodeRow.idempotency_key == row.idempotency_key,
+                        EpisodeRow.tenant_id.is_(None)
+                        if row.tenant_id is None
+                        else EpisodeRow.tenant_id == row.tenant_id,
+                    )
                 )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing is None:
             raise  # a non-idempotency constraint failed — don't swallow it
         return existing
@@ -297,7 +301,27 @@ async def list_memories_by_subject(
     tenant_id: str | None = None,
     limit: int = 100,
     offset: int = 0,
+    newest_first: bool = False,
 ) -> Sequence[MemoryRow]:
+    # `newest_first=True` selects the most-recent `limit` memories and returns
+    # them in ascending chronological order, exactly as
+    # `list_episodes_by_subject` does. Same reason: with the default ascending
+    # order a `limit` below the subject's lifetime count returns the OLDEST
+    # rows, so a bounded "recent" window is not otherwise expressible.
+    if newest_first:
+        stmt = (
+            select(MemoryRow)
+            .where(MemoryRow.subject_id == subject_id)
+            .order_by(MemoryRow.created_at.desc(), MemoryRow.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
+        result = await session.execute(stmt)
+        rows = list(result.scalars().all())
+        rows.reverse()  # newest-`limit` fetched desc → return ascending
+        return rows
+
     stmt = (
         select(MemoryRow)
         .where(MemoryRow.subject_id == subject_id)

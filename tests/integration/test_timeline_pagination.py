@@ -261,3 +261,46 @@ async def test_newest_first_pages_from_the_recent_end_without_dropping_the_newes
     body = page3.json()
     assert [e["id"] for e in body["episodes"]] == all_ids[:1]
     assert body["episodes_has_more"] is False
+
+
+async def test_rows_sharing_a_timestamp_page_newest_first_without_gaps_or_repeats(
+    client: AsyncClient, session_factory
+):
+    """Same total-order guarantee, paging from the newest end."""
+    subject_id = f"test-{uuid.uuid4().hex[:12]}"
+    await _seed(session_factory, subject_id, n_episodes=23, n_memories=17)
+
+    seen_episodes: list[str] = []
+    seen_memories: list[str] = []
+    offset = 0
+    while True:
+        response = await client.get(
+            "/v1/timeline",
+            params={"subject_id": subject_id, "limit": 5, "offset": offset, "newest_first": "true"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        seen_episodes += [e["id"] for e in body["episodes"]]
+        seen_memories += [m["id"] for m in body["memories"]]
+        if not body["episodes_has_more"] and not body["memories_has_more"]:
+            break
+        offset += 5
+
+    assert len(seen_episodes) == 23 and len(set(seen_episodes)) == 23
+    assert len(seen_memories) == 17 and len(set(seen_memories)) == 17
+
+
+async def test_newest_first_is_tenant_scoped(client: AsyncClient, session_factory):
+    """The newest_first branch applies the same tenant filter as the default path."""
+    subject_id = f"test-{uuid.uuid4().hex[:12]}"
+    await _seed(session_factory, subject_id, n_episodes=3, n_memories=1)
+
+    response = await client.get(
+        "/v1/timeline",
+        params={"subject_id": subject_id, "limit": 2, "newest_first": "true"},
+        headers={"X-Tenant-ID": "tenant-that-owns-nothing"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["episodes"] == [] and body["memories"] == []
+    assert body["episodes_has_more"] is False and body["memories_has_more"] is False

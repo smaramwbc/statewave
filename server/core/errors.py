@@ -114,10 +114,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         # A DB outage is not a bug in the handling endpoint; /readyz already
         # reports 503 for the identical condition (ReadinessResult.http_status),
         # so this keeps both surfaces agreeing on what a DB outage means.
+        # Starlette picks the most specific handler by exception class (MRO),
+        # so this wins over the Exception catch-all regardless of registration
+        # order. server/db/engine.py normalizes the asyncpg outage shapes that
+        # would otherwise bypass this handler (raw OSError at connect time,
+        # bare DBAPIError on a mid-query disconnect) into OperationalError.
         logger.error(
             "database_unavailable",
             request_id=_request_id(request),
-            exc_msg=str(exc),
+            exc_msg=str(exc)[:200],
         )
         return _error_json(
             code="service_unavailable",

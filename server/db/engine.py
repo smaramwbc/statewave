@@ -2,6 +2,7 @@
 
 from typing import AsyncGenerator
 
+from sqlalchemy import event, exc
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 from server.core.config import settings
@@ -9,6 +10,43 @@ from server.core.config import settings
 # Lazy engine initialization to avoid event loop binding at import time
 _engine: AsyncEngine | None = None
 _async_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def _install_outage_normalization(engine: AsyncEngine) -> None:
+    """Surface database outages uniformly as ``OperationalError``.
+
+    The asyncpg dialect leaks two outage shapes that bypass SQLAlchemy's usual
+    error translation, so the app-level ``OperationalError`` handler
+    (``server/core/errors.py``) would never see them:
+
+    - connect-time network failures (DB down/unreachable/DNS) escape as raw
+      ``OSError`` subclasses (``ConnectionRefusedError``, ``socket.gaierror``);
+    - a connection dying mid-query surfaces as a bare ``DBAPIError`` with
+      ``connection_invalidated=True`` instead of ``OperationalError``.
+
+    Both are re-wrapped here so callers see one exception type for "the
+    database is temporarily unavailable". Auth/config mistakes (bad password,
+    unknown database) and genuine SQL bugs take other exception types and are
+    deliberately left alone.
+    """
+
+    @event.listens_for(engine.sync_engine, "do_connect")
+    def _wrap_connect_oserror(dialect, conn_rec, cargs, cparams):
+        try:
+            return dialect.connect(*cargs, **cparams)
+        except OSError as exc_:  # ConnectionRefusedError, gaierror, timeout…
+            raise exc.OperationalError(
+                "database connection failed", None, exc_
+            ) from exc_
+
+    @event.listens_for(engine.sync_engine, "handle_error")
+    def _wrap_disconnect(context):
+        if context.is_disconnect and not isinstance(
+            context.sqlalchemy_exception, exc.OperationalError
+        ):
+            return exc.OperationalError(
+                "database connection lost", None, context.original_exception
+            )
 
 
 def get_engine() -> AsyncEngine:
@@ -24,6 +62,7 @@ def get_engine() -> AsyncEngine:
             pool_timeout=30,
             pool_recycle=300,
         )
+        _install_outage_normalization(_engine)
     return _engine
 
 

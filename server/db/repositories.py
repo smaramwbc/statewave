@@ -101,6 +101,7 @@ async def list_episodes_by_subject(
     *,
     tenant_id: str | None = None,
     limit: int = 100,
+    offset: int = 0,
     newest_first: bool = False,
 ) -> Sequence[EpisodeRow]:
     # Order by `occurred_at` (the source-event time) so backfilled episodes
@@ -113,12 +114,18 @@ async def list_episodes_by_subject(
     # bounded "recent activity" window MUST use it: with the default ascending
     # order, a `limit` smaller than the subject's lifetime episode count
     # returns the OLDEST `limit` rows — the opposite of recent.
+    #
+    # `offset` is applied within that same ordering, i.e. it pages through
+    # the newest-first window when `newest_first=True`, or the
+    # oldest-first window otherwise — it does not change which end of the
+    # timeline paging starts from.
     if newest_first:
         stmt = (
             select(EpisodeRow)
             .where(EpisodeRow.subject_id == subject_id)
-            .order_by(EpisodeRow.occurred_at.desc(), EpisodeRow.created_at.desc())
+            .order_by(EpisodeRow.occurred_at.desc(), EpisodeRow.created_at.desc(), EpisodeRow.id.desc())
             .limit(limit)
+            .offset(offset)
         )
         stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
         result = await session.execute(stmt)
@@ -129,8 +136,9 @@ async def list_episodes_by_subject(
     stmt = (
         select(EpisodeRow)
         .where(EpisodeRow.subject_id == subject_id)
-        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc())
+        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc(), EpisodeRow.id.asc())
         .limit(limit)
+        .offset(offset)
     )
     stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
@@ -154,7 +162,7 @@ async def list_episodes_by_session(
         select(EpisodeRow)
         .where(EpisodeRow.subject_id == subject_id)
         .where(EpisodeRow.session_id == session_id)
-        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc())
+        .order_by(EpisodeRow.occurred_at.asc(), EpisodeRow.created_at.asc(), EpisodeRow.id.asc())
         .limit(limit)
     )
     stmt = _tenant_filter(stmt, EpisodeRow.tenant_id, tenant_id)
@@ -277,7 +285,7 @@ async def search_memories(
         stmt = stmt.where(MemoryRow.kind == kind)
     if query:
         stmt = stmt.where(MemoryRow.content.ilike(f"%{query}%"))
-    stmt = stmt.order_by(MemoryRow.created_at.desc()).limit(limit)
+    stmt = stmt.order_by(MemoryRow.created_at.desc(), MemoryRow.id.desc()).limit(limit)
     result = await session.execute(stmt)
     return result.scalars().all()
 
@@ -288,12 +296,14 @@ async def list_memories_by_subject(
     *,
     tenant_id: str | None = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> Sequence[MemoryRow]:
     stmt = (
         select(MemoryRow)
         .where(MemoryRow.subject_id == subject_id)
-        .order_by(MemoryRow.created_at.asc())
+        .order_by(MemoryRow.created_at.asc(), MemoryRow.id.asc())
         .limit(limit)
+        .offset(offset)
     )
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
@@ -321,7 +331,7 @@ async def list_active_memories_by_subject(
         select(MemoryRow)
         .where(MemoryRow.subject_id == subject_id)
         .where(MemoryRow.status == "active")
-        .order_by(MemoryRow.created_at.asc())
+        .order_by(MemoryRow.created_at.asc(), MemoryRow.id.asc())
         .limit(limit)
     )
     stmt = _unexpired(stmt)

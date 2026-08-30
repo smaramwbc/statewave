@@ -220,3 +220,44 @@ async def test_rows_sharing_a_timestamp_page_without_gaps_or_repeats(
 
     assert len(seen_episodes) == 23 and len(set(seen_episodes)) == 23
     assert len(seen_memories) == 17 and len(set(seen_memories)) == 17
+
+
+async def test_newest_first_pages_from_the_recent_end_without_dropping_the_newest_row(
+    client: AsyncClient, session_factory
+):
+    """newest_first + limit/offset: the first page is the `limit` most recent
+    rows (returned ascending), has_more reports the older rows beyond it, and
+    offset walks further back. The over-fetch sentinel must be trimmed from the
+    OLD end here — a naive [:limit] would silently drop the newest row."""
+    subject_id = f"test-{uuid.uuid4().hex[:12]}"
+    await _seed(session_factory, subject_id, n_episodes=7, n_memories=0)
+
+    full = await client.get(
+        "/v1/timeline", params={"subject_id": subject_id, "limit": 200, "offset": 0}
+    )
+    all_ids = [e["id"] for e in full.json()["episodes"]]  # ascending, all 7
+    assert len(all_ids) == 7
+
+    page1 = await client.get(
+        "/v1/timeline",
+        params={"subject_id": subject_id, "limit": 3, "offset": 0, "newest_first": "true"},
+    )
+    body = page1.json()
+    assert [e["id"] for e in body["episodes"]] == all_ids[-3:]  # newest 3, still ascending
+    assert body["episodes_has_more"] is True
+
+    page2 = await client.get(
+        "/v1/timeline",
+        params={"subject_id": subject_id, "limit": 3, "offset": 3, "newest_first": "true"},
+    )
+    body = page2.json()
+    assert [e["id"] for e in body["episodes"]] == all_ids[-6:-3]
+    assert body["episodes_has_more"] is True
+
+    page3 = await client.get(
+        "/v1/timeline",
+        params={"subject_id": subject_id, "limit": 3, "offset": 6, "newest_first": "true"},
+    )
+    body = page3.json()
+    assert [e["id"] for e in body["episodes"]] == all_ids[:1]
+    assert body["episodes_has_more"] is False

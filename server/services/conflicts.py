@@ -13,9 +13,10 @@ Two paths, hybrid and strictly additive:
 
 * **Legacy path** (unchanged) — token-overlap (Jaccard) supersession for
   EVERYTHING else: unkeyed, malformed, unknown-key, unsupported-version,
-  multi-valued, and mixed keyed/unkeyed pairings, plus single-valued *same
-  value* duplicates (existing duplicate handling). Byte-identical to before for
-  any memory without a usable single-valued claim.
+  multi-valued, and mixed keyed/unkeyed pairings. Single-valued same-value
+  duplicates are collapsed by the claim path itself (#369), so the legacy pass
+  never touches keyed pairs. Byte-identical to before for any memory without a
+  usable single-valued claim.
 
 No opt-in flag, no schema change, no migration. The resolver runs only at
 compile time (``server.api.memories``); reads and server startup never invoke
@@ -97,8 +98,8 @@ async def resolve_conflicts(
     superseded_ids: list[uuid.UUID] = []
     # Claim path first; it marks losers status="superseded" in place, so the
     # legacy pass skips them via its existing status guard. The legacy pass
-    # additionally skips single-valued same-key *different-value* pairs so it
-    # can never undo a temporal coexistence the claim path established.
+    # additionally skips ALL single-valued keyed pairs so it can never undo a
+    # temporal-coexistence or duplicate call the claim path made (#369).
     superseded_ids.extend(_resolve_single_valued_claims(memories, claims))
     superseded_ids.extend(_legacy_resolve(memories, claims))
 
@@ -141,23 +142,38 @@ def _resolve_single_valued_claims(
                 if group[j].status != "active":
                     continue
                 cj = claims[group[j].id]
-                # Authoritative ONLY for a genuine contradiction: same bucket (by
-                # grouping) + DIFFERENT canonical value + OVERLAPPING validity.
-                # Same value is a duplicate (left to legacy dedup); non-
-                # overlapping windows coexist as history.
-                if ci.value == cj.value:
-                    continue
+                # Authoritative for same bucket + OVERLAPPING validity, in two
+                # flavours: a DIFFERENT canonical value is a contradiction, the
+                # SAME canonical value is a repeated observation — one fact, not
+                # N rows, regardless of wording (#369; previously left to the
+                # legacy lexical path, so a registered key's boundedness
+                # depended on Jaccard getting lucky with wording). Non-
+                # overlapping windows always coexist as history — the same
+                # value re-asserted for a later window is a re-assertion, not
+                # a duplicate.
                 if not _claim_overlap(group[i], ci, group[j], cj):
                     continue
                 superseded_ids.append(group[i].id)
                 group[i].status = "superseded"
-                group[i].valid_to = group[j].valid_from or datetime.now(timezone.utc)
+                # End the loser's window where the WINNER's claim says its
+                # validity starts — the same window _claim_cmp ordered on and
+                # _claim_overlap gated on; the row anchor is only a fallback.
+                # Clamp: a backfilled winner anchored before the loser's own
+                # valid_from must not fabricate a negative-length window.
+                end = _aware(cj.valid_from or group[j].valid_from or datetime.now(timezone.utc))
+                if group[i].valid_from is not None and end < _aware(group[i].valid_from):
+                    end = _aware(group[i].valid_from)
+                group[i].valid_to = end
                 logger.info(
                     "memory_superseded",
                     old_id=str(group[i].id),
                     new_id=str(group[j].id),
                     claim_key=ci.canonical_key,
-                    strategy="claim_contradiction",
+                    strategy=(
+                        "claim_contradiction"
+                        if ci.value != cj.value
+                        else "claim_duplicate"
+                    ),
                 )
                 break
     return superseded_ids
@@ -217,10 +233,9 @@ def _legacy_resolve(
             for j in range(i + 1, len(group)):
                 if group[j].status != "active":
                     continue
-                # The claim path owns single-valued same-key DIFFERENT-value
-                # pairs; never let lexical overlap undo its temporal/cardinality
-                # call. (Same-value duplicates are intentionally NOT skipped, so
-                # existing duplicate handling still dedups them.)
+                # The claim path owns every single-valued keyed pair —
+                # contradictions, duplicates, and temporal coexistence alike;
+                # never let lexical overlap undo its call (#369).
                 if _claim_owned_pair(group[i], group[j], claims):
                     continue
                 if _are_conflicting(group[i], group[j]):
@@ -242,12 +257,14 @@ def _claim_owned_pair(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, Resolv
     ca, cb = claims.get(a.id), claims.get(b.id)
     if ca is None or cb is None:
         return False  # a mixed keyed/unkeyed pair keeps existing legacy behavior
-    # The claim path owns EVERY pair of single-valued claims except an exact
-    # duplicate (same bucket + same value), which it defers to legacy dedup. In
-    # particular two DIFFERENT claim identities must coexist — lexical overlap
-    # between their texts must never supersede across distinct buckets (e.g.
-    # Stripe-card vs Stripe-ACH rates).
-    return not (ca.bucket == cb.bucket and ca.value == cb.value)
+    # The claim path owns EVERY pair of single-valued claims — contradictions,
+    # duplicates (it collapses those itself since #374), and temporal
+    # coexistence alike. Lexical overlap must never override its call: two
+    # DIFFERENT claim identities must coexist (e.g. Stripe-card vs Stripe-ACH
+    # rates), and a same-value pair the claim path deliberately left as
+    # non-overlapping history must not be re-superseded because the wording
+    # happens to be similar.
+    return True
 
 
 def _legacy_sort_key(m: MemoryRow) -> tuple[datetime, datetime, str]:

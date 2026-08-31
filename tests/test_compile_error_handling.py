@@ -36,6 +36,7 @@ class _FakeEpisode:
         self.subject_id = "user-1"
         self.payload = {"text": "My name is Alice and I work at Globex."}
         self.created_at = datetime(2026, 5, 29, tzinfo=timezone.utc)
+        self.occurred_at = None
 
 
 class _FakeSession:

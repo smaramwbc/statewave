@@ -74,7 +74,7 @@ class HeuristicCompiler:
         # Profile facts. Text/kind/count/order are unchanged; a conservatively
         # recognized single-valued claim (if any) is attached additively in
         # metadata_, otherwise metadata_ stays {} exactly as before.
-        for fact, claim_md in _extract_facts_with_claims(text):
+        for fact, claim_md in _extract_facts_with_claims(text, default_valid_from=ep_valid_from):
             results.append(
                 MemoryRow(
                     id=uuid.uuid4(),
@@ -111,9 +111,13 @@ def episode_valid_from(ep: EpisodeRow) -> datetime:
          on chat-shaped payloads. This is what LoCoMo, Slack, Zendesk
          etc emit naturally; preserving it as `valid_from` makes
          "when did X happen?" answerable from the resulting memory.
-      3. `ep.created_at` — when the episode was POSTed (the previous
+      3. `ep.occurred_at` — the first-class ingest field for "when the
+         source event actually happened"; backfilled connectors set it
+         explicitly. It server-defaults to ingest time, so for episodes
+         that never set it this is the same value as step 4.
+      4. `ep.created_at` — when the episode was POSTed (the previous
          hardcoded default).
-      4. `now()` — last resort if everything else is missing.
+      5. `now()` — last resort if everything else is missing.
 
     Returning a real event time instead of the POST time keeps
     Statewave's bi-temporal validity story honest: a memory whose
@@ -135,7 +139,7 @@ def episode_valid_from(ep: EpisodeRow) -> datetime:
             if parsed is not None:
                 return parsed
 
-    return ep.created_at or datetime.now(timezone.utc)
+    return ep.occurred_at or ep.created_at or datetime.now(timezone.utc)
 
 
 def _parse_event_time(value: str) -> datetime | None:
@@ -254,7 +258,9 @@ def _claim_blocked(text: str, m: "re.Match[str]") -> bool:
     return bool(_CLAIM_BLOCKERS.search(window))
 
 
-def _extract_facts_with_claims(text: str) -> list[tuple[str, dict | None]]:
+def _extract_facts_with_claims(
+    text: str, default_valid_from: datetime | None = None
+) -> list[tuple[str, dict | None]]:
     """Each extracted fact text, paired with an optional claim envelope.
 
     Claim emission is conservative by design: only the three tight single-valued
@@ -274,7 +280,13 @@ def _extract_facts_with_claims(text: str) -> list[tuple[str, dict | None]]:
                 if value and fact.lower().startswith(trigger) and not _claim_blocked(text, m):
                     # build_claim_envelope re-validates against the registry and
                     # returns None for anything it cannot confidently key.
-                    claim_md = build_claim_envelope(key, value, source="heuristic")
+                    # Anchor the claim to the episode's temporal anchor so
+                    # _claim_cmp orders on semantic time, not created_at ties
+                    # broken by random UUIDs (same rationale as the
+                    # structured-candidate path).
+                    claim_md = build_claim_envelope(
+                        key, value, valid_from=default_valid_from, source="heuristic"
+                    )
             out.append((fact, claim_md))
     return out
 

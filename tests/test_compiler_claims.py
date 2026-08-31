@@ -66,11 +66,16 @@ def test_heuristic_home_claim():
     assert f.metadata_["claim"]["value"] == "berlin"
 
 
-def test_heuristic_no_temporal_invented():
-    (f,) = _facts("I work at Globex")
-    assert "valid_from" not in f.metadata_["claim"]
-    assert "valid_to" not in f.metadata_["claim"]
-
+def test_heuristic_claim_anchor_is_the_episode_time_not_invented_content():
+    # The compiler must not INVENT temporal claims from text — but since the
+    # #369 follow-up it DOES anchor the claim to the episode's own timestamp
+    # (the same value the row's valid_from carries), so the resolver orders on
+    # semantic time instead of created_at ties. No valid_to is ever invented.
+    claims = [c for c in _claims("My name is Alice Chen") if c]
+    assert claims
+    for c in claims:
+        assert "valid_to" not in c
+        assert "valid_from" in c  # == episode anchor (created_at fallback here)
 
 # --- heuristic negatives: fact emitted, NO claim ------------------------------
 
@@ -262,3 +267,74 @@ async def test_compiler_uncertain_text_gains_no_supersession():
     (alice,) = _facts("My name is Alice Chen")
     alice.created_at = _NOW
     assert await _resolve([bob, alice]) == []
+
+
+# ─── Temporal anchoring (#369 follow-up: deterministic claim ordering) ───────
+
+
+def test_heuristic_claim_carries_the_episode_anchor():
+    ep = _ep("My name is Alice Chen")
+    ep.payload = dict(ep.payload or {}, event_time="2023-05-04T12:00:00+00:00")
+    results = HeuristicCompiler().compile([ep])
+    claimed = [m for m in results if m.metadata_.get("claim")]
+    assert claimed, "expected at least one claim-carrying fact"
+    for m in claimed:
+        assert m.metadata_["claim"]["valid_from"] == "2023-05-04T12:00:00+00:00"
+
+
+def test_llm_claim_defaults_to_the_provided_anchor():
+    from datetime import datetime, timezone
+
+    anchor = datetime(2023, 5, 4, 12, 0, tzinfo=timezone.utc)
+    md = _llm_claim_metadata(
+        {"claim": {"key": "employer", "value": "Globex"}}, default_valid_from=anchor
+    )
+    assert md["claim"]["valid_from"] == anchor.isoformat()
+
+
+def test_llm_model_supplied_valid_from_wins_over_the_anchor():
+    from datetime import datetime, timezone
+
+    anchor = datetime(2023, 5, 4, 12, 0, tzinfo=timezone.utc)
+    md = _llm_claim_metadata(
+        {"claim": {"key": "employer", "value": "Globex", "valid_from": "2020-01-01T00:00:00+00:00"}},
+        default_valid_from=anchor,
+    )
+    assert md["claim"]["valid_from"] == "2020-01-01T00:00:00+00:00"
+
+
+def test_llm_ended_fact_declines_the_anchor():
+    from datetime import datetime, timezone
+
+    anchor = datetime(2023, 5, 4, 12, 0, tzinfo=timezone.utc)
+    md = _llm_claim_metadata(
+        {"claim": {"key": "employer", "value": "Globex", "valid_to": "2019-01-01T00:00:00+00:00"}},
+        default_valid_from=anchor,
+    )
+    assert "valid_from" not in md["claim"]
+    assert md["claim"]["valid_to"] == "2019-01-01T00:00:00+00:00"
+
+
+def test_episode_valid_from_prefers_occurred_at_over_created_at():
+    from datetime import datetime, timezone
+
+    from server.services.compilers.heuristic import episode_valid_from
+
+    ep = _ep("backfilled fact")
+    ep.occurred_at = datetime(2022, 3, 1, tzinfo=timezone.utc)
+    ep.created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    assert episode_valid_from(ep) == ep.occurred_at
+
+
+def test_llm_naive_valid_to_keeps_the_claim():
+    """A naive (offset-less) LLM-proposed valid_to must not blow up the guard —
+    the call-site except would silently drop the whole claim (review finding)."""
+    from datetime import datetime, timezone
+
+    anchor = datetime(2023, 5, 4, 12, 0, tzinfo=timezone.utc)
+    md = _llm_claim_metadata(
+        {"claim": {"key": "employer", "value": "Globex", "valid_to": "2019-01-01T00:00:00"}},
+        default_valid_from=anchor,
+    )
+    assert md is not None
+    assert "valid_from" not in md["claim"]

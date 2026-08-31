@@ -302,6 +302,7 @@ async def list_memories_by_subject(
     limit: int = 100,
     offset: int = 0,
     newest_first: bool = False,
+    active_only: bool = False,
 ) -> Sequence[MemoryRow]:
     # `newest_first=True` selects the most-recent `limit` memories and returns
     # them in ascending chronological order, exactly as
@@ -316,6 +317,8 @@ async def list_memories_by_subject(
             .limit(limit)
             .offset(offset)
         )
+        if active_only:
+            stmt = _unexpired(stmt.where(MemoryRow.status == "active"))
         stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
         result = await session.execute(stmt)
         rows = list(result.scalars().all())
@@ -329,6 +332,8 @@ async def list_memories_by_subject(
         .limit(limit)
         .offset(offset)
     )
+    if active_only:
+        stmt = _unexpired(stmt.where(MemoryRow.status == "active"))
     stmt = _tenant_filter(stmt, MemoryRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.scalars().all()

@@ -34,6 +34,18 @@ async def get_timeline(
             "newest row, so `offset=limit` is the next-older page."
         ),
     ),
+    status: str = Query(
+        "all",
+        pattern="^(all|active)$",
+        description=(
+            "Memory rows to include: `all` (default — superseded and expired "
+            "rows are returned, matching the previous behaviour) or `active` "
+            "(only rows that are currently authoritative: status `active` and "
+            "not past their `valid_to`). Episodes are raw history and are "
+            "never filtered. Pagination and `memories_has_more` then count "
+            "only the included rows (#370)."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):
@@ -63,6 +75,7 @@ async def get_timeline(
         limit=limit + 1,
         offset=offset,
         newest_first=newest_first,
+        active_only=status == "active",
     )
     episodes_has_more = len(episodes) > limit
     memories_has_more = len(memories) > limit

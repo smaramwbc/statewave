@@ -210,10 +210,14 @@ async def test_negative_controls_coexist():
     assert res == []  # every distinct identity coexists; nothing superseded
 
 
-async def test_same_identity_same_value_not_a_contradiction():
+async def test_same_identity_same_value_collapses_as_duplicate():
     a = _mem("stripe a", _env(value=_V350), age=10)
     b = _mem("stripe b", _env(value=_V350), age=0)  # identical value, distinct text
-    assert await _resolve([a, b]) == []  # same value -> not a contradiction (coexist)
+    # Same value in the same bucket is not a contradiction — it is a repeated
+    # observation, and since #369's widening the claim path collapses it to one
+    # active row regardless of wording (strategy="claim_duplicate").
+    assert await _resolve([a, b]) == [a.id]
+    assert a.status == "superseded" and b.status == "active"
 
 
 async def test_distinct_buckets_with_identical_text_coexist():

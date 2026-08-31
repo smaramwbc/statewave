@@ -35,11 +35,18 @@ no word detection — purely the presence of accepted structured candidates.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
-from server.services.claims import build_claim_envelope, build_v2_envelope
+from server.services.claims import (
+    CLAIM_METADATA_KEY,
+    _parse_dt,
+    anchor_valid_from,
+    build_claim_envelope,
+    build_v2_envelope,
+)
 from server.services.compilers.heuristic import episode_valid_from
 from server.services.memory_ttl import compute_valid_to
 
@@ -92,23 +99,45 @@ def is_structured_episode(payload: Any) -> bool:
     return accepted_candidates(payload) is not None
 
 
-def _candidate_claim_metadata(claim: Any) -> dict | None:
+def _candidate_claim_metadata(claim: Any, *, default_valid_from: datetime | None = None) -> dict | None:
     """Validate a candidate's optional claim into a clean stored envelope, or
-    ``None`` (rule 3 → unkeyed). Producers never define authoritative scope."""
+    ``None`` (rule 3 → unkeyed). Producers never define authoritative scope.
+
+    ``default_valid_from`` anchors claims that do not carry their own
+    ``valid_from``: without one, ``_claim_cmp`` falls through to ``created_at``
+    — which ties for rows compiled in one transaction and then breaks the tie
+    on random UUIDs, making contradiction resolution non-deterministic. The
+    episode's temporal anchor (``episode_valid_from``) is what the produced
+    MemoryRow already records as its own ``valid_from``, so the claim and its
+    row stay consistent. A producer-supplied ``valid_from`` always wins.
+    """
     if not isinstance(claim, dict):
         return None
     version = claim.get("schema_version")
     if version == 2:
-        return build_v2_envelope(claim)
+        envelope = build_v2_envelope(claim)
+        if (
+            envelope
+            and envelope[CLAIM_METADATA_KEY].get("valid_from") is None
+        ):
+            default = anchor_valid_from(_parse_dt(envelope[CLAIM_METADATA_KEY].get("valid_to")), default_valid_from)
+            if default is not None:
+                envelope[CLAIM_METADATA_KEY]["valid_from"] = default.isoformat()
+        return envelope
     if version == 1:
+        valid_to = _parse_dt(claim.get("valid_to"))
         return build_claim_envelope(
             claim.get("key"),
             claim.get("value"),
+            valid_from=_parse_dt(claim.get("valid_from"))
+            or anchor_valid_from(valid_to, default_valid_from),
+            valid_to=valid_to,
             source=claim.get("source")
             if isinstance(claim.get("source"), str)
             else "structured_candidate",
         )
     return None
+
 
 
 def compile_candidates(ep: EpisodeRow) -> list[MemoryRow] | None:
@@ -129,7 +158,7 @@ def compile_candidates(ep: EpisodeRow) -> list[MemoryRow] | None:
         kind = _KIND_MAP[c["kind"].strip().lower()]
         text = c["text"]
         metadata: dict[str, Any] = dict(c.get("metadata") or {})
-        claim_md = _candidate_claim_metadata(c.get("claim"))
+        claim_md = _candidate_claim_metadata(c.get("claim"), default_valid_from=vf)
         if claim_md:
             metadata.update(claim_md)
         confidence = c.get("confidence")

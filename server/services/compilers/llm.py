@@ -39,6 +39,7 @@ from server.services.claims import (
     CLAIM_REGISTRY,
     SCOPE_SINGLE,
     build_claim_envelope,
+    anchor_valid_from,
 )
 from server.services.compilers.errors import CompilationError
 from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
@@ -410,7 +411,7 @@ def _safe_dt(value: Any) -> datetime | None:
         return None
 
 
-def _llm_claim_metadata(mem: dict) -> dict | None:
+def _llm_claim_metadata(mem: dict, default_valid_from: datetime | None = None) -> dict | None:
     """Validate an LLM-PROPOSED claim into an authoritative envelope, or None.
 
     The model is untrusted for canonicalization, scope, and registry membership:
@@ -426,11 +427,16 @@ def _llm_claim_metadata(mem: dict) -> dict | None:
     key, value = raw.get("key"), raw.get("value")
     if not isinstance(key, str) or not isinstance(value, str):
         return None
+    valid_to = _safe_dt(raw.get("valid_to"))
     return build_claim_envelope(
         key,
         value,
-        valid_from=_safe_dt(raw.get("valid_from")),
-        valid_to=_safe_dt(raw.get("valid_to")),
+        # Anchor to the episode when the model proposes no valid_from, so
+        # _claim_cmp orders on semantic time instead of created_at ties broken
+        # by random UUIDs; anchor_valid_from declines the default when it
+        # would invert a producer-supplied valid_to.
+        valid_from=_safe_dt(raw.get("valid_from")) or anchor_valid_from(valid_to, default_valid_from),
+        valid_to=valid_to,
         source="llm",
     )
 
@@ -691,7 +697,7 @@ class LLMCompiler:
                 if mem.get("_recall_sweep"):
                     metadata["pass"] = "recall_sweep"
                 try:
-                    claim_md = _llm_claim_metadata(mem)
+                    claim_md = _llm_claim_metadata(mem, default_valid_from=ep_valid_from)
                 except Exception:  # pragma: no cover - defensive; never break compile
                     claim_md = None
                 if claim_md:

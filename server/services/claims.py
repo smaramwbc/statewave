@@ -465,6 +465,25 @@ def build_v2_envelope(raw_claim: Any) -> dict | None:
     return {CLAIM_METADATA_KEY: env}
 
 
+
+def anchor_valid_from(valid_to: datetime | None, default_valid_from: datetime | None) -> datetime | None:
+    """A compiler's default ``valid_from`` anchor, unless it would invert the window.
+
+    A claim carrying only ``valid_to`` earlier than the episode anchor describes
+    a fact that ENDED before the episode ("lived in Paris until 2019", recorded
+    in 2023). Defaulting ``valid_from`` to the episode anchor would persist a
+    self-contradictory window (from AFTER to) — and make the ended fact look
+    newest to the resolver's ordering. Leave the start unknown instead;
+    resolution then falls back exactly as it did before the default existed.
+    """
+    if (
+        valid_to is not None
+        and default_valid_from is not None
+        and _aware(default_valid_from) >= _aware(valid_to)
+    ):
+        return None
+    return default_valid_from
+
 def intervals_overlap(
     a_from: datetime | None,
     a_to: datetime | None,

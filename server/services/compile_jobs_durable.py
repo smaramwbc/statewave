@@ -183,11 +183,13 @@ async def heartbeat(job_id: str) -> None:
         await session.commit()
 
 
-# A live job's heartbeat advances every completed LLM batch. 15 minutes of
+# A live job's heartbeat advances on every provider round-trip. 15 minutes of
 # silence across ALL concurrently in-flight batches means the owning task is
-# dead (restart), not slow — provider retries on a single batch stay well
-# under this. Deliberately below the bootstrap script's 1500s poll ceiling so
-# a resubmission after a poll timeout always sees an orphaned row as stale.
+# dead (restart), not slow. Below the bootstrap script's 1500s poll ceiling,
+# so a resubmission after a timeout classifies a job that died in the FIRST
+# 600s of the poll window as an orphan; a job that dies later still reads as
+# live at resubmission time and only the following start supersedes it — a
+# known gap accepted over the risk of superseding a live-but-quiet job.
 ACTIVE_STALE_SECONDS = 900.0
 
 
@@ -240,12 +242,26 @@ async def find_active_job(
                         subject_id=subject_id,
                     )
                 continue
-            row.status = "failed"
-            row.error = (
-                "orphaned: no heartbeat for "
-                f"{int(ACTIVE_STALE_SECONDS)}s — superseded by a new compile-start"
+            # Guarded UPDATE, not ORM attribute mutation: between our SELECT
+            # and this write the owning task may reach a terminal state (a
+            # >stale-threshold straggler completing), and flipping a
+            # `completed` row to `failed` would report a false failure. The
+            # status filter makes the supersede a no-op in that race.
+            await session.execute(
+                update(CompileJobRow)
+                .where(
+                    CompileJobRow.id == row.id,
+                    CompileJobRow.status.in_(["pending", "running"]),
+                )
+                .values(
+                    status="failed",
+                    error=(
+                        "orphaned: no heartbeat for "
+                        f"{int(ACTIVE_STALE_SECONDS)}s — superseded by a new compile-start"
+                    ),
+                    completed_at=now,
+                )
             )
-            row.completed_at = now
             logger.warning(
                 "compile_job_orphan_superseded",
                 job_id=row.id,

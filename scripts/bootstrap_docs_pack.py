@@ -387,15 +387,23 @@ async def run(docs_path: Path, purge: bool, dry_run: bool) -> None:
         await _ingest_batched(client, server_url, sections, STAGING_SUBJECT_ID)
         print("Compiling memories (async)...")
         compile_result = await _compile_async(client, server_url, STAGING_SUBJECT_ID)
-        staging_mem = int(compile_result.get("memories_created", 0) or 0)
-        print(f"  ✓ staging compiled {staging_mem} memories from {len(sections)} episodes")
+        attempt_mem = int(compile_result.get("memories_created", 0) or 0)
 
-        # 2. Verify staging BEFORE touching live. A zero-memory or failed
-        #    build (compiler regression, payload drift) aborts here and the
-        #    live pack is left exactly as it was.
+        # 2. Verify staging BEFORE touching live — on the EXPORTED content,
+        #    not the last attempt's `memories_created`: a resubmitted attempt
+        #    that merely resumed a nearly-finished job legitimately reports a
+        #    low (even zero) count while staging holds the full pack. A
+        #    zero-memory export (compiler regression, payload drift) aborts
+        #    here and the live pack is left exactly as it was.
+        document = await _export(client, server_url, STAGING_SUBJECT_ID)
+        staging_mem = len(document.get("memories", []) or [])
+        print(
+            f"  ✓ staging holds {staging_mem} memories from {len(sections)} episodes"
+            f" (last attempt created {attempt_mem})"
+        )
         if len(sections) > 0 and staging_mem == 0:
             print(
-                "\nERROR: staging compile returned 0 memories despite ingesting "
+                "\nERROR: staging holds 0 memories despite ingesting "
                 f"{len(sections)} episodes. Refusing to swap — the LIVE pack is "
                 "untouched.",
                 file=sys.stderr,
@@ -403,10 +411,9 @@ async def run(docs_path: Path, purge: bool, dry_run: bool) -> None:
             await _purge(client, server_url, STAGING_SUBJECT_ID)
             sys.exit(1)
 
-        # 3. Swap staging -> live: export the validated staging pack, replace
-        #    live with it in one fast import (no compile in the window).
+        # 3. Swap staging -> live: replace live with the validated staging
+        #    export in one fast import (no compile in the window).
         print(f"\nSwapping {STAGING_SUBJECT_ID!r} -> live {SUBJECT_ID!r}...")
-        document = await _export(client, server_url, STAGING_SUBJECT_ID)
         await _purge(client, server_url, SUBJECT_ID)
         result = await _import_into(client, server_url, document, SUBJECT_ID)
         imported = int(result.get("memories_imported", 0) or 0)

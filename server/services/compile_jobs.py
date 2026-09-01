@@ -157,9 +157,12 @@ async def find_active_job_durable(
 
     job = await _durable_find(subject_id, tenant_id)
     if job is not None:
-        # Refresh the cache (same shape as submit_job_durable) so
-        # same-process polls of the attached job see current state.
-        _jobs[job.id] = job
+        # Invalidate, never seed: this process may not OWN the job (on a
+        # multi-machine deploy the owning process's task is what mutates
+        # job state), so a cached snapshot here would serve "running"
+        # forever after the owner completes it. A cache miss falls through
+        # to Postgres on every poll, which is always current.
+        _jobs.pop(job.id, None)
     return job
 
 

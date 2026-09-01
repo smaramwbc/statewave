@@ -570,16 +570,10 @@ class LLMCompiler:
         semaphore = asyncio.Semaphore(
             getattr(settings, "compile_max_concurrency", None) or _MAX_CONCURRENCY
         )
-        async def _run_one(batch):
-            result = await self._process_batch(batch, semaphore)
-            # Liveness ping per completed batch (job heartbeat): lets a
-            # concurrent compile-start tell this live job from one whose
-            # owning process died. Awaited so pings can't pile up.
-            if progress_cb is not None:
-                await progress_cb()
-            return result
-
-        tasks = [_run_one(batch) for batch in batches]
+        tasks = [
+            self._process_batch(batch, semaphore, progress_cb=progress_cb)
+            for batch in batches
+        ]
         batch_results = await asyncio.gather(*tasks)
 
         # Flatten results (structured candidates first, then LLM extractions)
@@ -633,6 +627,7 @@ class LLMCompiler:
         self,
         batch: list[tuple[EpisodeRow, str]],
         combined_text: str,
+        progress_cb=None,
     ) -> list[dict]:
         """Extract one batch, halving and retrying if the output will not parse.
 
@@ -645,8 +640,14 @@ class LLMCompiler:
         extraction could not run at all, and the caller must see them.
         """
         try:
-            return await self._call_llm_async(combined_text, len(batch))
+            result = await self._call_llm_async(combined_text, len(batch))
         except LLMResponseError:
+            # Liveness ping (job heartbeat) even on a parse failure: a deep
+            # split-retry chain is many provider round-trips of real work,
+            # and going silent for its whole duration would let a concurrent
+            # compile-start misread this live job as orphaned.
+            if progress_cb is not None:
+                await progress_cb()
             if len(batch) == 1:
                 raise  # irreducible — _process_batch names the episode
             mid = len(batch) // 2
@@ -659,14 +660,24 @@ class LLMCompiler:
             out: list[dict] = []
             for half in halves:
                 out.extend(
-                    await self._extract_with_split_retry(half, _format_episode_blocks(half))
+                    await self._extract_with_split_retry(
+                        half, _format_episode_blocks(half), progress_cb=progress_cb
+                    )
                 )
             return out
+        else:
+            # One provider round-trip completed — liveness ping per round-trip
+            # (not per top-level batch) so even a batch that is splitting and
+            # retrying keeps its job's heartbeat fresh.
+            if progress_cb is not None:
+                await progress_cb()
+            return result
 
     async def _process_batch(
         self,
         batch: list[tuple[EpisodeRow, str]],
         semaphore: asyncio.Semaphore,
+        progress_cb=None,
     ) -> list[MemoryRow]:
         """Process a batch of episodes in a single LLM call."""
         async with semaphore:
@@ -681,7 +692,9 @@ class LLMCompiler:
             combined_text = _format_episode_blocks(batch)
 
             try:
-                raw_memories = await self._extract_with_split_retry(batch, combined_text)
+                raw_memories = await self._extract_with_split_retry(
+                    batch, combined_text, progress_cb=progress_cb
+                )
             except LLMResponseError as exc:
                 # A single episode whose extraction output will not parse, even
                 # alone. Still a raise (issue #201: never silently consume an

@@ -82,9 +82,14 @@ async def test_stale_heartbeat_job_is_superseded():
     with _patched_factory(session):
         job = await find_active_job("subj")
     assert job is None, "a stale job is dead — caller should submit a new one"
-    assert row.status == "failed"
-    assert "orphaned" in row.error
-    assert row.completed_at is not None
+    # The supersede is a guarded bulk UPDATE (status still pending/running in
+    # the WHERE) so a concurrent terminal transition wins — one execute for
+    # the SELECT, one for the UPDATE, then a commit.
+    assert session.execute.await_count == 2
+    update_stmt = session.execute.await_args_list[1].args[0]
+    compiled = str(update_stmt)
+    assert "UPDATE compile_jobs" in compiled
+    assert "status IN" in compiled, "supersede must be guarded on non-terminal status"
     session.commit.assert_awaited()
 
 
@@ -263,15 +268,16 @@ async def test_llm_compiler_pings_progress_per_batch():
         )
 
     compiler = LLMCompiler()
-    process = AsyncMock(return_value=[])
+    call = AsyncMock(return_value=[])
     cb = AsyncMock()
-    # Two ~4000-char episodes exceed the 6000-char batch budget → 2 batches.
+    # Two ~4000-char episodes exceed the 6000-char batch budget → 2 batches,
+    # each one provider round-trip.
     episodes = [_ep("x" * 4000), _ep("y" * 4000)]
-    with patch.object(compiler, "_process_batch", new=process):
+    with patch.object(compiler, "_call_llm_async", new=call):
         await compiler.compile_async(episodes, progress_cb=cb)
 
-    assert process.await_count >= 1
-    assert cb.await_count == process.await_count, "one liveness ping per completed batch"
+    assert call.await_count >= 1
+    assert cb.await_count == call.await_count, "one liveness ping per provider round-trip"
 
 
 async def test_llm_compiler_progress_cb_defaults_to_none():
@@ -294,6 +300,72 @@ async def test_llm_compiler_progress_cb_defaults_to_none():
         occurred_at=_NOW,
     )
     compiler = LLMCompiler()
-    with patch.object(compiler, "_process_batch", new=AsyncMock(return_value=[])):
+    with patch.object(compiler, "_call_llm_async", new=AsyncMock(return_value=[])):
         result = await compiler.compile_async([ep])
     assert result == []
+
+
+async def test_split_retry_pings_every_round_trip():
+    """A splitting batch is many provider round-trips of real work — its
+    job's heartbeat must advance through the whole chain, or a concurrent
+    compile-start misreads the live job as orphaned mid-split."""
+    import uuid
+
+    from server.db.tables import EpisodeRow
+    from server.services.compilers.llm import LLMCompiler
+    from server.services.llm import LLMResponseError
+
+    def _ep(text):
+        return EpisodeRow(
+            id=uuid.uuid4(),
+            subject_id="user-1",
+            source="test",
+            type="conversation",
+            payload={"text": text},
+            metadata_={},
+            provenance={},
+            created_at=_NOW,
+            occurred_at=_NOW,
+        )
+
+    calls = 0
+
+    async def fake_call(_text, count):
+        nonlocal calls
+        calls += 1
+        if count == 2:
+            raise LLMResponseError("unparseable")
+        return []
+
+    compiler = LLMCompiler()
+    cb = AsyncMock()
+    batch = [(_ep("a"), "a"), (_ep("b"), "b")]
+    with patch.object(compiler, "_call_llm_async", new=fake_call):
+        await compiler._extract_with_split_retry(batch, "a\nb", progress_cb=cb)
+
+    assert calls == 3, "full batch fails, two singleton halves succeed"
+    assert cb.await_count == calls, "one ping per round-trip, parse failures included"
+
+
+async def test_find_active_job_durable_invalidates_cache_never_seeds():
+    """The attaching process may not OWN the job; a cached snapshot here
+    would serve 'running' forever after the owner (another machine)
+    completes it. Attach must evict, not seed."""
+    import server.services.compile_jobs as compile_jobs_module
+    from server.services.compile_jobs import CompileJob, find_active_job_durable
+
+    stale_snapshot = CompileJob(id="live-9", subject_id="subj")
+    compile_jobs_module._jobs["live-9"] = stale_snapshot
+    fresh = CompileJob(id="live-9", subject_id="subj")
+    try:
+        with patch(
+            "server.services.compile_jobs_durable.find_active_job",
+            new=AsyncMock(return_value=fresh),
+        ):
+            job = await find_active_job_durable("subj")
+        assert job is fresh
+        assert "live-9" not in compile_jobs_module._jobs, (
+            "attach must invalidate the local cache so polls read Postgres"
+        )
+    finally:
+        compile_jobs_module._jobs.pop("live-9", None)

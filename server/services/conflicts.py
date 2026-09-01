@@ -45,6 +45,7 @@ from server.services.claims import (
     ResolvedClaim,
     intervals_overlap,
     resolve_claim,
+    load_tenant_claim_keys,
 )
 from server.services.tokenization import EDGE_PUNCT, tokenize
 
@@ -89,9 +90,15 @@ async def resolve_conflicts(
     # authoritative for the claim path; anything else (no claim, malformed,
     # unknown key, unsupported version, multi-valued) resolves to None here and
     # is handled exactly as today by the legacy lexical path.
+    # The tenant's own registered vocabulary (#376), read once per resolve so
+    # a consumer key is as authoritative for supersession as a built-in one.
+    # Empty for an untenanted server or a tenant that registered nothing —
+    # i.e. inert until an operator opts in.
+    extra_keys = await load_tenant_claim_keys(session, tenant_id)
+
     claims: dict[uuid.UUID, ResolvedClaim] = {}
     for m in memories:
-        rc = resolve_claim(m.metadata_)
+        rc = resolve_claim(m.metadata_, extra_keys)
         if rc is not None and rc.scope == SCOPE_SINGLE:
             claims[m.id] = rc
 

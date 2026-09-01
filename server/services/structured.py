@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
@@ -99,7 +99,12 @@ def is_structured_episode(payload: Any) -> bool:
     return accepted_candidates(payload) is not None
 
 
-def _candidate_claim_metadata(claim: Any, *, default_valid_from: datetime | None = None) -> dict | None:
+def _candidate_claim_metadata(
+    claim: Any,
+    *,
+    default_valid_from: datetime | None = None,
+    claim_keys: Mapping[str, Any] | None = None,
+) -> dict | None:
     """Validate a candidate's optional claim into a clean stored envelope, or
     ``None`` (rule 3 → unkeyed). Producers never define authoritative scope.
 
@@ -115,7 +120,7 @@ def _candidate_claim_metadata(claim: Any, *, default_valid_from: datetime | None
         return None
     version = claim.get("schema_version")
     if version == 2:
-        envelope = build_v2_envelope(claim)
+        envelope = build_v2_envelope(claim, claim_keys)
         if (
             envelope
             and envelope[CLAIM_METADATA_KEY].get("valid_from") is None
@@ -129,6 +134,7 @@ def _candidate_claim_metadata(claim: Any, *, default_valid_from: datetime | None
         return build_claim_envelope(
             claim.get("key"),
             claim.get("value"),
+            extra_keys=claim_keys,
             valid_from=_parse_dt(claim.get("valid_from"))
             or anchor_valid_from(valid_to, default_valid_from),
             valid_to=valid_to,
@@ -140,7 +146,9 @@ def _candidate_claim_metadata(claim: Any, *, default_valid_from: datetime | None
 
 
 
-def compile_candidates(ep: EpisodeRow) -> list[MemoryRow] | None:
+def compile_candidates(
+    ep: EpisodeRow, claim_keys: Mapping[str, Any] | None = None
+) -> list[MemoryRow] | None:
     """Compile an episode's accepted structured candidates into atomic memories,
     or ``None`` if the episode has none (caller uses the legacy path).
 
@@ -158,7 +166,9 @@ def compile_candidates(ep: EpisodeRow) -> list[MemoryRow] | None:
         kind = _KIND_MAP[c["kind"].strip().lower()]
         text = c["text"]
         metadata: dict[str, Any] = dict(c.get("metadata") or {})
-        claim_md = _candidate_claim_metadata(c.get("claim"), default_valid_from=vf)
+        claim_md = _candidate_claim_metadata(
+            c.get("claim"), default_valid_from=vf, claim_keys=claim_keys
+        )
         if claim_md:
             metadata.update(claim_md)
         confidence = c.get("confidence")

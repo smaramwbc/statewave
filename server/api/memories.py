@@ -24,6 +24,7 @@ from server.services.embeddings.backfill import schedule_embedding_backfill
 from server.services.conflicts import resolve_conflicts
 from server.services import webhooks
 from server.services import compile_jobs
+from server.services.claims import load_tenant_claim_keys
 from server.core.tracing import span
 from server.core.dependencies import get_tenant_id
 
@@ -78,14 +79,19 @@ async def _compile_one_batch(
         return [], 0, 0
 
     compiler = get_compiler()
+    # The tenant's own registered claim vocabulary (#376). Loaded once per
+    # batch and handed to the compiler, because the compiler has no session of
+    # its own. Empty unless an operator registered keys, so this is inert by
+    # default.
+    claim_keys = await load_tenant_claim_keys(session, tenant_id)
     # A CompilationError here propagates intentionally: nothing below this
     # point runs, so the episodes are never marked compiled or committed.
     if hasattr(compiler, "compile_async"):
-        new_rows = await compiler.compile_async(list(episodes))
+        new_rows = await compiler.compile_async(list(episodes), claim_keys=claim_keys)
     else:
         loop = asyncio.get_running_loop()
         new_rows = await loop.run_in_executor(
-            None, functools.partial(compiler.compile, list(episodes))
+            None, functools.partial(compiler.compile, list(episodes), claim_keys=claim_keys)
         )
 
     # Near-duplicate dedup (runs BEFORE reconcile). Full-conversation windowed

@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from server.core.config import settings
 from server.db.tables import EpisodeRow, MemoryRow
@@ -24,10 +24,12 @@ from server.services.memory_ttl import compute_valid_to
 class HeuristicCompiler:
     """Pattern-based memory compiler. Implements BaseCompiler protocol."""
 
-    def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
+    def compile(
+        self, episodes: Sequence[EpisodeRow], *, claim_keys: Mapping[str, Any] | None = None
+    ) -> list[MemoryRow]:
         memories: list[MemoryRow] = []
         for ep in episodes:
-            memories.extend(self._compile_episode(ep))
+            memories.extend(self._compile_episode(ep, claim_keys))
         # Auto-labeling runs post-construction: detectors only need
         # `content`, and running them once at the end keeps a single
         # apply path that's easy to test in isolation. Gated on the
@@ -36,13 +38,15 @@ class HeuristicCompiler:
             apply_suggestions(memories)
         return memories
 
-    def _compile_episode(self, ep: EpisodeRow) -> list[MemoryRow]:
+    def _compile_episode(
+        self, ep: EpisodeRow, claim_keys: Mapping[str, Any] | None = None
+    ) -> list[MemoryRow]:
         # Structured memory candidates short-circuit the heuristic path: compile
         # the producer-supplied atomic facts deterministically, NO catch-all
         # episode_summary. Lazy import avoids a heuristic<->structured cycle.
         from server.services.structured import compile_candidates
 
-        structured = compile_candidates(ep)
+        structured = compile_candidates(ep, claim_keys)
         if structured is not None:
             return structured
 

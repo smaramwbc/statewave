@@ -6,7 +6,7 @@ The get_compiler() factory returns the active compiler based on config.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 from server.db.tables import EpisodeRow, MemoryRow
 from server.services.compilers.errors import CompilationError
@@ -17,7 +17,9 @@ __all__ = ["BaseCompiler", "CompilationError", "get_compiler"]
 class BaseCompiler(Protocol):
     """Protocol that all memory compilers must satisfy."""
 
-    def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
+    def compile(
+        self, episodes: Sequence[EpisodeRow], *, claim_keys: Mapping[str, Any] | None = None
+    ) -> list[MemoryRow]:
         """Derive memory rows from a batch of episodes.
 
         Contract:

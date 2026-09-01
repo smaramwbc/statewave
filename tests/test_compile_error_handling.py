@@ -52,6 +52,18 @@ class _FakeSession:
     async def commit(self) -> None:
         self.commits += 1
 
+    async def execute(self, _stmt):
+        """No rows for any SELECT — enough for the tenant-config read that
+        `_compile_one_batch` now makes to load a tenant's own claim keys
+        (#376). A tenant with no config row is the dominant case."""
+
+        class _Empty:
+            @staticmethod
+            def scalar_one_or_none():
+                return None
+
+        return _Empty()
+
     async def refresh(self, row) -> None:  # pragma: no cover - no rows in these tests
         pass
 
@@ -104,7 +116,7 @@ async def test_failed_batch_does_not_consume_episodes(monkeypatch):
         marked.append(ids)
 
     class _RaisingCompiler:
-        async def compile_async(self, _eps):
+        async def compile_async(self, _eps, **_kw):
             raise CompilationError("LLM compilation failed: no reachable key")
 
     monkeypatch.setattr(api_memories.repo, "list_uncompiled_episodes", fake_list)
@@ -146,7 +158,7 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
         return None
 
     class _EmptyCompiler:
-        async def compile_async(self, _eps):
+        async def compile_async(self, _eps, **_kw):
             return []  # legitimate "extracted nothing"
 
     monkeypatch.setattr(api_memories.repo, "list_uncompiled_episodes", fake_list)

@@ -29,7 +29,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, Mapping
 
 import structlog
 from pydantic import BaseModel, ConfigDict, ValidationError
@@ -143,19 +143,92 @@ CLAIM_ALIASES: dict[str, str] = {
 }
 
 
-def canonicalize_key(raw_key: str | None) -> str | None:
+#: Keys a tenant registered for itself, keyed by canonical key. Supplied by the
+#: caller (loaded from ``tenant_configs.config.claim_keys``) rather than read
+#: from a global, so resolution stays a pure function of its inputs and one
+#: tenant's vocabulary can never leak into another's.
+TenantClaimKeys = Mapping[str, ClaimDefinition]
+
+
+
+
+async def load_tenant_claim_keys(session, tenant_id: str | None) -> dict[str, ClaimDefinition]:
+    """Build the tenant's own claim vocabulary from ``tenant_configs``.
+
+    Returns an empty mapping for the untenanted case and for a tenant that has
+    registered nothing — which is exactly the behaviour before #376, so the
+    feature is inert until an operator opts in.
+
+    Values are re-validated here rather than trusted from JSONB: the row could
+    predate a schema change, or have been written by direct SQL. An entry that
+    no longer makes sense is dropped with a log line instead of raising, so one
+    bad row can never break compilation for the whole tenant.
+    """
+    if not tenant_id:
+        return {}
+    from server.db import repositories as repo
+
+    row = await repo.get_tenant_config(session, tenant_id)
+    raw = ((row.config if row else None) or {}).get("claim_keys") or {}
+    if not isinstance(raw, dict):
+        logger.info("tenant_claim_keys_invalid", tenant_id=tenant_id, reason="not_a_mapping")
+        return {}
+
+    out: dict[str, ClaimDefinition] = {}
+    for key, scope in raw.items():
+        if key in CLAIM_REGISTRY:
+            continue  # a built-in always wins; never shadowed
+        if not isinstance(key, str) or scope not in (SCOPE_SINGLE, SCOPE_MULTI):
+            logger.info(
+                "tenant_claim_keys_invalid", tenant_id=tenant_id, key=str(key), scope=str(scope)
+            )
+            continue
+        out[key] = ClaimDefinition(key, scope)
+    return out
+
+
+def _definition_for(
+    canonical: str, extra_keys: TenantClaimKeys | None = None
+) -> ClaimDefinition:
+    """The authoritative definition for a canonical key.
+
+    Built-ins first, so a tenant key can never shadow one (see
+    :func:`canonicalize_key`). Only ever called with a key that
+    ``canonicalize_key`` already accepted, so the lookup cannot miss.
+    """
+    spec = CLAIM_REGISTRY.get(canonical)
+    if spec is not None:
+        return spec
+    return (extra_keys or {})[canonical]
+
+
+def canonicalize_key(
+    raw_key: str | None, extra_keys: TenantClaimKeys | None = None
+) -> str | None:
     """Map an envelope key (or approved alias) to a registered canonical key.
 
     Returns ``None`` for anything not explicitly registered — so unknown or
     drifted keys (employer vs works_at vs company are handled; arbitrary
     strings are not) never become authoritative contradiction buckets.
+
+    ``extra_keys`` carries the tenant's own registered vocabulary (#376). The
+    built-in registry always wins: a tenant cannot redefine `identity.name`,
+    so shipping a new built-in can never be silently shadowed by a tenant that
+    happened to pick the same name. Declaration is an operator action against
+    `PATCH /admin/tenants/{id}/config`, never something an episode payload can
+    do — cardinality stays authoritative rather than producer-supplied (#236).
     """
     if not raw_key or not isinstance(raw_key, str):
         return None
     key = raw_key.strip()
     if key in CLAIM_REGISTRY:
         return key
-    return CLAIM_ALIASES.get(key)
+    alias = CLAIM_ALIASES.get(key)
+    if alias is not None:
+        return alias
+    if extra_keys and key in extra_keys:
+        return key
+    return None
 
 
 def normalize_value(value: Any) -> str | None:
@@ -304,7 +377,9 @@ class ResolvedClaim:
     bucket: tuple = ()
 
 
-def resolve_claim(metadata: dict | None) -> ResolvedClaim | None:
+def resolve_claim(
+    metadata: dict | None, extra_keys: TenantClaimKeys | None = None
+) -> ResolvedClaim | None:
     """Parse + validate ``metadata['claim']`` into a :class:`ResolvedClaim`.
 
     Returns ``None`` (→ legacy behavior) for every unsafe case: no envelope,
@@ -319,14 +394,14 @@ def resolve_claim(metadata: dict | None) -> ResolvedClaim | None:
 
     version = raw.get("schema_version")
     if version == 1:
-        return _resolve_v1(raw)
+        return _resolve_v1(raw, extra_keys)
     if version == 2:
-        return _resolve_v2(raw)
+        return _resolve_v2(raw, extra_keys)
     logger.info("claim_envelope_unsupported_version", version=version)
     return None
 
 
-def _resolve_v1(raw: dict) -> ResolvedClaim | None:
+def _resolve_v1(raw: dict, extra_keys: TenantClaimKeys | None = None) -> ResolvedClaim | None:
     try:
         env = ClaimEnvelope.model_validate(raw)
     except ValidationError:
@@ -336,13 +411,13 @@ def _resolve_v1(raw: dict) -> ResolvedClaim | None:
             raw_key=raw.get("key") if isinstance(raw.get("key"), str) else None,
         )
         return None
-    canonical = canonicalize_key(env.key)
+    canonical = canonicalize_key(env.key, extra_keys)
     if canonical is None:
         return None
     value = normalize_value(env.value)
     if value is None:
         return None
-    spec = CLAIM_REGISTRY[canonical]
+    spec = _definition_for(canonical, extra_keys)
     return ResolvedClaim(
         canonical_key=canonical,
         value=value,
@@ -353,11 +428,11 @@ def _resolve_v1(raw: dict) -> ResolvedClaim | None:
     )
 
 
-def _resolve_v2(raw: dict) -> ResolvedClaim | None:
-    canonical = canonicalize_key(raw.get("key"))
+def _resolve_v2(raw: dict, extra_keys: TenantClaimKeys | None = None) -> ResolvedClaim | None:
+    canonical = canonicalize_key(raw.get("key"), extra_keys)
     if canonical is None:
         return None
-    definition = CLAIM_REGISTRY[canonical]
+    definition = _definition_for(canonical, extra_keys)
     if not definition.supports_v2:
         logger.info("claim_envelope_invalid", reason="v2_unsupported_key", raw_key=canonical)
         return None
@@ -387,6 +462,7 @@ def build_claim_envelope(
     key: str,
     value: str,
     *,
+    extra_keys: TenantClaimKeys | None = None,
     valid_from: datetime | None = None,
     valid_to: datetime | None = None,
     confidence: float | None = None,
@@ -399,7 +475,7 @@ def build_claim_envelope(
     Compilers must treat a ``None`` return as "uncertain — emit the memory
     without a claim".
     """
-    canonical = canonicalize_key(key)
+    canonical = canonicalize_key(key, extra_keys)
     normalized = normalize_value(value)
     if canonical is None or normalized is None:
         return None
@@ -407,7 +483,7 @@ def build_claim_envelope(
         "schema_version": CLAIM_SCHEMA_VERSION,
         "key": canonical,
         "value": normalized,  # store the normalized value (resolver compares on it)
-        "scope": CLAIM_REGISTRY[canonical].scope,
+        "scope": _definition_for(canonical, extra_keys).scope,
         "source": source,
     }
     if valid_from is not None:
@@ -419,7 +495,9 @@ def build_claim_envelope(
     return {CLAIM_METADATA_KEY: env}
 
 
-def build_v2_envelope(raw_claim: Any) -> dict | None:
+def build_v2_envelope(
+    raw_claim: Any, extra_keys: TenantClaimKeys | None = None
+) -> dict | None:
     """Validate a producer-supplied v2 claim and return a CLEAN storable
     envelope, or ``None`` if it is not authoritative.
 
@@ -430,10 +508,10 @@ def build_v2_envelope(raw_claim: Any) -> dict | None:
     """
     if not isinstance(raw_claim, dict):
         return None
-    canonical = canonicalize_key(raw_claim.get("key"))
+    canonical = canonicalize_key(raw_claim.get("key"), extra_keys)
     if canonical is None:
         return None
-    definition = CLAIM_REGISTRY[canonical]
+    definition = _definition_for(canonical, extra_keys)
     if not definition.supports_v2:
         return None
     entity = canonical_entity_key(raw_claim.get("entity_key"))

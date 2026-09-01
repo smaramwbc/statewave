@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any, Sequence
+from typing import Any, Sequence, Mapping
 
 import structlog
 
@@ -470,7 +470,9 @@ class LLMCompiler:
     def __init__(self, model: str = "gpt-4o-mini") -> None:
         self._model = model
 
-    def compile(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
+    def compile(
+        self, episodes: Sequence[EpisodeRow], *, claim_keys: Mapping[str, Any] | None = None
+    ) -> list[MemoryRow]:
         """Sync entry point — not supported for the LLM compiler.
 
         LLM extraction is fundamentally async (network round-trips,
@@ -490,7 +492,9 @@ class LLMCompiler:
             "compiler. See server/api/memories.py for the dispatch logic."
         )
 
-    async def compile_async(self, episodes: Sequence[EpisodeRow]) -> list[MemoryRow]:
+    async def compile_async(
+        self, episodes: Sequence[EpisodeRow], *, claim_keys: Mapping[str, Any] | None = None
+    ) -> list[MemoryRow]:
         """Async compile — batches episodes and processes in parallel.
 
         Returns the extracted memories (possibly empty when the episodes
@@ -505,7 +509,7 @@ class LLMCompiler:
         structured_memories: list[MemoryRow] = []
         episode_texts: list[tuple[EpisodeRow, str]] = []
         for ep in episodes:
-            structured = compile_candidates(ep)
+            structured = compile_candidates(ep, claim_keys)
             if structured is not None:
                 structured_memories.extend(structured)
                 continue

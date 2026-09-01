@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from server.core.identifiers import SessionId, SubjectId
 
@@ -179,6 +181,15 @@ class LLMCompleteRequest(BaseModel):
     temperature: float | None = Field(None, ge=0.0, le=2.0)
 
 
+#: Upper bound on a tenant's own claim vocabulary. Generous for a real product
+#: surface, low enough that the config document stays small and reviewable.
+_MAX_TENANT_CLAIM_KEYS = 64
+
+#: Lowercase dotted segments, at least one dot — namespaced so a tenant key
+#: reads as clearly theirs and cannot collide with a bare built-in name.
+_TENANT_CLAIM_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)+$")
+
+
 class TenantConfigPatch(BaseModel):
     """Partial update to `tenant_configs.config`. Every known key is
     optional — `None` means "don't change this key", a supplied
@@ -203,6 +214,24 @@ class TenantConfigPatch(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    claim_keys: dict[str, Literal["single", "multi"]] | None = Field(
+        None,
+        description=(
+            "Claim keys this tenant registers for its own vocabulary, mapped to "
+            "their cardinality (#376). `single` means one live value at a time — "
+            "a newer observation supersedes the older, so repeated observations "
+            "stay one durable fact instead of growing without bound. `multi` "
+            "means values coexist.\n\n"
+            "Declaring a key here is an operator action, deliberately NOT "
+            "something an episode payload can do: cardinality must be "
+            "authoritative rather than producer-supplied (#236), or a caller "
+            "could mislabel a multi-valued key as `single` and collapse rows "
+            "that should coexist.\n\n"
+            "Built-in keys always win, so registering `identity.name` is "
+            "rejected rather than silently shadowing the built-in. Keys must be "
+            "namespaced (at least one dot) and lowercase."
+        ),
+    )
     receipts: Literal["always", "on_request", "never"] | None = Field(
         None,
         description=(
@@ -301,3 +330,33 @@ class TenantConfigPatch(BaseModel):
             "prior GET if not."
         ),
     )
+
+    @field_validator("claim_keys")
+    @classmethod
+    def _validate_claim_keys(cls, value: dict | None) -> dict | None:
+        """Reject at the boundary what JSONB will not type-check later.
+
+        A typo here would otherwise become a live key that silently never
+        matches anything a consumer sends — the exact unbounded-growth failure
+        this feature exists to remove.
+        """
+        if value is None:
+            return None
+        from server.services.claims import CLAIM_ALIASES, CLAIM_REGISTRY
+
+        if len(value) > _MAX_TENANT_CLAIM_KEYS:
+            raise ValueError(
+                f"at most {_MAX_TENANT_CLAIM_KEYS} claim keys may be registered per tenant"
+            )
+        for key in value:
+            if key in CLAIM_REGISTRY or key in CLAIM_ALIASES:
+                raise ValueError(
+                    f"{key!r} is a built-in claim key and cannot be redefined; "
+                    "choose a namespaced key of your own"
+                )
+            if not _TENANT_CLAIM_KEY_RE.match(key):
+                raise ValueError(
+                    f"{key!r} is not a valid claim key: use lowercase dotted "
+                    "segments with at least one dot, e.g. 'guide.walkthrough'"
+                )
+        return value

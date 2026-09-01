@@ -132,6 +132,37 @@ async def mark_failed_durable(job_id: str, error: str) -> None:
     mark_failed(job_id, error)
 
 
+async def heartbeat_durable(job_id: str) -> None:
+    """Stamp the durable liveness signal for a running job.
+
+    Cache is untouched — the heartbeat only matters to OTHER processes
+    (and future requests) deciding whether the job's owning task is
+    still alive; the local cache is same-process by definition.
+    """
+    from server.services.compile_jobs_durable import heartbeat as _durable_heartbeat
+
+    await _durable_heartbeat(job_id)
+
+
+async def find_active_job_durable(
+    subject_id: str, tenant_id: str | None = None
+) -> CompileJob | None:
+    """Return the live in-flight job for a subject, superseding orphans.
+
+    Always hits Postgres — liveness is a cross-process question, so the
+    process-local cache (which never sees jobs submitted elsewhere and
+    holds no heartbeat) must not answer it.
+    """
+    from server.services.compile_jobs_durable import find_active_job as _durable_find
+
+    job = await _durable_find(subject_id, tenant_id)
+    if job is not None:
+        # Refresh the cache (same shape as submit_job_durable) so
+        # same-process polls of the attached job see current state.
+        _jobs[job.id] = job
+    return job
+
+
 async def update_progress_durable(job_id: str, memories_created: int) -> None:
     """Bump the durable `memories_created` count mid-job.
 

@@ -121,7 +121,11 @@ async def mark_running(job_id: str) -> None:
         await session.execute(
             update(CompileJobRow)
             .where(CompileJobRow.id == job_id)
-            .values(status="running", started_at=datetime.now(timezone.utc))
+            .values(
+                status="running",
+                started_at=datetime.now(timezone.utc),
+                heartbeat_at=datetime.now(timezone.utc),
+            )
         )
         await session.commit()
 
@@ -155,9 +159,101 @@ async def update_progress(job_id: str, memories_created: int) -> None:
         await session.execute(
             update(CompileJobRow)
             .where(CompileJobRow.id == job_id)
-            .values(memories_created=memories_created)
+            .values(
+                memories_created=memories_created,
+                heartbeat_at=datetime.now(timezone.utc),
+            )
         )
         await session.commit()
+
+
+async def heartbeat(job_id: str) -> None:
+    """Stamp the job's liveness signal. Raises on DB failure.
+
+    Called by the compile worker as each internal LLM batch completes
+    (~tens of seconds apart at normal provider latency), so a stalled
+    heartbeat means the owning task is gone, not merely slow.
+    """
+    async with get_session_factory()() as session:
+        await session.execute(
+            update(CompileJobRow)
+            .where(CompileJobRow.id == job_id)
+            .values(heartbeat_at=datetime.now(timezone.utc))
+        )
+        await session.commit()
+
+
+# A live job's heartbeat advances every completed LLM batch. 15 minutes of
+# silence across ALL concurrently in-flight batches means the owning task is
+# dead (restart), not slow — provider retries on a single batch stay well
+# under this. Deliberately below the bootstrap script's 1500s poll ceiling so
+# a resubmission after a poll timeout always sees an orphaned row as stale.
+ACTIVE_STALE_SECONDS = 900.0
+
+
+async def find_active_job(
+    subject_id: str, tenant_id: str | None = None
+) -> CompileJob | None:
+    """Return the live in-flight job for a subject, superseding orphans.
+
+    A `pending`/`running` row whose liveness signal (heartbeat, else
+    started/created time) is fresher than `ACTIVE_STALE_SECONDS` is
+    returned so the caller attaches to it instead of racing it with a
+    second compile over the same uncompiled episodes. A stale row's task
+    died with its process — it is marked failed here so the caller can
+    start a replacement. Residual race: a task that stalls longer than
+    the threshold but is still alive cannot be cancelled from another
+    request; the threshold is sized so only a dead task goes stale.
+    """
+    now = datetime.now(timezone.utc)
+    async with get_session_factory()() as session:
+        stmt = (
+            select(CompileJobRow)
+            .where(
+                CompileJobRow.subject_id == subject_id,
+                CompileJobRow.status.in_(["pending", "running"]),
+            )
+            .order_by(CompileJobRow.created_at.desc())
+        )
+        if tenant_id is None:
+            stmt = stmt.where(CompileJobRow.tenant_id.is_(None))
+        else:
+            stmt = stmt.where(CompileJobRow.tenant_id == tenant_id)
+        result = await session.execute(stmt)
+        rows = result.scalars().all()
+
+        live: CompileJobRow | None = None
+        for row in rows:
+            last_seen = row.heartbeat_at or row.started_at or row.created_at
+            age = (now - last_seen).total_seconds() if last_seen else None
+            fresh = age is not None and age < ACTIVE_STALE_SECONDS
+            if fresh:
+                if live is None:
+                    live = row
+                else:
+                    # Two fresh in-flight jobs = a pre-attach race artifact.
+                    # Neither task can be cancelled from here; leave both to
+                    # finish and just surface the anomaly.
+                    logger.warning(
+                        "compile_job_duplicate_live",
+                        job_id=row.id,
+                        subject_id=subject_id,
+                    )
+                continue
+            row.status = "failed"
+            row.error = (
+                "orphaned: no heartbeat for "
+                f"{int(ACTIVE_STALE_SECONDS)}s — superseded by a new compile-start"
+            )
+            row.completed_at = now
+            logger.warning(
+                "compile_job_orphan_superseded",
+                job_id=row.id,
+                subject_id=subject_id,
+                age_seconds=int(age) if age is not None else None,
+            )
+        await session.commit()
+        return _row_to_job(live) if live is not None else None
 
 
 async def mark_failed(job_id: str, error: str) -> None:

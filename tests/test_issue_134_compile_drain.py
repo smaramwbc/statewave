@@ -62,7 +62,7 @@ async def test_134_async_drain_loops_until_remaining_is_zero(monkeypatch):
 
     call_log = []
 
-    async def fake_batch(_session, _subject_id, _tenant_id, _batch_size):
+    async def fake_batch(_session, _subject_id, _tenant_id, _batch_size, progress_cb=None):
         call_log.append("batch")
         return scripted.pop(0)
 
@@ -137,7 +137,7 @@ async def test_134_async_drain_respects_iteration_cap(monkeypatch):
     from server.api import memories as api_memories
     from server.core.config import settings
 
-    async def never_drains(_session, _subject_id, _tenant_id, _batch_size):
+    async def never_drains(_session, _subject_id, _tenant_id, _batch_size, progress_cb=None):
         return [], 1, 999  # always 1 created, always 999 remaining
 
     async def noop(*_a, **_k):

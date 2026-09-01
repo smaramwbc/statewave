@@ -64,6 +64,15 @@ STAGING_SUBJECT_ID = f"{SUBJECT_ID}-staging"
 # timeout that 502'd the old synchronous compile can no longer occur.
 _COMPILE_POLL_INTERVAL_S = 5.0
 _COMPILE_MAX_WAIT_S = 1500.0  # 25 min ceiling for a full pack rebuild
+# One resubmission on a failed or orphaned compile job. Compile-start is
+# idempotent (it only queues uncompiled episodes), so a retried start resumes
+# where the dead job stopped instead of redoing work. Every historical
+# refresh failure — a Fly deploy restarting the server mid-job (orphaning it
+# into a poll timeout or a durable `failed` row) and the occasional opaque
+# compile transient — recovered on exactly one manual workflow rerun; this
+# folds that rerun into the script. The docs workflow's `timeout-minutes`
+# budgets for both attempts.
+_COMPILE_ATTEMPTS = 2
 _COMPILE_PENDING_STATUSES = frozenset(
     {"pending", "queued", "running", "processing", "in_progress", "started"}
 )
@@ -220,7 +229,32 @@ async def _compile_async(client: httpx.AsyncClient, url: str, subject_id: str) -
     its ``memories_created`` is the authoritative compile count. The
     per-subject ``memory_count`` in /v1/subjects is eventually-consistent
     and lags right after a large compile, so never gate on it here.
+
+    A job that dies under us — the server redeployed mid-compile and the
+    job row went ``failed`` or was orphaned into a poll timeout — is
+    resubmitted once (see ``_COMPILE_ATTEMPTS``) before the script gives
+    up; the resubmission resumes over the remaining uncompiled episodes.
     """
+    for attempt in range(1, _COMPILE_ATTEMPTS + 1):
+        result = await _compile_attempt(client, url, subject_id)
+        if result is not None:
+            return result
+        if attempt < _COMPILE_ATTEMPTS:
+            print(
+                f"  compile attempt {attempt} died — resubmitting (start is "
+                "idempotent over uncompiled episodes, the retry resumes where "
+                "the dead job stopped)",
+                file=sys.stderr,
+            )
+    print("  ERROR compile failed after resubmission — giving up", file=sys.stderr)
+    sys.exit(1)
+
+
+async def _compile_attempt(
+    client: httpx.AsyncClient, url: str, subject_id: str
+) -> dict | None:
+    """One start+poll cycle. ``None`` = retryable death (job failed or
+    orphaned); the caller decides whether another attempt remains."""
     resp = await _request_with_retry(
         "compile-start",
         lambda: client.post(
@@ -253,7 +287,7 @@ async def _compile_async(client: httpx.AsyncClient, url: str, subject_id: str) -
                 f"{jr.text}",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            return None
         if status not in _COMPILE_PENDING_STATUSES:
             return jr.json()  # terminal success — payload carries memories_created
     print(
@@ -261,7 +295,7 @@ async def _compile_async(client: httpx.AsyncClient, url: str, subject_id: str) -
         f"{_COMPILE_MAX_WAIT_S:.0f}s",
         file=sys.stderr,
     )
-    sys.exit(1)
+    return None
 
 
 async def _export(client: httpx.AsyncClient, url: str, subject_id: str) -> dict:

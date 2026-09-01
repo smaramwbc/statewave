@@ -493,7 +493,11 @@ class LLMCompiler:
         )
 
     async def compile_async(
-        self, episodes: Sequence[EpisodeRow], *, claim_keys: Mapping[str, Any] | None = None
+        self,
+        episodes: Sequence[EpisodeRow],
+        *,
+        claim_keys: Mapping[str, Any] | None = None,
+        progress_cb=None,
     ) -> list[MemoryRow]:
         """Async compile — batches episodes and processes in parallel.
 
@@ -566,7 +570,16 @@ class LLMCompiler:
         semaphore = asyncio.Semaphore(
             getattr(settings, "compile_max_concurrency", None) or _MAX_CONCURRENCY
         )
-        tasks = [self._process_batch(batch, semaphore) for batch in batches]
+        async def _run_one(batch):
+            result = await self._process_batch(batch, semaphore)
+            # Liveness ping per completed batch (job heartbeat): lets a
+            # concurrent compile-start tell this live job from one whose
+            # owning process died. Awaited so pings can't pile up.
+            if progress_cb is not None:
+                await progress_cb()
+            return result
+
+        tasks = [_run_one(batch) for batch in batches]
         batch_results = await asyncio.gather(*tasks)
 
         # Flatten results (structured candidates first, then LLM extractions)

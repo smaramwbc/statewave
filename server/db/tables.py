@@ -270,6 +270,10 @@ class CompileJobRow(Base):
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Liveness signal: bumped by the compile worker as batches complete, so a
+    # compile-start on the same subject can tell a live slow job (attach to
+    # it) from one orphaned by a restart (supersede it).
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RateLimitHitRow(Base):

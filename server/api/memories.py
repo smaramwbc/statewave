@@ -49,7 +49,11 @@ _COMPILE_INTERNAL_ERROR_MESSAGE = "An internal error occurred during compilation
 
 
 async def _compile_one_batch(
-    session: AsyncSession, subject_id: str, tenant_id: str | None, batch_size: int
+    session: AsyncSession,
+    subject_id: str,
+    tenant_id: str | None,
+    batch_size: int,
+    progress_cb=None,
 ) -> tuple[list[MemoryResponse], int, int]:
     """Compile ONE batch of uncompiled episodes for `subject_id`.
 
@@ -87,7 +91,9 @@ async def _compile_one_batch(
     # A CompilationError here propagates intentionally: nothing below this
     # point runs, so the episodes are never marked compiled or committed.
     if hasattr(compiler, "compile_async"):
-        new_rows = await compiler.compile_async(list(episodes), claim_keys=claim_keys)
+        new_rows = await compiler.compile_async(
+            list(episodes), claim_keys=claim_keys, progress_cb=progress_cb
+        )
     else:
         loop = asyncio.get_running_loop()
         new_rows = await loop.run_in_executor(
@@ -209,6 +215,26 @@ async def _compile_one_batch(
     return [_to_response(r) for r in new_rows], len(new_rows), remaining
 
 
+def _heartbeat_cb(job_id: str | None):
+    """Per-batch liveness callback for the LLM compiler, or None.
+
+    Bumps the durable job heartbeat as each internal LLM batch completes
+    so compile-start can tell this live job from one orphaned by a
+    restart. A heartbeat write failure must not kill a compile that is
+    otherwise succeeding — it only degrades liveness detection.
+    """
+    if job_id is None:
+        return None
+
+    async def _cb() -> None:
+        try:
+            await compile_jobs.heartbeat_durable(job_id)
+        except Exception:
+            logger.warning("compile_heartbeat_failed", job_id=job_id, exc_info=True)
+
+    return _cb
+
+
 async def _run_compile(
     subject_id: str, job_id: str | None = None, tenant_id: str | None = None
 ) -> CompileMemoriesResponse:
@@ -234,7 +260,11 @@ async def _run_compile(
         async with get_session_factory()() as session:
             for iteration in range(settings.compile_max_iterations):
                 batch_responses, created, remaining = await _compile_one_batch(
-                    session, subject_id, tenant_id, settings.compile_batch_size
+                    session,
+                    subject_id,
+                    tenant_id,
+                    settings.compile_batch_size,
+                    progress_cb=_heartbeat_cb(job_id),
                 )
                 total_created += created
                 last_batch_responses = batch_responses
@@ -321,6 +351,26 @@ async def compile_memories(
             # Async mode — return job_id immediately, compile in background (durable).
             # The background task drains the subject; the client polls
             # `/v1/memories/compile/{job_id}` for completion.
+            #
+            # Attach-not-race: if a live job is already draining this subject
+            # (fresh heartbeat), hand back ITS id — a second concurrent drain
+            # would double-compile the episodes both jobs snapshot as
+            # uncompiled. A stale-heartbeat row is a task that died with its
+            # process (rolling deploy); find_active_job_durable supersedes it
+            # so the fresh submission below resumes the remaining episodes.
+            active = await compile_jobs.find_active_job_durable(
+                body.subject_id, tenant_id=tenant_id
+            )
+            if active is not None:
+                return JSONResponse(
+                    status_code=202,
+                    content={
+                        "job_id": active.id,
+                        "status": active.status.value,
+                        "subject_id": body.subject_id,
+                        "attached": True,
+                    },
+                )
             job = await compile_jobs.submit_job_durable(body.subject_id, tenant_id=tenant_id)
             asyncio.create_task(_run_compile(body.subject_id, job.id, tenant_id=tenant_id))
             return JSONResponse(

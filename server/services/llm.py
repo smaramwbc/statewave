@@ -404,7 +404,14 @@ async def acomplete_json(
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        raise LLMResponseError(f"LLM returned invalid JSON: {cleaned[:200]}") from exc
+        raise LLMResponseError(
+            # The TAIL is the diagnostic part: a truncated body's first 200
+            # characters look perfectly well-formed, which reads as a syntax
+            # problem rather than a length one (issue #375).
+            f"LLM returned invalid JSON ({len(cleaned)} chars): "
+            f"{cleaned[:120]}…{cleaned[-120:]}" if len(cleaned) > 240
+            else f"LLM returned invalid JSON ({len(cleaned)} chars): {cleaned}"
+        ) from exc
 
 
 # Generic free-form tool the JSON-forced path uses. We don't constrain

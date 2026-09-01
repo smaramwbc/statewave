@@ -42,6 +42,7 @@ from server.services.claims import (
     anchor_valid_from,
 )
 from server.services.compilers.errors import CompilationError
+from server.services.llm import LLMResponseError
 from server.services.compilers.heuristic import episode_valid_from, extract_payload_text
 from server.services.memory_ttl import compute_valid_to
 
@@ -441,6 +442,22 @@ def _llm_claim_metadata(mem: dict, default_valid_from: datetime | None = None) -
     )
 
 
+
+def _format_episode_blocks(batch: list[tuple[EpisodeRow, str]]) -> str:
+    """Render a batch as the prompt's episode blocks.
+
+    Each block is annotated with the episode's resolved reference timestamp
+    (`episode_valid_from` — the same anchor used for the memory's `valid_from`),
+    so the model resolves "today"/relative phrases against the real episode date
+    instead of inventing one (issue #115).
+    """
+    blocks = []
+    for i, (ep, text) in enumerate(batch):
+        ref_label = episode_valid_from(ep).strftime("%Y-%m-%d (%A)")
+        blocks.append(f"--- Episode {i} | recorded {ref_label} ---\n{text}")
+    return "\n\n".join(blocks)
+
+
 class LLMCompiler:
     """Async LLM memory compiler with batching + parallelism. Implements BaseCompiler protocol.
 
@@ -595,6 +612,40 @@ class LLMCompiler:
 
         return batches
 
+    async def _extract_with_split_retry(
+        self,
+        batch: list[tuple[EpisodeRow, str]],
+        combined_text: str,
+    ) -> list[dict]:
+        """Extract one batch, halving and retrying if the output will not parse.
+
+        A truncated or malformed body is not a failed round-trip: the model
+        answered, the answer is just unusable — and it is usually unusable
+        because THIS combination of episodes provoked an over-long response.
+        Splitting shrinks each response, so one awkward episode costs itself
+        rather than every episode batched with it (issue #375). Transport,
+        auth and timeout failures are deliberately NOT retried here; they mean
+        extraction could not run at all, and the caller must see them.
+        """
+        try:
+            return await self._call_llm_async(combined_text, len(batch))
+        except LLMResponseError:
+            if len(batch) == 1:
+                raise  # irreducible — _process_batch names the episode
+            mid = len(batch) // 2
+            halves = (batch[:mid], batch[mid:])
+            logger.info(
+                "llm_batch_split_retry",
+                episode_count=len(batch),
+                halves=[len(h) for h in halves],
+            )
+            out: list[dict] = []
+            for half in halves:
+                out.extend(
+                    await self._extract_with_split_retry(half, _format_episode_blocks(half))
+                )
+            return out
+
     async def _process_batch(
         self,
         batch: list[tuple[EpisodeRow, str]],
@@ -610,14 +661,27 @@ class LLMCompiler:
             # this the model has no reference point and falls back to a
             # plausible-looking default (commonly the LoCoMo sample's
             # "25 May 2023") — see issue #115.
-            episode_blocks = []
-            for i, (ep, text) in enumerate(batch):
-                ref_label = episode_valid_from(ep).strftime("%Y-%m-%d (%A)")
-                episode_blocks.append(f"--- Episode {i} | recorded {ref_label} ---\n{text}")
-            combined_text = "\n\n".join(episode_blocks)
+            combined_text = _format_episode_blocks(batch)
 
             try:
-                raw_memories = await self._call_llm_async(combined_text, len(batch))
+                raw_memories = await self._extract_with_split_retry(batch, combined_text)
+            except LLMResponseError as exc:
+                # A single episode whose extraction output will not parse, even
+                # alone. Still a raise (issue #201: never silently consume an
+                # episode), but the message names the offending episode so it
+                # can be quarantined instead of leaving the whole subject stuck
+                # behind an opaque "provider misconfigured" (issue #375).
+                (poison_ep, _), = batch
+                logger.warning(
+                    "llm_batch_unparseable",
+                    episode_id=str(poison_ep.id),
+                    subject_id=poison_ep.subject_id,
+                    exc_info=True,
+                )
+                raise CompilationError(
+                    f"LLM returned unusable output for episode {poison_ep.id} even on its "
+                    f"own, so it cannot be extracted: {exc}"
+                ) from exc
             except Exception as exc:
                 # A failed provider round-trip (auth, timeout, 5xx, no key)
                 # means extraction could not RUN — it is NOT a legitimate
@@ -752,10 +816,14 @@ class LLMCompiler:
                 temperature=0.1,
                 max_tokens=max_tokens,
             )
+        except llm_adapter.LLMResponseError:
+            # The provider ANSWERED, the body is just unusable (truncated or
+            # malformed JSON). Keep the type: `_process_batch` splits the batch
+            # and retries on this, where a transport failure must abort instead.
+            raise
         except llm_adapter.StatewaveLLMError as exc:
-            # Same surface as the previous httpx-based path: caller
-            # (_process_batch) catches generic Exception and falls
-            # through to an empty memory list.
+            # Transport/auth/timeout — extraction could not RUN. Same surface as
+            # the previous httpx-based path.
             raise RuntimeError(str(exc)) from exc
 
         # acomplete_json forces response_format=json_object, so the

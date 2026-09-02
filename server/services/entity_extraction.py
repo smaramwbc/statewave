@@ -286,4 +286,10 @@ async def extract_entities_batch(texts: list[str]) -> list[list[ExtractedEntity]
         )
         return [await extract_entities(t) for t in texts]
 
-    return [_entities_from_list(results.get(str(i))) for i in range(len(texts))]
+    # Facts are labeled "FACT n" in the prompt while the requested keys are
+    # bare indices — accept either, so a model that echoes the label doesn't
+    # silently yield an all-empty batch through the missing-index path.
+    return [
+        _entities_from_list(results.get(str(i), results.get(f"FACT {i}")))
+        for i in range(len(texts))
+    ]

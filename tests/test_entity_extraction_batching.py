@@ -212,3 +212,15 @@ async def test_import_request_has_no_rebuild_flag():
     from server.api import admin as api_admin
 
     assert "rebuild_entities" not in api_admin.ImportSubjectRequest.model_fields
+
+
+async def test_batch_accepts_fact_labeled_keys():
+    """A model that echoes the "FACT n" label as the JSON key must not
+    silently yield an all-empty batch through the missing-index path."""
+    resp = _batched_response(
+        {"FACT 0": [{"text": "Alice", "kind": "PERSON"}], "1": [{"text": "Acme", "kind": "ORG"}]}
+    )
+    with patch.object(ee, "acomplete", new=AsyncMock(return_value=resp)):
+        out = await ee.extract_entities_batch(["fact a", "fact b"])
+    assert out[0][0].text == "Alice"
+    assert out[1][0].text == "Acme"

@@ -2935,9 +2935,11 @@ async def rebuild_entities_endpoint(
     the import request stays a fast pure-DB write: an inline rebuild made
     the import outlive client timeouts, and a client retrying a POST whose
     first send already committed duplicates the subject wholesale when
-    preserve_ids is false. This endpoint is retry-safe by construction:
-    entity upserts dedup on normalized text, so re-running converges
-    instead of duplicating.
+    preserve_ids is false. Sequential re-runs converge (entity upserts
+    dedup on normalized text); CONCURRENT invocations for the same subject
+    can duplicate entity rows, because the upsert is select-then-insert
+    over a non-unique index — callers must not re-send while a rebuild may
+    still be running (the bootstrap script sends exactly one attempt).
     """
     if not settings.entity_population_enabled:
         return {"subject_id": subject_id, "entities_rebuilt": 0, "enabled": False}

@@ -41,9 +41,12 @@ class _FakeResp:
         self.choices = [_FakeChoice(content)]
 
 
-async def test_litellm_gets_a_per_attempt_timeout():
-    """The kwargs handed to litellm must carry timeout = outer/(retries+1),
-    so its internal retries fit inside the outer wait_for window."""
+async def test_litellm_gets_no_shrunken_per_attempt_timeout():
+    """Pin the review outcome for issue #380: NO derived per-attempt timeout
+    slice (outer/(retries+1)) may be handed to litellm — it cuts healthy
+    long generations (reconcile decision arrays, dense extraction batches)
+    below their normal completion time. Retries only fire on fast-failing
+    errors and fit inside the outer wait_for naturally."""
     from server.services import llm as llm_adapter
 
     captured = {}
@@ -56,8 +59,7 @@ async def test_litellm_gets_a_per_attempt_timeout():
         ensure.return_value = type("L", (), {"acompletion": staticmethod(fake_acompletion)})()
         await llm_adapter.acomplete([{"role": "user", "content": "hi"}])
 
-    expected = settings.litellm_timeout_seconds / (settings.litellm_max_retries + 1)
-    assert captured["timeout"] == pytest.approx(expected)
+    assert "timeout" not in captured
     assert captured["num_retries"] == settings.litellm_max_retries
 
 
@@ -212,3 +214,66 @@ async def test_compile_batch_emits_phase_timings(monkeypatch, caplog):
     ):
         assert key in payload, f"missing {key}"
     assert payload["episodes"] == 1
+
+
+async def test_failing_compile_still_emits_phase_timings(monkeypatch, caplog):
+    """The slow-then-FAILING compile is exactly the case the diagnostic
+    exists for — a CompilationError must not lose the summary line."""
+    from server.api import memories as api_memories
+    from server.services.compilers.errors import CompilationError
+    from tests.test_compile_error_handling import _FakeEpisode, _FakeSession
+
+    async def fake_list(_session, _subject_id, *, tenant_id, limit):
+        return [_FakeEpisode()]
+
+    class _RaisingCompiler:
+        async def compile_async(self, _eps, **_kw):
+            raise CompilationError("provider gone")
+
+    monkeypatch.setattr(api_memories.repo, "list_uncompiled_episodes", fake_list)
+    monkeypatch.setattr(api_memories, "get_compiler", lambda: _RaisingCompiler())
+
+    with caplog.at_level("INFO"):
+        with pytest.raises(CompilationError):
+            await api_memories._compile_one_batch(_FakeSession(), "subj", None, 10)
+
+    import json
+
+    lines = [r for r in caplog.records if "compile_phase_timings" in r.message]
+    assert len(lines) == 1
+    payload = json.loads(lines[0].message)
+    assert payload["memories"] == 0 and payload["episodes"] == 1
+
+
+async def test_anthropic_json_path_logs_slow_calls(caplog):
+    """Mixed-vendor routing must not lose the #380 evidence: the Anthropic
+    tool-use JSON path times its provider call like `acomplete` does."""
+    import json as _json
+
+    from server.services import llm as llm_adapter
+
+    class _ToolCall:
+        class function:
+            name = "emit_json"
+            arguments = _json.dumps({"payload": {"ok": True}})
+
+    class _Msg:
+        tool_calls = [_ToolCall()]
+        content = None
+
+    class _Resp:
+        choices = [type("C", (), {"message": _Msg()})()]
+
+    async def fake_acompletion(**kwargs):
+        return _Resp()
+
+    with patch.object(llm_adapter, "_ensure_litellm") as ensure, patch.object(
+        settings, "litellm_slow_call_seconds", 0.0
+    ):
+        ensure.return_value = type("L", (), {"acompletion": staticmethod(fake_acompletion)})()
+        with caplog.at_level("WARNING"):
+            await llm_adapter._acomplete_json_anthropic_tool_use(
+                [{"role": "user", "content": "hi"}], model="claude-x"
+            )
+
+    assert any("llm_slow_call" in r.message for r in caplog.records)

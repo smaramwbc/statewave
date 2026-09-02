@@ -96,151 +96,158 @@ async def _compile_one_batch(
         _phase_seconds[name] = round(now - _t0, 3)
         _t0 = now
 
-    compiler = get_compiler()
-    # The tenant's own registered claim vocabulary (#376). Loaded once per
-    # batch and handed to the compiler, because the compiler has no session of
-    # its own. Empty unless an operator registered keys, so this is inert by
-    # default.
-    claim_keys = await load_tenant_claim_keys(session, tenant_id)
-    # A CompilationError here propagates intentionally: nothing below this
-    # point runs, so the episodes are never marked compiled or committed.
-    if hasattr(compiler, "compile_async"):
-        new_rows = await compiler.compile_async(
-            list(episodes), claim_keys=claim_keys, progress_cb=progress_cb
-        )
-    else:
-        loop = asyncio.get_running_loop()
-        new_rows = await loop.run_in_executor(
-            None, functools.partial(compiler.compile, list(episodes), claim_keys=claim_keys)
-        )
-    _phase_done("extraction")
-
-    # Near-duplicate dedup (runs BEFORE reconcile). Full-conversation windowed
-    # compile produces many restated/overlapping facts; this cheap, deterministic
-    # pass collapses them so (a) retrieval isn't diluted by near-duplicates and
-    # (b) reconcile + entity population run on a far smaller set. Non-destructive
-    # (provenance unioned) and fail-open — returns the candidates unchanged on any
-    # error. Stapled embeddings on survivors are reused for the memory.embedding
-    # column below. See server/services/dedup.py.
-    if settings.dedup_compile_enabled and new_rows:
-        try:
-            from server.services.dedup import dedup_candidates
-
-            new_rows = await dedup_candidates(new_rows)
-        except Exception:
-            logger.warning("dedup_failed", subject_id=subject_id, exc_info=True)
-    _phase_done("dedup")
-
-    # Phase 4 + 5b — context-aware reconcile. One LLM call
-    # decides, per freshly-extracted candidate, whether it is new, a duplicate
-    # (dropped), a newer value of an existing memory, or a contradiction — and
-    # supersedes the stale/contradicted existing memories. Runs BEFORE the
-    # candidates are added to the session, so the "existing" view it reads is
-    # exactly the committed memory (candidates can't pollute it). Fail-open:
-    # `reconcile_compile_batch` returns the candidates unchanged on any error,
-    # so a reconcile failure can never lose a memory. Gated for ablation/bench.
-    reconcile_superseded_ids: set = set()
-    if settings.reconcile_compile_enabled and new_rows:
-        try:
-            from server.services.reconcile import reconcile_compile_batch
-
-            new_rows, reconcile_superseded_ids = await reconcile_compile_batch(
-                session, subject_id, new_rows, tenant_id=tenant_id
+    new_rows: list = []
+    try:
+        compiler = get_compiler()
+        # The tenant's own registered claim vocabulary (#376). Loaded once per
+        # batch and handed to the compiler, because the compiler has no session of
+        # its own. Empty unless an operator registered keys, so this is inert by
+        # default.
+        claim_keys = await load_tenant_claim_keys(session, tenant_id)
+        # A CompilationError here propagates intentionally: nothing below this
+        # point runs, so the episodes are never marked compiled or committed.
+        if hasattr(compiler, "compile_async"):
+            new_rows = await compiler.compile_async(
+                list(episodes), claim_keys=claim_keys, progress_cb=progress_cb
             )
-        except Exception:
-            logger.warning("reconcile_failed", subject_id=subject_id, exc_info=True)
-            reconcile_superseded_ids = set()
-    _phase_done("reconcile")
-
-    for row in new_rows:
-        row.tenant_id = tenant_id
-        session.add(row)
-    if reconcile_superseded_ids:
-        await repo.mark_memories_superseded(session, list(reconcile_superseded_ids))
-        logger.info(
-            "reconcile_superseded",
-            subject_id=subject_id,
-            superseded=len(reconcile_superseded_ids),
-        )
-    await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
-
-    superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
-    if superseded_ids:
-        logger.info("conflicts_resolved", superseded=len(superseded_ids))
-    _phase_done("conflicts")
-
-    await session.commit()
-    for row in new_rows:
-        await session.refresh(row)
-    _phase_done("commit")
-
-    # Only backfill rows that don't already carry an embedding. Dedup's semantic
-    # pass computes and staples embeddings onto its surviving canonicals, so those
-    # are persisted with the row above and need no second embedding round-trip.
-    rows_needing_embedding = [r for r in new_rows if getattr(r, "embedding", None) is None]
-    schedule_embedding_backfill(
-        [row.id for row in rows_needing_embedding],
-        [row.content for row in rows_needing_embedding],
-    )
-
-    # Phase 2 of the cross-session retrieval improvements: populate the per-subject
-    # entity store from this batch's newly-compiled memories so Phase 3
-    # retrieval (entity boost) has something to query. Best-effort — a
-    # failure here must not roll back the compile commit above. The function
-    # fans out LLM extraction calls in parallel + does ONE batched embedding
-    # round-trip. It is one LLM call per memory, the dominant cost on large
-    # full-conversation compiles, so it is skipped entirely when entity-boost
-    # retrieval is not in use (settings.entity_population_enabled).
-    if settings.entity_population_enabled:
-        try:
-            from server.services.entities import (
-                MemoryForEntities,
-                populate_entities_for_memories,
+        else:
+            loop = asyncio.get_running_loop()
+            new_rows = await loop.run_in_executor(
+                None, functools.partial(compiler.compile, list(episodes), claim_keys=claim_keys)
             )
+        _phase_done("extraction")
 
-            active_new_rows = [r for r in new_rows if r.id not in superseded_ids]
-            touched = await populate_entities_for_memories(
-                session,
-                [MemoryForEntities(id=r.id, content=r.content) for r in active_new_rows],
-                subject_id=subject_id,
-                tenant_id=tenant_id,
-            )
-            if touched:
-                await session.commit()
-                logger.info(
-                    "entities_populated",
-                    subject_id=subject_id,
-                    touched=touched,
-                    memories=len(active_new_rows),
+        # Near-duplicate dedup (runs BEFORE reconcile). Full-conversation windowed
+        # compile produces many restated/overlapping facts; this cheap, deterministic
+        # pass collapses them so (a) retrieval isn't diluted by near-duplicates and
+        # (b) reconcile + entity population run on a far smaller set. Non-destructive
+        # (provenance unioned) and fail-open — returns the candidates unchanged on any
+        # error. Stapled embeddings on survivors are reused for the memory.embedding
+        # column below. See server/services/dedup.py.
+        if settings.dedup_compile_enabled and new_rows:
+            try:
+                from server.services.dedup import dedup_candidates
+
+                new_rows = await dedup_candidates(new_rows)
+            except Exception:
+                logger.warning("dedup_failed", subject_id=subject_id, exc_info=True)
+        _phase_done("dedup")
+
+        # Phase 4 + 5b — context-aware reconcile. One LLM call
+        # decides, per freshly-extracted candidate, whether it is new, a duplicate
+        # (dropped), a newer value of an existing memory, or a contradiction — and
+        # supersedes the stale/contradicted existing memories. Runs BEFORE the
+        # candidates are added to the session, so the "existing" view it reads is
+        # exactly the committed memory (candidates can't pollute it). Fail-open:
+        # `reconcile_compile_batch` returns the candidates unchanged on any error,
+        # so a reconcile failure can never lose a memory. Gated for ablation/bench.
+        reconcile_superseded_ids: set = set()
+        if settings.reconcile_compile_enabled and new_rows:
+            try:
+                from server.services.reconcile import reconcile_compile_batch
+
+                new_rows, reconcile_superseded_ids = await reconcile_compile_batch(
+                    session, subject_id, new_rows, tenant_id=tenant_id
                 )
-        except Exception:
-            # Phase 3 retrieval handles an empty entity store as a no-op,
-            # so the compile result for the caller is identical with or
-            # without this step. Logged at WARNING for operator visibility.
-            logger.warning("entity_population_failed", subject_id=subject_id, exc_info=True)
-    _phase_done("entities")
+            except Exception:
+                logger.warning("reconcile_failed", subject_id=subject_id, exc_info=True)
+                reconcile_superseded_ids = set()
+        _phase_done("reconcile")
 
-    await webhooks.fire(
-        "memories.compiled",
-        {
-            "subject_id": subject_id,
-            "memories_created": len(new_rows),
-        },
-        tenant_id=tenant_id,
-    )
+        for row in new_rows:
+            row.tenant_id = tenant_id
+            session.add(row)
+        if reconcile_superseded_ids:
+            await repo.mark_memories_superseded(session, list(reconcile_superseded_ids))
+            logger.info(
+                "reconcile_superseded",
+                subject_id=subject_id,
+                superseded=len(reconcile_superseded_ids),
+            )
+        await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
 
-    remaining = await repo.count_uncompiled_episodes(
-        session, subject_id, tenant_id=tenant_id
-    )
-    logger.info(
-        "compile_phase_timings",
-        subject_id=subject_id,
-        episodes=len(episodes),
-        memories=len(new_rows),
-        total_seconds=round(sum(_phase_seconds.values()), 3),
-        **{f"{name}_seconds": secs for name, secs in _phase_seconds.items()},
-    )
-    return [_to_response(r) for r in new_rows], len(new_rows), remaining
+        superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
+        if superseded_ids:
+            logger.info("conflicts_resolved", superseded=len(superseded_ids))
+        _phase_done("conflicts")
+
+        await session.commit()
+        for row in new_rows:
+            await session.refresh(row)
+        _phase_done("commit")
+
+        # Only backfill rows that don't already carry an embedding. Dedup's semantic
+        # pass computes and staples embeddings onto its surviving canonicals, so those
+        # are persisted with the row above and need no second embedding round-trip.
+        rows_needing_embedding = [r for r in new_rows if getattr(r, "embedding", None) is None]
+        schedule_embedding_backfill(
+            [row.id for row in rows_needing_embedding],
+            [row.content for row in rows_needing_embedding],
+        )
+
+        # Phase 2 of the cross-session retrieval improvements: populate the per-subject
+        # entity store from this batch's newly-compiled memories so Phase 3
+        # retrieval (entity boost) has something to query. Best-effort — a
+        # failure here must not roll back the compile commit above. The function
+        # fans out LLM extraction calls in parallel + does ONE batched embedding
+        # round-trip. It is one LLM call per memory, the dominant cost on large
+        # full-conversation compiles, so it is skipped entirely when entity-boost
+        # retrieval is not in use (settings.entity_population_enabled).
+        if settings.entity_population_enabled:
+            try:
+                from server.services.entities import (
+                    MemoryForEntities,
+                    populate_entities_for_memories,
+                )
+
+                active_new_rows = [r for r in new_rows if r.id not in superseded_ids]
+                touched = await populate_entities_for_memories(
+                    session,
+                    [MemoryForEntities(id=r.id, content=r.content) for r in active_new_rows],
+                    subject_id=subject_id,
+                    tenant_id=tenant_id,
+                )
+                if touched:
+                    await session.commit()
+                    logger.info(
+                        "entities_populated",
+                        subject_id=subject_id,
+                        touched=touched,
+                        memories=len(active_new_rows),
+                    )
+            except Exception:
+                # Phase 3 retrieval handles an empty entity store as a no-op,
+                # so the compile result for the caller is identical with or
+                # without this step. Logged at WARNING for operator visibility.
+                logger.warning("entity_population_failed", subject_id=subject_id, exc_info=True)
+        _phase_done("entities")
+
+        await webhooks.fire(
+            "memories.compiled",
+            {
+                "subject_id": subject_id,
+                "memories_created": len(new_rows),
+            },
+            tenant_id=tenant_id,
+        )
+
+        remaining = await repo.count_uncompiled_episodes(
+            session, subject_id, tenant_id=tenant_id
+        )
+        return [_to_response(r) for r in new_rows], len(new_rows), remaining
+    finally:
+        # In a `finally` on purpose: the slow-then-FAILING compile is exactly
+        # the case this diagnostic exists for (issue #380), so the phases
+        # recorded before the failure must still reach the log.
+        logger.info(
+            "compile_phase_timings",
+            subject_id=subject_id,
+            episodes=len(episodes),
+            memories=len(new_rows),
+            total_seconds=round(sum(_phase_seconds.values()), 3),
+            **{f"{name}_seconds": secs for name, secs in _phase_seconds.items()},
+        )
+
 
 
 def _heartbeat_cb(job_id: str | None):

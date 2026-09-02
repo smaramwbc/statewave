@@ -232,3 +232,51 @@ async def test_compile_exits_nonzero_after_second_death():
         await bootstrap._compile_async(client, "http://x", "subj")
     assert exc.value.code == 1
     assert client.post_calls == 2
+
+
+# --- entity rebuild after the swap import (issue #380) ----------------------
+#
+# Pinned because the rebuild is best-effort BY DESIGN: the swap already
+# succeeded, so neither a network failure (attempts=1, no re-POST that
+# would race a still-running rebuild) nor a non-200 (incl. a 404 from a
+# server predating the endpoint) may turn the refresh red.
+
+
+class _ImportClient:
+    def __init__(self, rebuild_outcome):
+        self._rebuild_outcome = rebuild_outcome
+        self.rebuild_posts = 0
+
+    async def post(self, url, **_kw):
+        if url.endswith("/rebuild-entities"):
+            self.rebuild_posts += 1
+            if isinstance(self._rebuild_outcome, Exception):
+                raise self._rebuild_outcome
+            return self._rebuild_outcome
+        return httpx.Response(status_code=200, json={"memories_imported": 5})
+
+
+@pytest.mark.asyncio
+async def test_rebuild_network_failure_is_nonfatal_and_single_attempt(capsys):
+    client = _ImportClient(httpx.ConnectTimeout("slow rebuild"))
+    result = await bootstrap._import_into(client, "http://x", {"doc": 1}, "live-subj")
+    assert result["memories_imported"] == 5, "swap result survives a rebuild failure"
+    assert client.rebuild_posts == 1, "must never re-POST a possibly-running rebuild"
+    assert "WARN entity rebuild" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_rebuild_404_from_old_server_is_nonfatal(capsys):
+    client = _ImportClient(httpx.Response(status_code=404))
+    result = await bootstrap._import_into(client, "http://x", {"doc": 1}, "live-subj")
+    assert result["memories_imported"] == 5
+    err = capsys.readouterr().err
+    assert err.count("WARN entity rebuild") == 1
+
+
+@pytest.mark.asyncio
+async def test_rebuild_success_reports_count(capsys):
+    client = _ImportClient(httpx.Response(status_code=200, json={"entities_rebuilt": 42}))
+    result = await bootstrap._import_into(client, "http://x", {"doc": 1}, "live-subj")
+    assert result["memories_imported"] == 5
+    assert "rebuilt 42 entity rows" in capsys.readouterr().out

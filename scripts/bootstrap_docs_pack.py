@@ -336,10 +336,27 @@ async def _import_into(
     # (entity upserts dedup on normalized text). Best-effort — a failure
     # (including a 404 from a server predating the endpoint) leaves the
     # pack exactly as swaps always were.
-    er = await _request_with_retry(
-        f"rebuild-entities -> {target_subject_id}",
-        lambda: client.post(f"{url}/admin/subjects/{target_subject_id}/rebuild-entities"),
-    )
+    # ONE attempt, and never fatal: a re-POST of a rebuild that merely
+    # outlived the client timeout would run CONCURRENTLY with the first
+    # (the entity upsert is only retry-safe sequentially), and the swap
+    # above already succeeded — a rebuild problem must not turn a good
+    # refresh red. Worst case the entity store stays empty, which is
+    # exactly what every swap produced before this call existed.
+    try:
+        er = await _request_with_retry(
+            f"rebuild-entities -> {target_subject_id}",
+            lambda: client.post(
+                f"{url}/admin/subjects/{target_subject_id}/rebuild-entities"
+            ),
+            attempts=1,
+        )
+    except Exception as exc:
+        print(
+            f"  WARN entity rebuild -> {target_subject_id}: {type(exc).__name__} "
+            "(pack is fine; entity store stays empty)",
+            file=sys.stderr,
+        )
+        return result
     if er.status_code == 200:
         rebuilt = er.json().get("entities_rebuilt", 0)
         print(f"  → rebuilt {rebuilt} entity rows for {target_subject_id}")

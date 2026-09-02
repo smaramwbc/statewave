@@ -316,9 +316,6 @@ async def _import_into(
         "document": document,
         "target_subject_id": target_subject_id,
         "preserve_ids": False,
-        # Export documents don't carry subject_entities; without this the
-        # live pack has an empty entity store after every swap (issue #380).
-        "rebuild_entities": True,
     }
     resp = await _request_with_retry(
         f"import -> {target_subject_id}",
@@ -330,7 +327,29 @@ async def _import_into(
             file=sys.stderr,
         )
         sys.exit(1)
-    return resp.json()
+    result = resp.json()
+
+    # Export documents don't carry subject_entities, so without this the
+    # live pack has an empty entity store after every swap (issue #380).
+    # Deliberately a SEPARATE call after the fast pure-DB import: the
+    # rebuild spends provider calls, and the endpoint is retry-safe
+    # (entity upserts dedup on normalized text). Best-effort — a failure
+    # (including a 404 from a server predating the endpoint) leaves the
+    # pack exactly as swaps always were.
+    er = await _request_with_retry(
+        f"rebuild-entities -> {target_subject_id}",
+        lambda: client.post(f"{url}/admin/subjects/{target_subject_id}/rebuild-entities"),
+    )
+    if er.status_code == 200:
+        rebuilt = er.json().get("entities_rebuilt", 0)
+        print(f"  → rebuilt {rebuilt} entity rows for {target_subject_id}")
+    else:
+        print(
+            f"  WARN entity rebuild -> {target_subject_id}: {er.status_code} "
+            "(pack is fine; entity store stays empty)",
+            file=sys.stderr,
+        )
+    return result
 
 
 async def run(docs_path: Path, purge: bool, dry_run: bool) -> None:

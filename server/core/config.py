@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     litellm_embedding_api_base: str | None = None
     litellm_timeout_seconds: float = 60.0
     litellm_max_retries: int = 2
+    # A single provider call slower than this logs a `llm_slow_call` warning —
+    # the per-call signal behind compile wall-time spikes (issue #380: a
+    # provider latency regression turned a 6-minute pack compile into 25+).
+    litellm_slow_call_seconds: float = 10.0
     litellm_temperature: float = 0.1
     # reasoning_effort for gpt-5 / o-series reasoning models (e.g. "minimal",
     # "low", "medium", "high"). Empty = provider default. "minimal" keeps the
@@ -173,6 +177,11 @@ class Settings(BaseSettings):
     # earlier chunks. Bounds prompt size while still covering an arbitrarily
     # large batch (full-conversation compiles produce hundreds of candidates).
     reconcile_chunk_size: int = 40
+    # Reconcile chunks are strictly sequential and fail-open (a failed chunk
+    # is kept wholesale), so a slow provider call here is pure wasted wall
+    # time — bound it tighter than the general litellm timeout (issue #380:
+    # 18 sequential chunks x 60s of silent burn).
+    reconcile_chunk_timeout_seconds: float = 30.0
     # Absolute safety ceiling: skip reconcile only for a pathologically huge
     # batch (the conflict resolver + next drain still apply).
     reconcile_max_candidates: int = 4000

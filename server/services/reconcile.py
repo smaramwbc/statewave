@@ -267,6 +267,7 @@ async def reconcile_compile_batch(
     existing_ids = {m.id for m in existing}
     supersede_existing: set[uuid.UUID] = set()
     accepted_ids: list[uuid.UUID] = []           # candidate ids kept, in order
+    llm_failures = 0
     dropped_ids: set[uuid.UUID] = set()          # candidate ids retired/duplicate
     cand_by_id: dict[uuid.UUID, MemoryRow] = {m.id: m for m in candidates}
     max_ctx = settings.reconcile_max_existing
@@ -295,8 +296,13 @@ async def reconcile_compile_batch(
                 model=_compile_model(),
                 temperature=0.0,
                 max_tokens=min(settings.litellm_compile_max_tokens, 4000),
+                # Chunks are strictly sequential and fail-open, so a slow
+                # call here is pure wasted wall time — bound it tighter
+                # than the general litellm timeout (issue #380).
+                timeout=settings.reconcile_chunk_timeout_seconds,
             )
         except Exception:
+            llm_failures += 1
             logger.warning("reconcile_llm_failed", subject_id=subject_id, exc_info=True)
             # Keep this chunk wholesale (fail-open) and continue.
             accepted_ids.extend(m.id for m in chunk)
@@ -395,5 +401,9 @@ async def reconcile_compile_batch(
         dropped=len(dropped_ids),
         superseded_existing=len(supersede_existing),
         existing_considered=len(existing),
+        # Every fail-open chunk kept ~chunk_size candidates unreconciled and
+        # burned up to reconcile_chunk_timeout_seconds — nonzero here is the
+        # one-line explanation for both a slow compile and duplicate leakage.
+        llm_failures=llm_failures,
     )
     return kept, supersede_existing

@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from typing import Any
 
 import structlog
@@ -250,6 +251,11 @@ async def acomplete(
         "model": chosen_model,
         "messages": messages,
         "num_retries": settings.litellm_max_retries,
+        # Per-attempt timeout, sized so every retry fits inside the outer
+        # wait_for below. Without it litellm's retries race the single
+        # outer window: attempt 1 consumes the full budget, so num_retries
+        # is dead config (issue #380).
+        "timeout": timeout_s / (settings.litellm_max_retries + 1),
         **_common_kwargs(chosen_model),
         **_reasoning_kwargs(chosen_model),
     }
@@ -260,12 +266,24 @@ async def acomplete(
     if response_format is not None:
         kwargs["response_format"] = response_format
 
+    started = time.perf_counter()
     try:
         resp = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout_s)
     except asyncio.TimeoutError as exc:
         raise LLMTimeoutError(f"LLM completion timed out after {timeout_s}s") from exc
     except Exception as exc:  # noqa: BLE001
         raise _classify(exc) from exc
+    elapsed = time.perf_counter() - started
+    if elapsed >= settings.litellm_slow_call_seconds:
+        # One warning per slow call, not per call: at healthy latency this
+        # line never fires; when the provider degrades it is the direct
+        # per-call evidence for a compile wall-time spike (issue #380).
+        logger.warning(
+            "llm_slow_call",
+            model=chosen_model,
+            elapsed_seconds=round(elapsed, 2),
+            threshold_seconds=settings.litellm_slow_call_seconds,
+        )
 
     try:
         return resp.choices[0].message.content or ""

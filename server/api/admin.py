@@ -2875,11 +2875,6 @@ class ImportSubjectRequest(BaseModel):
     target_subject_id: str | None = None
     target_tenant_id: str | None = None
     preserve_ids: bool = True
-    # Export documents do not carry subject_entities, so an imported pack has
-    # an empty entity store even when its memories were compiled with one
-    # (found via issue #380: the docs-pack swap left live with zero entity
-    # rows every refresh). Opt-in because it spends provider calls.
-    rebuild_entities: bool = False
 
 
 @router.get("/export/{subject_id}")
@@ -2921,24 +2916,32 @@ async def import_subject_endpoint(req: ImportSubjectRequest):
             target_tenant_id=req.target_tenant_id,
             preserve_ids=req.preserve_ids,
         )
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    if req.rebuild_entities and settings.entity_population_enabled:
-        result["entities_rebuilt"] = await _rebuild_entities_for_import(
-            result["subject_id"], result.get("tenant_id")
-        )
-    return result
 
+@router.post("/subjects/{subject_id}/rebuild-entities")
+async def rebuild_entities_endpoint(
+    subject_id: str,
+    tenant_id: str | None = Query(None, description="Scope to tenant"),
+):
+    """Repopulate the subject_entities store from a subject's active memories.
 
-async def _rebuild_entities_for_import(subject_id: str, tenant_id: str | None) -> int:
-    """Repopulate the entity store for a just-imported subject.
-
-    Runs the same compile-time hook over the imported active memories.
-    Best-effort: a failure leaves the import result intact (Phase 3
-    retrieval treats an empty entity store as a no-op), mirroring the
-    compile path's fail-open behavior.
+    Export documents do not carry subject_entities, so an imported pack has
+    an empty entity store even when its memories were compiled with one
+    (found via issue #380: the docs-pack swap left live with zero entity
+    rows every refresh). A separate endpoint — NOT an import option — so
+    the import request stays a fast pure-DB write: an inline rebuild made
+    the import outlive client timeouts, and a client retrying a POST whose
+    first send already committed duplicates the subject wholesale when
+    preserve_ids is false. This endpoint is retry-safe by construction:
+    entity upserts dedup on normalized text, so re-running converges
+    instead of duplicating.
     """
+    if not settings.entity_population_enabled:
+        return {"subject_id": subject_id, "entities_rebuilt": 0, "enabled": False}
+
     from server.db import repositories as repo
     from server.db.engine import get_session_factory
     from server.services.entities import (
@@ -2946,23 +2949,26 @@ async def _rebuild_entities_for_import(subject_id: str, tenant_id: str | None) -
         populate_entities_for_memories,
     )
 
-    try:
-        async with get_session_factory()() as session:
-            rows = await repo.list_active_memories_by_subject(
-                session, subject_id, tenant_id=tenant_id, limit=10_000
-            )
-            touched = await populate_entities_for_memories(
-                session,
-                [MemoryForEntities(id=r.id, content=r.content) for r in rows],
+    _REBUILD_LIMIT = 10_000
+    async with get_session_factory()() as session:
+        rows = await repo.list_active_memories_by_subject(
+            session, subject_id, tenant_id=tenant_id, limit=_REBUILD_LIMIT
+        )
+        if len(rows) == _REBUILD_LIMIT:
+            logger.info(
+                "entity_rebuild_truncated",
                 subject_id=subject_id,
-                tenant_id=tenant_id,
+                limit=_REBUILD_LIMIT,
             )
-            if touched:
-                await session.commit()
-            return touched
-    except Exception:
-        logger.warning("import_entity_rebuild_failed", subject_id=subject_id, exc_info=True)
-        return 0
+        touched = await populate_entities_for_memories(
+            session,
+            [MemoryForEntities(id=r.id, content=r.content) for r in rows],
+            subject_id=subject_id,
+            tenant_id=tenant_id,
+        )
+        if touched:
+            await session.commit()
+    return {"subject_id": subject_id, "entities_rebuilt": touched, "enabled": True}
 
 
 # ─── Webhooks ───

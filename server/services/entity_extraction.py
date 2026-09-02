@@ -104,7 +104,7 @@ Treat every fact independently — an entity mentioned in two facts appears in b
     + _ENTITY_RULES
     + """
 
-FACTS:
+FACTS (one per line, each prefixed with its index):
 {facts}
 
 Return exactly this JSON, with one entry per fact index:
@@ -239,7 +239,12 @@ async def extract_entities_batch(texts: list[str]) -> list[list[ExtractedEntity]
     if len(texts) == 1:
         return [await extract_entities(texts[0])]
 
-    numbered = "\n".join(f"{i}: {t.strip()}" for i, t in enumerate(texts))
+    # Collapse internal whitespace so multi-line fact content (procedure
+    # steps like "2: run alembic") cannot mimic the index framing and
+    # cross-attribute entities to the wrong fact.
+    numbered = "\n".join(
+        f"FACT {i}: {' '.join(t.split())}" for i, t in enumerate(texts)
+    )
     messages = [
         {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
         {"role": "user", "content": BATCH_EXTRACTION_USER_TEMPLATE.format(facts=numbered)},
@@ -248,16 +253,32 @@ async def extract_entities_batch(texts: list[str]) -> list[list[ExtractedEntity]
         response_text = await acomplete(
             messages,
             model=_extraction_model(),
-            max_tokens=min(200 + 150 * len(texts), 4000),
+            max_tokens=min(300 + 250 * len(texts), 4000),
             temperature=0.0,
             response_format={"type": "json_object"},
         )
+    except Exception:
+        # Transport/provider failure (timeout, outage): per-fact calls would
+        # hit the SAME dead provider one at a time, sequentially, while the
+        # caller holds a concurrency slot — up to batch_size x timeout of
+        # stall per group. Entities are best-effort; return nothing instead.
+        logger.warning(
+            "entity_batch_extraction_unavailable",
+            batch_size=len(texts),
+            exc_info=True,
+        )
+        return [[] for _ in texts]
+
+    try:
         cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", (response_text or "").strip())
         parsed = json.loads(cleaned)
         results = parsed.get("results") if isinstance(parsed, dict) else None
         if not isinstance(results, dict):
             raise ValueError("batched extraction response has no results mapping")
     except Exception:
+        # The provider ANSWERED but the batched shape is unusable — the
+        # per-fact prompt is more robust, and the provider is demonstrably
+        # up, so falling back per fact is worth the extra calls.
         logger.warning(
             "entity_batch_extraction_failed",
             batch_size=len(texts),

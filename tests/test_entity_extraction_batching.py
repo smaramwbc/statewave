@@ -66,14 +66,34 @@ async def test_batch_structural_failure_falls_back_to_per_fact():
     assert single.await_count == 2
 
 
-async def test_batch_provider_error_falls_back_to_per_fact():
-    single = AsyncMock(side_effect=[[], []])
+async def test_batch_provider_error_returns_empty_without_per_fact_storm():
+    """A dead provider must NOT trigger batch_size sequential per-fact
+    calls under the concurrency slot — each would burn the same timeout
+    against the same dead provider. Entities are best-effort: empty."""
+    single = AsyncMock()
     with patch.object(
         ee, "acomplete", new=AsyncMock(side_effect=RuntimeError("provider down"))
     ), patch.object(ee, "extract_entities", new=single):
         out = await ee.extract_entities_batch(["fact a", "fact b"])
     assert out == [[], []]
-    assert single.await_count == 2
+    single.assert_not_awaited()
+
+
+async def test_batch_framing_collapses_multiline_content():
+    """Fact content with embedded newlines (procedure steps like
+    '2: run alembic') must not mimic the index framing."""
+    captured = {}
+
+    async def fake_acomplete(messages, **kwargs):
+        captured["user"] = messages[1]["content"]
+        return json.dumps({"results": {"0": [], "1": []}})
+
+    with patch.object(ee, "acomplete", new=fake_acomplete):
+        await ee.extract_entities_batch(["step one\n2: run alembic", "plain fact"])
+
+    facts_block = captured["user"].split("FACTS")[1]
+    assert "\n2: run alembic" not in facts_block, "newline framing must be collapsed"
+    assert "FACT 0: step one 2: run alembic" in facts_block
 
 
 async def test_single_fact_uses_single_path():
@@ -132,32 +152,63 @@ async def test_populate_groups_by_batch_size(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# admin import: opt-in entity rebuild
+# rebuild-entities endpoint (deliberately separate from /admin/import: an
+# inline rebuild made the import outlive client timeouts, and a retried
+# already-committed import with preserve_ids=False duplicates the subject)
 # ---------------------------------------------------------------------------
 
 
-async def _call_import(monkeypatch, rebuild: bool):
+async def test_rebuild_endpoint_populates_from_active_memories(monkeypatch):
     from server.api import admin as api_admin
 
-    async def fake_import(document, **_kw):
-        return {"subject_id": "subj", "tenant_id": None, "memories_imported": 2}
+    class _Row:
+        def __init__(self, content):
+            self.id = uuid.uuid4()
+            self.content = content
 
-    rebuilt = AsyncMock(return_value=7)
-    monkeypatch.setattr("server.services.backup.import_subject", fake_import)
-    monkeypatch.setattr(api_admin, "_rebuild_entities_for_import", rebuilt)
+    rows = [_Row("fact a"), _Row("fact b")]
+    seen = {}
 
-    req = api_admin.ImportSubjectRequest(document={}, rebuild_entities=rebuild)
-    result = await api_admin.import_subject_endpoint(req)
-    return result, rebuilt
+    async def fake_list(_session, subject_id, *, tenant_id, limit):
+        seen["limit"] = limit
+        return rows
+
+    async def fake_populate(_session, memories, *, subject_id, tenant_id):
+        seen["memories"] = len(memories)
+        return 5
+
+    class _Ctx:
+        async def __aenter__(self):
+            return AsyncMock()
+
+        async def __aexit__(self, *a):
+            return None
+
+    import server.db.engine as engine_module
+    import server.db.repositories as repo_module
+    import server.services.entities as ent_module
+
+    monkeypatch.setattr(engine_module, "get_session_factory", lambda: lambda: _Ctx())
+    monkeypatch.setattr(repo_module, "list_active_memories_by_subject", fake_list)
+    monkeypatch.setattr(ent_module, "populate_entities_for_memories", fake_populate)
+
+    result = await api_admin.rebuild_entities_endpoint("subj", tenant_id=None)
+    assert result == {"subject_id": "subj", "entities_rebuilt": 5, "enabled": True}
+    assert seen["memories"] == 2
+    assert seen["limit"] == 10_000
 
 
-async def test_import_rebuilds_entities_when_asked(monkeypatch):
-    result, rebuilt = await _call_import(monkeypatch, rebuild=True)
-    rebuilt.assert_awaited_once_with("subj", None)
-    assert result["entities_rebuilt"] == 7
+async def test_rebuild_endpoint_is_noop_when_population_disabled(monkeypatch):
+    from server.api import admin as api_admin
+
+    with patch.object(settings, "entity_population_enabled", False):
+        result = await api_admin.rebuild_entities_endpoint("subj", tenant_id=None)
+    assert result["entities_rebuilt"] == 0 and result["enabled"] is False
 
 
-async def test_import_skips_rebuild_by_default(monkeypatch):
-    result, rebuilt = await _call_import(monkeypatch, rebuild=False)
-    rebuilt.assert_not_awaited()
-    assert "entities_rebuilt" not in result
+async def test_import_request_has_no_rebuild_flag():
+    """Pin the review outcome: the rebuild must never ride inside the
+    import request again."""
+    from server.api import admin as api_admin
+
+    assert "rebuild_entities" not in api_admin.ImportSubjectRequest.model_fields

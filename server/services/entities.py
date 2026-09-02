@@ -42,7 +42,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
 from server.services.embeddings import get_provider as get_embedding_provider
-from server.services.entity_extraction import ExtractedEntity, extract_entities
+from server.services.entity_extraction import (
+    ExtractedEntity,
+    extract_entities_batch,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -63,15 +66,18 @@ class MemoryForEntities:
 # LLM provider rate limit. 8 is conservative — typical compile batches
 # are 20-50 memories; doubling concurrency gives no wall-time benefit
 # when the bottleneck is provider round-trip latency.
-_EXTRACT_CONCURRENCY = 8
+# Concurrency and batch size now live in settings (entity_extract_concurrency,
+# entity_extract_batch_size) so operators can tune wave count vs rate limits.
 
 
-async def _extract_one(
-    memory: MemoryForEntities, semaphore: asyncio.Semaphore
-) -> tuple[uuid.UUID, list[ExtractedEntity]]:
+async def _extract_group(
+    group: list[MemoryForEntities], semaphore: asyncio.Semaphore
+) -> list[tuple[uuid.UUID, list[ExtractedEntity]]]:
+    """One provider call for a whole group of memories (issue #380 — was
+    one call per memory, ~60% of a large compile's round-trips)."""
     async with semaphore:
-        entities = await extract_entities(memory.content)
-    return memory.id, entities
+        entity_lists = await extract_entities_batch([m.content for m in group])
+    return [(m.id, entities) for m, entities in zip(group, entity_lists)]
 
 
 async def populate_entities_for_memories(
@@ -92,7 +98,8 @@ async def populate_entities_for_memories(
     compile path also rolls back the entity writes, no partial state.
 
     Order of operations (the Phase 7 entity-linking sequence):
-      1. Parallel LLM extraction (fan-out, _EXTRACT_CONCURRENCY workers)
+      1. Batched parallel LLM extraction (entity_extract_batch_size facts
+         per call, entity_extract_concurrency calls in flight)
       2. Collect all distinct (text, normalized, kind) entities
       3. Batch-embed in ONE provider call (memory bandwidth, not latency)
       4. Per-(memory_id, entity) call upsert_entity_with_link, which
@@ -107,10 +114,16 @@ async def populate_entities_for_memories(
     if not memories:
         return 0
 
-    # ── Step 1: parallel LLM extraction ─────────────────────────────────
-    semaphore = asyncio.Semaphore(_EXTRACT_CONCURRENCY)
-    tasks = [_extract_one(m, semaphore) for m in memories]
-    results = await asyncio.gather(*tasks, return_exceptions=False)
+    # ── Step 1: batched parallel LLM extraction ─────────────────────────
+    from server.core.config import settings
+
+    batch_size = max(1, settings.entity_extract_batch_size)
+    semaphore = asyncio.Semaphore(max(1, settings.entity_extract_concurrency))
+    groups = [memories[i : i + batch_size] for i in range(0, len(memories), batch_size)]
+    group_results = await asyncio.gather(
+        *[_extract_group(g, semaphore) for g in groups], return_exceptions=False
+    )
+    results = [pair for group in group_results for pair in group]
 
     # ── Step 2: flatten + dedup entity text within this batch ────────────
     # (Same surface form across two memories gets ONE embedding call,

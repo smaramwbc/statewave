@@ -316,6 +316,9 @@ async def _import_into(
         "document": document,
         "target_subject_id": target_subject_id,
         "preserve_ids": False,
+        # Export documents don't carry subject_entities; without this the
+        # live pack has an empty entity store after every swap (issue #380).
+        "rebuild_entities": True,
     }
     resp = await _request_with_retry(
         f"import -> {target_subject_id}",

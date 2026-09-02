@@ -66,9 +66,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "Return ONLY valid JSON with the exact shape requested."
 )
 
-EXTRACTION_USER_TEMPLATE = """Extract every distinct named entity from the fact below.
-
-An entity is:
+_ENTITY_RULES = """An entity is:
   - A proper noun (person, place, organization, product, event, work)
   - A specific compound noun phrase that identifies one thing ("the navy blue blazer", "the 5K charity run")
   - A specific date or date range when it identifies a SPECIFIC event (skip generic dates like "yesterday")
@@ -82,13 +80,36 @@ NOT entities:
 
 For each entity, output:
   - text: the canonical surface form (preserve casing as written)
-  - kind: one of PERSON | ORG | GPE | LOC | PRODUCT | EVENT | WORK | DATE | MISC
+  - kind: one of PERSON | ORG | GPE | LOC | PRODUCT | EVENT | WORK | DATE | MISC"""
+
+EXTRACTION_USER_TEMPLATE = (
+    """Extract every distinct named entity from the fact below.
+
+"""
+    + _ENTITY_RULES
+    + """
 
 FACT:
 {text}
 
 Return exactly this JSON:
 {{"entities": [{{"text": "<entity>", "kind": "<label>"}}, ...]}}"""
+)
+
+BATCH_EXTRACTION_USER_TEMPLATE = (
+    """Extract every distinct named entity from EACH numbered fact below.
+Treat every fact independently — an entity mentioned in two facts appears in both results.
+
+"""
+    + _ENTITY_RULES
+    + """
+
+FACTS:
+{facts}
+
+Return exactly this JSON, with one entry per fact index:
+{{"results": {{"0": [{{"text": "<entity>", "kind": "<label>"}}, ...], "1": [...], ...}}}}"""
+)
 
 
 @dataclass(frozen=True)
@@ -133,7 +154,12 @@ def _parse_entities(raw: str) -> list[ExtractedEntity]:
             return []
     if not isinstance(j, dict):
         return []
-    raw_entities = j.get("entities")
+    return _entities_from_list(j.get("entities"))
+
+
+def _entities_from_list(raw_entities: object) -> list[ExtractedEntity]:
+    """Validate + normalize one JSON entity array (shared by the single and
+    batched parsers — the per-entity rules must never drift between them)."""
     if not isinstance(raw_entities, list):
         return []
     out: list[ExtractedEntity] = []
@@ -191,3 +217,52 @@ async def extract_entities(text: str) -> list[ExtractedEntity]:
         logger.warning("entity_extraction_failed", text_preview=text[:80], exc_info=True)
         return []
     return _parse_entities(response_text)
+
+
+async def extract_entities_batch(texts: list[str]) -> list[list[ExtractedEntity]]:
+    """Extract entities for several facts in ONE provider call.
+
+    Per-memory extraction was ~60% of all provider round-trips on a large
+    compile and the dominant amplifier of a provider latency regression
+    (issue #380: ~745 calls per 411-episode pack). Batching cuts that to
+    ~1/batch_size with identical per-entity rules (the rules block is
+    shared with the single-fact prompt).
+
+    Fail-open like `extract_entities`, in two stages: a structurally
+    unusable batched response falls back to per-fact calls (which
+    themselves fail-open to []); a well-formed response with a missing
+    index yields [] for that fact only. Always returns exactly
+    ``len(texts)`` lists, index-aligned.
+    """
+    if not texts:
+        return []
+    if len(texts) == 1:
+        return [await extract_entities(texts[0])]
+
+    numbered = "\n".join(f"{i}: {t.strip()}" for i, t in enumerate(texts))
+    messages = [
+        {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": BATCH_EXTRACTION_USER_TEMPLATE.format(facts=numbered)},
+    ]
+    try:
+        response_text = await acomplete(
+            messages,
+            model=_extraction_model(),
+            max_tokens=min(200 + 150 * len(texts), 4000),
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", (response_text or "").strip())
+        parsed = json.loads(cleaned)
+        results = parsed.get("results") if isinstance(parsed, dict) else None
+        if not isinstance(results, dict):
+            raise ValueError("batched extraction response has no results mapping")
+    except Exception:
+        logger.warning(
+            "entity_batch_extraction_failed",
+            batch_size=len(texts),
+            exc_info=True,
+        )
+        return [await extract_entities(t) for t in texts]
+
+    return [_entities_from_list(results.get(str(i))) for i in range(len(texts))]

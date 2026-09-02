@@ -275,6 +275,12 @@ class Settings(BaseSettings):
     # entity-boost retrieval is not in use (e.g. semantic-only bench runs),
     # which materially speeds up large compiles.
     entity_population_enabled: bool = True
+    # Entity extraction used to be one LLM call PER MEMORY — ~60% of all
+    # provider round-trips on a large compile, and the dominant amplifier
+    # when provider latency degrades (issue #380). Batched: facts per call,
+    # calls in flight.
+    entity_extract_batch_size: int = 10
+    entity_extract_concurrency: int = 8
 
     # ── Memory TTL / expiry policies ────────────────────────────────
     # Per-kind expiry windows. Keys are MemoryKind values

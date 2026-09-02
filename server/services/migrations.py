@@ -13,7 +13,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 # Expected head revision — update this when adding new migrations
-EXPECTED_HEAD = "0029_compile_jobs_heartbeat"
+EXPECTED_HEAD = "0030_subject_entities_unique"
 
 # Path to alembic.ini relative to the repo root
 _ALEMBIC_INI = Path(__file__).resolve().parent.parent.parent / "alembic.ini"

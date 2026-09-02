@@ -732,8 +732,17 @@ async def upsert_entity_with_link(
                     ]
                 return existing_row
 
-    # Step 3: insert fresh
-    fresh = SubjectEntityRow(
+    # Step 3: insert fresh — via ON CONFLICT against the unique identity
+    # index (migration 0030), so a CONCURRENT writer that inserted the same
+    # (subject, tenant, normalized) between our step-1 miss and this insert
+    # converges into one row instead of duplicating (issue #383). The DO
+    # UPDATE appends our memory_id (guarded against double-linking) and
+    # keeps the first non-null embedding.
+    from sqlalchemy import any_, case, literal, text as sa_text
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+    stmt = pg_insert(SubjectEntityRow).values(
+        id=uuid.uuid4(),
         subject_id=subject_id,
         tenant_id=tenant_id,
         entity_text=entity_text,
@@ -742,7 +751,28 @@ async def upsert_entity_with_link(
         embedding=embedding,
         linked_memory_ids=[memory_id],
     )
-    session.add(fresh)
+    mid = literal(memory_id, type_=SubjectEntityRow.id.type)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[
+            SubjectEntityRow.subject_id,
+            sa_text("(COALESCE(tenant_id, ''))"),
+            SubjectEntityRow.entity_normalized,
+        ],
+        set_={
+            "linked_memory_ids": case(
+                (
+                    mid == any_(SubjectEntityRow.linked_memory_ids),
+                    SubjectEntityRow.linked_memory_ids,
+                ),
+                else_=func.array_append(SubjectEntityRow.linked_memory_ids, mid),
+            ),
+            "embedding": func.coalesce(SubjectEntityRow.embedding, stmt.excluded.embedding),
+            "updated_at": func.now(),
+        },
+    ).returning(SubjectEntityRow.id)
+    row_id = (await session.execute(stmt)).scalar_one()
+    fresh = await session.get(SubjectEntityRow, row_id)
+    assert fresh is not None  # just written/updated in this transaction
     return fresh
 
 

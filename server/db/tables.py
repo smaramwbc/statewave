@@ -200,6 +200,18 @@ class SubjectEntityRow(Base):
             "subject_id",
             "entity_normalized",
         ),
+        # The identity invariant lives in the DATABASE, not in caller
+        # discipline (issue #383): concurrent select-then-insert upserts
+        # could silently duplicate an entity. COALESCE folds NULL tenant
+        # into one value so untenanted rows are unique too (a plain
+        # multi-column unique index treats NULLs as distinct).
+        Index(
+            "uq_subject_entities_identity",
+            "subject_id",
+            text("(COALESCE(tenant_id, ''))"),
+            "entity_normalized",
+            unique=True,
+        ),
     )
 
 

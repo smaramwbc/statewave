@@ -227,6 +227,20 @@ def _reasoning_kwargs(model: str | None) -> dict[str, Any]:
 # ─── Chat completion ─────────────────────────────────────────────────
 
 
+def _warn_if_slow(model: str, started: float) -> None:
+    """One warning per slow provider call: at healthy latency this never
+    fires; when the provider degrades it is the direct per-call evidence
+    for a compile wall-time spike (issue #380)."""
+    elapsed = time.perf_counter() - started
+    if elapsed >= settings.litellm_slow_call_seconds:
+        logger.warning(
+            "llm_slow_call",
+            model=model,
+            elapsed_seconds=round(elapsed, 2),
+            threshold_seconds=settings.litellm_slow_call_seconds,
+        )
+
+
 async def acomplete(
     messages: list[dict[str, str]],
     *,
@@ -251,14 +265,17 @@ async def acomplete(
         "model": chosen_model,
         "messages": messages,
         "num_retries": settings.litellm_max_retries,
-        # Per-attempt timeout, sized so every retry fits inside the outer
-        # wait_for below. Without it litellm's retries race the single
-        # outer window: attempt 1 consumes the full budget, so num_retries
-        # is dead config (issue #380).
-        "timeout": timeout_s / (settings.litellm_max_retries + 1),
         **_common_kwargs(chosen_model),
         **_reasoning_kwargs(chosen_model),
     }
+    # Deliberately no per-attempt litellm timeout: retries only ever fire on
+    # fast-failing errors (429s, connection resets), which fit inside the
+    # outer wait_for naturally; a slow attempt consumes the window once, as
+    # it should. Deriving a per-attempt slice (outer/(retries+1)) was tried
+    # for issue #380 and rejected in review — it cuts HEALTHY long
+    # generations (reconcile decision arrays, dense extraction batches,
+    # reasoning models) below their normal completion time, turning working
+    # calls into timeouts.
     if not _omit_temperature(chosen_model):
         kwargs["temperature"] = temp
     if max_tokens is not None:
@@ -273,17 +290,7 @@ async def acomplete(
         raise LLMTimeoutError(f"LLM completion timed out after {timeout_s}s") from exc
     except Exception as exc:  # noqa: BLE001
         raise _classify(exc) from exc
-    elapsed = time.perf_counter() - started
-    if elapsed >= settings.litellm_slow_call_seconds:
-        # One warning per slow call, not per call: at healthy latency this
-        # line never fires; when the provider degrades it is the direct
-        # per-call evidence for a compile wall-time spike (issue #380).
-        logger.warning(
-            "llm_slow_call",
-            model=chosen_model,
-            elapsed_seconds=round(elapsed, 2),
-            threshold_seconds=settings.litellm_slow_call_seconds,
-        )
+    _warn_if_slow(chosen_model, started)
 
     try:
         return resp.choices[0].message.content or ""
@@ -491,12 +498,14 @@ async def _acomplete_json_anthropic_tool_use(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
+    started = time.perf_counter()
     try:
         resp = await asyncio.wait_for(litellm.acompletion(**kwargs), timeout=timeout_s)
     except asyncio.TimeoutError as exc:
         raise LLMTimeoutError(f"LLM completion timed out after {timeout_s}s") from exc
     except Exception as exc:  # noqa: BLE001
         raise _classify(exc) from exc
+    _warn_if_slow(model, started)
 
     # LiteLLM normalizes Anthropic tool_use → OpenAI-shaped tool_calls.
     try:

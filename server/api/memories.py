@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import time
 import uuid
 from typing import Any
 
@@ -82,6 +83,19 @@ async def _compile_one_batch(
     if not episodes:
         return [], 0, 0
 
+    # Wall-time is dominated by sequential provider round-trips, so when a
+    # compile is slow the FIRST question is which phase ate the time (issue
+    # #380 took a day to diagnose for lack of exactly this). One structured
+    # line per batch, logged below whatever else happens.
+    _t0 = time.perf_counter()
+    _phase_seconds: dict[str, float] = {}
+
+    def _phase_done(name: str) -> None:
+        nonlocal _t0
+        now = time.perf_counter()
+        _phase_seconds[name] = round(now - _t0, 3)
+        _t0 = now
+
     compiler = get_compiler()
     # The tenant's own registered claim vocabulary (#376). Loaded once per
     # batch and handed to the compiler, because the compiler has no session of
@@ -99,6 +113,7 @@ async def _compile_one_batch(
         new_rows = await loop.run_in_executor(
             None, functools.partial(compiler.compile, list(episodes), claim_keys=claim_keys)
         )
+    _phase_done("extraction")
 
     # Near-duplicate dedup (runs BEFORE reconcile). Full-conversation windowed
     # compile produces many restated/overlapping facts; this cheap, deterministic
@@ -114,6 +129,7 @@ async def _compile_one_batch(
             new_rows = await dedup_candidates(new_rows)
         except Exception:
             logger.warning("dedup_failed", subject_id=subject_id, exc_info=True)
+    _phase_done("dedup")
 
     # Phase 4 + 5b — context-aware reconcile. One LLM call
     # decides, per freshly-extracted candidate, whether it is new, a duplicate
@@ -134,6 +150,7 @@ async def _compile_one_batch(
         except Exception:
             logger.warning("reconcile_failed", subject_id=subject_id, exc_info=True)
             reconcile_superseded_ids = set()
+    _phase_done("reconcile")
 
     for row in new_rows:
         row.tenant_id = tenant_id
@@ -150,10 +167,12 @@ async def _compile_one_batch(
     superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
     if superseded_ids:
         logger.info("conflicts_resolved", superseded=len(superseded_ids))
+    _phase_done("conflicts")
 
     await session.commit()
     for row in new_rows:
         await session.refresh(row)
+    _phase_done("commit")
 
     # Only backfill rows that don't already carry an embedding. Dedup's semantic
     # pass computes and staples embeddings onto its surviving canonicals, so those
@@ -199,6 +218,7 @@ async def _compile_one_batch(
             # so the compile result for the caller is identical with or
             # without this step. Logged at WARNING for operator visibility.
             logger.warning("entity_population_failed", subject_id=subject_id, exc_info=True)
+    _phase_done("entities")
 
     await webhooks.fire(
         "memories.compiled",
@@ -211,6 +231,14 @@ async def _compile_one_batch(
 
     remaining = await repo.count_uncompiled_episodes(
         session, subject_id, tenant_id=tenant_id
+    )
+    logger.info(
+        "compile_phase_timings",
+        subject_id=subject_id,
+        episodes=len(episodes),
+        memories=len(new_rows),
+        total_seconds=round(sum(_phase_seconds.values()), 3),
+        **{f"{name}_seconds": secs for name, secs in _phase_seconds.items()},
     )
     return [_to_response(r) for r in new_rows], len(new_rows), remaining
 

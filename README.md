@@ -165,7 +165,7 @@ Full reference: [API v1 contract](https://github.com/smaramwbc/statewave-docs/bl
 
 | Surface | Supported |
 |---|---|
-| Python | 3.11+ (CI runs 3.11; 3.12 / 3.13 expected to work but not gated in CI yet) |
+| Python | 3.11+ (CI runs 3.11, 3.12, and 3.13) |
 | OS — server | Linux verified in CI; macOS + Windows usually fine for local dev but not CI-tested |
 | Docker image | `linux/amd64` and `linux/arm64` |
 | Database | PostgreSQL 14+ with [pgvector](https://github.com/pgvector/pgvector) ≥ 0.4.2 |

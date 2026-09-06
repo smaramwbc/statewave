@@ -191,7 +191,7 @@ def test_clone_response_shape_does_not_carry_legacy_copied_keys():
     """
     from pathlib import Path
 
-    src = Path(mp.__file__).read_text()
+    src = Path(mp.__file__).read_text(encoding="utf-8")
     assert '"copied_episodes"' not in src
     assert '"copied_memories"' not in src
     assert '"copied_sources"' not in src

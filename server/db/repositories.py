@@ -660,6 +660,40 @@ async def search_memories_hybrid(
 # ---------------------------------------------------------------------------
 
 
+async def _append_entity_link_atomic(
+    session: AsyncSession, row: SubjectEntityRow, memory_id: uuid.UUID
+) -> None:
+    """Append memory_id to a row's linked_memory_ids as ONE guarded SQL
+    UPDATE, never an ORM read-modify-write. Two concurrent appenders that
+    both read the same committed array would each write back their own
+    copy and silently drop the other's link (lost update — caught by the
+    #384 concurrent-convergence test on CI). The UPDATE takes the row
+    lock and re-evaluates the append against the latest committed array,
+    so concurrent appends serialize; the ANY() guard keeps repeated
+    linkage of the same memory a no-op.
+    """
+    from sqlalchemy import any_, case, literal
+
+    mid = literal(memory_id, type_=SubjectEntityRow.id.type)
+    await session.execute(
+        update(SubjectEntityRow)
+        .where(SubjectEntityRow.id == row.id)
+        .values(
+            linked_memory_ids=case(
+                (
+                    mid == any_(SubjectEntityRow.linked_memory_ids),
+                    SubjectEntityRow.linked_memory_ids,
+                ),
+                else_=func.array_append(SubjectEntityRow.linked_memory_ids, mid),
+            ),
+            updated_at=func.now(),
+        )
+    )
+    # Refresh so the caller-visible ORM row reflects the post-append array
+    # instead of the stale pre-lock snapshot.
+    await session.refresh(row)
+
+
 async def upsert_entity_with_link(
     session: AsyncSession,
     *,
@@ -703,10 +737,7 @@ async def upsert_entity_with_link(
         exact_stmt = exact_stmt.where(SubjectEntityRow.tenant_id == tenant_id)
     exact = (await session.execute(exact_stmt)).scalar_one_or_none()
     if exact is not None:
-        if memory_id not in exact.linked_memory_ids:
-            # SQLAlchemy doesn't detect mutations to ARRAY columns
-            # in-place; rebuild + reassign so the update flushes.
-            exact.linked_memory_ids = [*exact.linked_memory_ids, memory_id]
+        await _append_entity_link_atomic(session, exact, memory_id)
         return exact
 
     # Step 2: semantic dedup (only if we have an embedding to compare with)
@@ -725,11 +756,7 @@ async def upsert_entity_with_link(
             existing_row, distance = near_row
             # Cosine distance ≤ (1 - threshold) ⇒ similarity ≥ threshold.
             if float(distance) <= (1.0 - dedup_cosine_threshold):
-                if memory_id not in existing_row.linked_memory_ids:
-                    existing_row.linked_memory_ids = [
-                        *existing_row.linked_memory_ids,
-                        memory_id,
-                    ]
+                await _append_entity_link_atomic(session, existing_row, memory_id)
                 return existing_row
 
     # Step 3: insert fresh — via ON CONFLICT against the unique identity

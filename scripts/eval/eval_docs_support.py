@@ -331,7 +331,7 @@ def emit_json(summary: EvalSummary, path: str) -> None:
             for r in summary.results
         ],
     }
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     print(f"\nSnapshot written to {path}")
 

@@ -118,6 +118,8 @@ authorized the contribution before submitting.
 ## Code style
 
 - Python 3.11+, formatted with `ruff` (settings in `pyproject.toml`).
+- Source files are UTF-8; test and script file I/O must specify `encoding="utf-8"`
+  so contributor tooling behaves consistently on Windows.
 - Type hints on public APIs.
 - Match the surrounding code's conventions; prefer small, composable
   functions; prefer clear names over comments.

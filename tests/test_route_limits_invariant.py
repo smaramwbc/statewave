@@ -35,7 +35,7 @@ def _iter_param_defaults(func: ast.AsyncFunctionDef | ast.FunctionDef):
 def _violations() -> list[str]:
     bad: list[str] = []
     for path in sorted(_API_DIR.glob("*.py")):
-        tree = ast.parse(path.read_text())
+        tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
                 continue

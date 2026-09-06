@@ -20,7 +20,9 @@ def test_no_raw_lower_split_outside_shared_tokenizer():
     for path in _SERVER.rglob("*.py"):
         if path in _ALLOWED:
             continue
-        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
             if ".lower().split()" in line:
                 offenders.append(f"{path.relative_to(_SERVER.parent)}:{lineno}")
     assert not offenders, (

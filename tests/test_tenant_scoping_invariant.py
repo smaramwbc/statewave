@@ -29,7 +29,7 @@ _ALLOWED_UNSCOPED: set[str] = set()
 
 
 def _subject_scoped_without_tenant() -> set[str]:
-    tree = ast.parse(_REPOSITORIES.read_text())
+    tree = ast.parse(_REPOSITORIES.read_text(encoding="utf-8"))
     out: set[str] = set()
     for node in tree.body:
         if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):

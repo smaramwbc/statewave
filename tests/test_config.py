@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from server.core.config import Settings
+
+
+def test_env_example_documents_every_setting():
+    """Keep the operator-facing environment inventory in sync with Settings."""
+    env_example = (Path(__file__).parents[1] / ".env.example").read_text()
+    documented = set(re.findall(r"^#?\s*(STATEWAVE_[A-Z0-9_]+)\s*=", env_example, re.MULTILINE))
+    expected = {f"STATEWAVE_{name.upper()}" for name in Settings.model_fields}
+
+    assert expected <= documented, "Settings missing from .env.example: " + ", ".join(
+        sorted(expected - documented)
+    )
 
 
 # ── rate_limit_strategy ─────────────────────────────────────────────────────

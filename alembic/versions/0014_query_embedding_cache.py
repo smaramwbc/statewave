@@ -29,7 +29,6 @@ extension is already enabled (it is, by 0013).
 from typing import Sequence, Union
 
 from alembic import op
-import sqlalchemy as sa
 
 revision: str = "0014_query_embedding_cache"
 down_revision: Union[str, None] = "0013_pgvector_native"

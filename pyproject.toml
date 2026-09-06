@@ -77,6 +77,12 @@ line-length = 100
 # Widening the selection is tracked separately in #314.
 select = ["E4", "E7", "E9", "F"]
 
+[tool.ruff.lint.per-file-ignores]
+# alembic/env.py must set sqlalchemy.url from the resolved settings before
+# importing the app's own models, so the override import is deliberately
+# below the config comment block rather than at the top of the file.
+"alembic/env.py" = ["E402"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"

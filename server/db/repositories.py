@@ -676,7 +676,9 @@ async def upsert_entity_with_link(
     cosine-similar embedding), appending memory_id to linked_memory_ids.
 
     Dedup order:
-      1. Exact match on (subject_id, entity_normalized) — cheapest.
+      1. Exact match on (subject_id, entity_normalized) — cheapest, and
+         takes priority over a semantic near-match so an exact repeat
+         mention never gets merged into the wrong (merely similar) row.
          If found, append memory_id and return.
       2. If miss AND embedding provided, cosine-distance probe against
          all entities for the same subject; merge if any row is within
@@ -694,20 +696,56 @@ async def upsert_entity_with_link(
     `array_append` would duplicate; we guard with `NOT (memory_id =
     ANY(linked_memory_ids))`).
     """
-    # Step 1: exact-match dedup
-    exact_stmt = select(SubjectEntityRow).where(
+    from sqlalchemy import any_, case, literal
+
+    mid = literal(memory_id, type_=SubjectEntityRow.id.type)
+
+    # Step 1: exact-match dedup. A cheap read-only probe first — this
+    # SELECT never blocks or takes a write lock, so it's behaviorally
+    # identical to the original code's read step. We only issue a write
+    # when the probe actually finds a candidate row.
+    #
+    # An earlier version of this fix issued the atomic UPDATE
+    # unconditionally on every call (to close the #383-style lost-update
+    # race: two concurrent writers both reading the row and separately
+    # reassigning `linked_memory_ids` in Python means whichever commits
+    # last silently overwrites the other's append). That was correct for
+    # rows that exist, but an UPDATE that matches zero rows still takes
+    # locks a plain SELECT never did — and running one on *every* upsert
+    # call, concurrently with the fire-and-forget background
+    # embedding-backfill task (`schedule_embedding_backfill`) most compile
+    # requests also kick off, produced real `DeadlockDetectedError`s in
+    # CI (confirmed via an A/B test: 3/3 clean runs without the change,
+    # deadlock with it).
+    #
+    # Gating the UPDATE behind this probe keeps write volume identical to
+    # the original code (a write only happens when something is actually
+    # being mutated) while still making that write atomic instead of a
+    # Python-side read-modify-write.
+    exact_probe_stmt = select(SubjectEntityRow.id).where(
         SubjectEntityRow.subject_id == subject_id,
         SubjectEntityRow.entity_normalized == entity_normalized,
     )
     if tenant_id is not None:
-        exact_stmt = exact_stmt.where(SubjectEntityRow.tenant_id == tenant_id)
-    exact = (await session.execute(exact_stmt)).scalar_one_or_none()
-    if exact is not None:
-        if memory_id not in exact.linked_memory_ids:
-            # SQLAlchemy doesn't detect mutations to ARRAY columns
-            # in-place; rebuild + reassign so the update flushes.
-            exact.linked_memory_ids = [*exact.linked_memory_ids, memory_id]
-        return exact
+        exact_probe_stmt = exact_probe_stmt.where(SubjectEntityRow.tenant_id == tenant_id)
+    exact_probe_id = (await session.execute(exact_probe_stmt)).scalar_one_or_none()
+    if exact_probe_id is not None:
+        exact_update_stmt = (
+            update(SubjectEntityRow)
+            .where(SubjectEntityRow.id == exact_probe_id)
+            .values(
+                linked_memory_ids=case(
+                    (mid == any_(SubjectEntityRow.linked_memory_ids), SubjectEntityRow.linked_memory_ids),
+                    else_=func.array_append(SubjectEntityRow.linked_memory_ids, mid),
+                ),
+                updated_at=func.now(),
+            )
+            .returning(SubjectEntityRow.id)
+        )
+        exact_id = (await session.execute(exact_update_stmt)).scalar_one()
+        fresh = await session.get(SubjectEntityRow, exact_id)
+        assert fresh is not None  # just written in this transaction
+        return fresh
 
     # Step 2: semantic dedup (only if we have an embedding to compare with)
     if embedding is not None:
@@ -725,12 +763,27 @@ async def upsert_entity_with_link(
             existing_row, distance = near_row
             # Cosine distance ≤ (1 - threshold) ⇒ similarity ≥ threshold.
             if float(distance) <= (1.0 - dedup_cosine_threshold):
-                if memory_id not in existing_row.linked_memory_ids:
-                    existing_row.linked_memory_ids = [
-                        *existing_row.linked_memory_ids,
-                        memory_id,
-                    ]
-                return existing_row
+                # Same lost-update hazard as Step 1 — append via an atomic
+                # UPDATE targeting this row's id, not a Python-side mutate.
+                near_update_stmt = (
+                    update(SubjectEntityRow)
+                    .where(SubjectEntityRow.id == existing_row.id)
+                    .values(
+                        linked_memory_ids=case(
+                            (
+                                mid == any_(SubjectEntityRow.linked_memory_ids),
+                                SubjectEntityRow.linked_memory_ids,
+                            ),
+                            else_=func.array_append(SubjectEntityRow.linked_memory_ids, mid),
+                        ),
+                        updated_at=func.now(),
+                    )
+                    .returning(SubjectEntityRow.id)
+                )
+                near_id = (await session.execute(near_update_stmt)).scalar_one()
+                fresh_near = await session.get(SubjectEntityRow, near_id)
+                assert fresh_near is not None
+                return fresh_near
 
     # Step 3: insert fresh — via ON CONFLICT against the unique identity
     # index (migration 0030), so a CONCURRENT writer that inserted the same
@@ -738,7 +791,7 @@ async def upsert_entity_with_link(
     # converges into one row instead of duplicating (issue #383). The DO
     # UPDATE appends our memory_id (guarded against double-linking) and
     # keeps the first non-null embedding.
-    from sqlalchemy import any_, case, literal, text as sa_text
+    from sqlalchemy import text as sa_text
     from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     stmt = pg_insert(SubjectEntityRow).values(
@@ -751,7 +804,6 @@ async def upsert_entity_with_link(
         embedding=embedding,
         linked_memory_ids=[memory_id],
     )
-    mid = literal(memory_id, type_=SubjectEntityRow.id.type)
     stmt = stmt.on_conflict_do_update(
         index_elements=[
             SubjectEntityRow.subject_id,

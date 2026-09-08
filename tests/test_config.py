@@ -11,13 +11,20 @@ from server.core.config import Settings
 
 
 def test_env_example_documents_every_setting():
-    """Keep the operator-facing environment inventory in sync with Settings."""
-    env_example = (Path(__file__).parents[1] / ".env.example").read_text()
+    """Keep the operator-facing environment inventory in sync with Settings —
+    BOTH directions: a missing entry hides a setting from operators, and a
+    stale entry documents a knob that no longer exists."""
+    env_example = (Path(__file__).parents[1] / ".env.example").read_text(encoding="utf-8")
     documented = set(re.findall(r"^#?\s*(STATEWAVE_[A-Z0-9_]+)\s*=", env_example, re.MULTILINE))
     expected = {f"STATEWAVE_{name.upper()}" for name in Settings.model_fields}
+    # Compose-only host-port vars are legitimately not Settings fields.
+    documented -= {"STATEWAVE_API_HOST_PORT", "STATEWAVE_DB_HOST_PORT", "STATEWAVE_ADMIN_HOST_PORT"}
 
     assert expected <= documented, "Settings missing from .env.example: " + ", ".join(
         sorted(expected - documented)
+    )
+    assert documented <= expected, ".env.example documents settings that no longer exist: " + ", ".join(
+        sorted(documented - expected)
     )
 
 

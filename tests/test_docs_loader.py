@@ -179,7 +179,7 @@ def test_to_episode_provenance_has_hash_and_pack_version():
 
 def test_load_docs_raises_on_missing_manifest_entry(tmp_path: Path):
     # Only place one of the manifest files
-    (tmp_path / "README.md").write_text("# Hi\n\nbody\n")
+    (tmp_path / "README.md").write_text("# Hi\n\nbody\n", encoding="utf-8")
     with pytest.raises(FileNotFoundError) as exc_info:
         load_docs(tmp_path, manifest=("README.md", "does-not-exist.md"))
     assert "does-not-exist.md" in str(exc_info.value)
@@ -190,7 +190,7 @@ def test_load_docs_loads_full_manifest(tmp_path: Path):
     for rel in MANIFEST:
         full = tmp_path / rel
         full.parent.mkdir(parents=True, exist_ok=True)
-        full.write_text(f"# {rel}\n\nbody for {rel}\n")
+        full.write_text(f"# {rel}\n\nbody for {rel}\n", encoding="utf-8")
     sections = load_docs(tmp_path)
     # One section per stub doc (each has exactly one heading with body)
     assert len(sections) == len(MANIFEST)

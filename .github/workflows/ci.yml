@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-matrix:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -114,3 +114,19 @@ jobs:
       - name: Container logs
         if: always()
         run: docker logs statewave-smoke || true
+
+  # Branch protection requires a check literally named "test". A matrix job
+  # reports per-leg contexts ("test (3.11)"...), which would leave the
+  # required check permanently "Expected" and block every PR. This aggregate
+  # keeps the stable name and fails if any leg failed or was cancelled.
+  test:
+    needs: test-matrix
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: All Python versions passed
+        run: |
+          if [ "${{ needs.test-matrix.result }}" != "success" ]; then
+            echo "test-matrix result: ${{ needs.test-matrix.result }}"
+            exit 1
+          fi

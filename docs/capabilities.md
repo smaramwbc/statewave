@@ -6,7 +6,7 @@ The lead [README](../README.md#capabilities) lists the top 8 capabilities most r
 
 - **Episode ingestion** — append-only raw event recording, single (`POST /v1/episodes`) or batch up to 100 (`POST /v1/episodes/batch`).
 - **Pluggable compilers** — heuristic (regex) or LLM (any LiteLLM-supported provider) memory extraction; switch via `STATEWAVE_COMPILER_TYPE`.
-- **Idempotent compilation** — recompiling the same subject produces no duplicates; safe to rerun.
+- **Idempotent compilation** — recompiling the same subject sequentially produces no duplicates; safe to rerun. Concurrent compiles of the same subject can currently duplicate memories (#417).
 - **Semantic search** — pgvector cosine similarity with text-search fallback when no embedding provider is configured.
 - **Token-bounded context** — every context bundle respects a configurable token budget (`max_tokens`).
 - **Ranked retrieval** — kind priority × recency × task relevance × temporal validity × semantic similarity.

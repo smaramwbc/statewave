@@ -17,7 +17,19 @@ class CreateEpisodeRequest(BaseModel):
     source: str = Field(..., min_length=1, max_length=256)
     type: str = Field(..., min_length=1, max_length=128)
     payload: dict[str, Any]
-    metadata: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Free-form attributes stored with the episode and returned "
+            "unchanged. Retrieval, ranking and context assembly never read it: "
+            "compilation works from `payload`, and a context line is built from "
+            "the episode text plus `source` and `type`. Labels written here do "
+            "not make an episode easier to retrieve — anything the model has to "
+            "see belongs in `payload`, `source` or `type`. The only key ingest "
+            "itself reads is `idempotency_key`, as a fallback for the "
+            "top-level field of that name."
+        ),
+    )
     provenance: dict[str, Any] = Field(default_factory=dict)
     session_id: SessionId | None = None
     # When the source event actually happened. Optional — when absent, the

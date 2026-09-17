@@ -15,6 +15,7 @@ from server.services.context import (
     _SESSION_BOOST,
     assemble_context,
 )
+from tests._fakes import make_async_session
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ async def test_session_episodes_boosted_in_context():
 
     with _mock_repos([old_session_ep, recent_other_ep]):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help with billing", max_tokens=4000, session_id=current_session
+            make_async_session(), "user-1", "help with billing", max_tokens=4000, session_id=current_session
         )
 
     ep_ids = {str(e.id) for e in result.episodes}
@@ -139,7 +140,7 @@ async def test_session_grouping_in_assembled_text():
 
     with _mock_repos([ep_in_session, ep_other]):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help user", max_tokens=4000, session_id=current_session
+            make_async_session(), "user-1", "help user", max_tokens=4000, session_id=current_session
         )
 
     assert f"### Current session ({current_session})" in result.assembled_context
@@ -153,7 +154,7 @@ async def test_no_session_id_preserves_flat_rendering():
     ep2 = _make_episode_row(session_id="sess-b", text="msg2", minutes_ago=10)
 
     with _mock_repos([ep1, ep2]):
-        result = await assemble_context(AsyncMock(), "user-1", "help user", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "help user", max_tokens=4000)
 
     assert "### Current session" not in result.assembled_context
     assert "### Previous interactions" not in result.assembled_context
@@ -169,7 +170,7 @@ async def test_session_metadata_in_response():
 
     with _mock_repos([ep1, ep2, ep3]):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help user", max_tokens=4000, session_id="sess-a"
+            make_async_session(), "user-1", "help user", max_tokens=4000, session_id="sess-a"
         )
 
     assert len(result.sessions) == 2
@@ -188,7 +189,7 @@ async def test_token_budget_respected_with_session_boost():
 
     with _mock_repos(episodes):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help", max_tokens=200, session_id="sess-x"
+            make_async_session(), "user-1", "help", max_tokens=200, session_id="sess-x"
         )
 
     assert result.token_estimate <= 200
@@ -202,7 +203,7 @@ async def test_no_session_episodes_still_works():
 
     with _mock_repos([ep1]):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help", max_tokens=4000, session_id="sess-current"
+            make_async_session(), "user-1", "help", max_tokens=4000, session_id="sess-current"
         )
 
     assert len(result.episodes) == 1
@@ -221,7 +222,7 @@ async def test_resolved_session_episodes_penalized():
 
     with _mock_repos([resolved_ep, active_ep], resolved_sessions={"sess-resolved"}):
         result = await assemble_context(
-            AsyncMock(), "user-1", "help", max_tokens=4000, session_id="sess-active"
+            make_async_session(), "user-1", "help", max_tokens=4000, session_id="sess-active"
         )
 
     # Both included (budget allows), but active session ep should be first

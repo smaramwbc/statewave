@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from server.services import webhooks
+from tests._fakes import make_async_session
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +31,7 @@ async def test_fire_persists_event_when_url_set():
     """Event is persisted to DB when URL is configured."""
     webhooks.configure("http://example.com/hook")
 
-    mock_session = AsyncMock()
+    mock_session = make_async_session()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 

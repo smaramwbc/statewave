@@ -18,6 +18,7 @@ from server.services.context import (
     _has_urgency,
     assemble_context,
 )
+from tests._fakes import make_async_session
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +143,7 @@ async def test_open_issue_episodes_outrank_untracked():
     )
 
     with _mock_repos([open_ep, untracked_ep], open_sessions={"sess-open"}):
-        result = await assemble_context(AsyncMock(), "user-1", "help", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "help", max_tokens=4000)
 
     # Open-issue episode should appear first due to +4 boost
     assert len(result.episodes) == 2
@@ -163,7 +164,7 @@ async def test_action_steps_outrank_user_greetings():
     )
 
     with _mock_repos([greeting, action], open_sessions=set()):
-        result = await assemble_context(AsyncMock(), "user-1", "what was tried", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "what was tried", max_tokens=4000)
 
     # Action episode should rank higher
     assert len(result.episodes) == 2
@@ -183,7 +184,7 @@ async def test_urgency_episodes_boosted():
     )
 
     with _mock_repos([urgent, normal], open_sessions=set()):
-        result = await assemble_context(AsyncMock(), "user-1", "help", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "help", max_tokens=4000)
 
     # Urgent episode should rank first despite being older
     assert len(result.episodes) == 2
@@ -201,7 +202,7 @@ async def test_idle_chatter_deprioritized():
     )
 
     with _mock_repos([chatter, substance], open_sessions=set()):
-        result = await assemble_context(AsyncMock(), "user-1", "help with export", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "help with export", max_tokens=4000)
 
     # Substance should outrank chatter despite being older
     assert len(result.episodes) == 2
@@ -223,7 +224,7 @@ async def test_resolved_episodes_below_open_issues():
         resolved_sessions={"sess-resolved"},
         open_sessions={"sess-open"},
     ):
-        result = await assemble_context(AsyncMock(), "user-1", "help", max_tokens=4000)
+        result = await assemble_context(make_async_session(), "user-1", "help", max_tokens=4000)
 
     assert len(result.episodes) == 2
     assert result.episodes[0].session_id == "sess-open"
@@ -259,7 +260,7 @@ async def test_combined_signals_under_tight_budget():
         open_sessions={"sess-open"},
     ):
         # Very tight budget — should only fit 2 episodes
-        result = await assemble_context(AsyncMock(), "user-1", "help with export", max_tokens=150)
+        result = await assemble_context(make_async_session(), "user-1", "help with export", max_tokens=150)
 
     included_texts = [ep.payload["messages"][0]["content"] for ep in result.episodes]
     # High-signal episodes (urgent + action) should be present
@@ -285,7 +286,7 @@ async def test_output_remains_deterministic():
 
     async def _run():
         with _mock_repos(eps, open_sessions=set()):
-            return await assemble_context(AsyncMock(), "user-1", "help", max_tokens=4000)
+            return await assemble_context(make_async_session(), "user-1", "help", max_tokens=4000)
 
     r1 = await _run()
     r2 = await _run()

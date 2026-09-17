@@ -13,6 +13,7 @@ import pytest
 from server.services.handoff import assemble_handoff
 from server.services.health import HealthFactor, HealthResult
 from server.services.sla import SLASummary, SessionSLA
+from tests._fakes import make_async_session
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +144,7 @@ async def test_active_issue_from_current_session():
     ep = _make_episode_row(session_id="sess-1", text="My billing is wrong")
 
     with _mock_repos(episodes=[ep]):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "billing" in result.active_issue.lower()
     assert result.session_id == "sess-1"
@@ -155,7 +156,7 @@ async def test_key_facts_included():
     facts = [_make_fact_row("Enterprise plan"), _make_fact_row("Account since 2023")]
 
     with _mock_repos(facts=facts):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "Enterprise plan" in result.key_facts
     assert "Account since 2023" in result.key_facts
@@ -170,7 +171,7 @@ async def test_resolution_history_included():
     ]
 
     with _mock_repos(resolutions=resolutions):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert len(result.resolution_history) == 2
     resolved = [r for r in result.resolution_history if r.status == "resolved"]
@@ -187,7 +188,7 @@ async def test_resolved_deprioritized_in_notes():
     ]
 
     with _mock_repos(resolutions=resolutions):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "Previously Resolved" in result.handoff_notes
     assert "Open Issues" in result.handoff_notes
@@ -202,7 +203,7 @@ async def test_attempted_steps_from_assistant_messages():
     )
 
     with _mock_repos(episodes=[ep1, ep2]):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert any("checked your account" in s for s in result.attempted_steps)
 
@@ -214,7 +215,7 @@ async def test_handoff_notes_compact_and_deterministic():
     ep = _make_episode_row(session_id="sess-1", text="Cannot access dashboard")
 
     with _mock_repos(facts=facts, episodes=[ep]):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1", max_tokens=500)
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1", max_tokens=500)
 
     assert result.token_estimate <= 500
     assert "Handoff Brief" in result.handoff_notes
@@ -228,7 +229,7 @@ async def test_provenance_preserved():
     ep = _make_episode_row(session_id="sess-1", text="Issue report")
 
     with _mock_repos(facts=facts, episodes=[ep]):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "fact_ids" in result.provenance
     assert "episode_ids" in result.provenance
@@ -243,7 +244,7 @@ async def test_recent_context_from_other_sessions():
     old_ep = _make_episode_row(session_id="sess-old", text="Previous conversation", minutes_ago=60)
 
     with _mock_repos(episodes=[current_ep, old_ep]):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert any("Previous conversation" in c for c in result.recent_context)
 
@@ -267,7 +268,7 @@ async def test_active_session_episodes_present_outside_subject_window():
     ]
 
     with _mock_repos(episodes=subject_window, session_episodes=active_eps):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "billing" in result.active_issue.lower()
     assert any("checked your account" in s for s in result.attempted_steps)
@@ -287,7 +288,7 @@ async def test_recent_context_shows_newest_other_sessions():
     episodes = other_eps + [current_ep]
 
     with _mock_repos(episodes=episodes):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     joined = "\n".join(result.recent_context)
     # Newest (index 6) is present; oldest (index 0/1) are dropped.
@@ -306,7 +307,7 @@ async def test_recent_context_shows_newest_other_sessions():
 async def test_empty_subject_produces_minimal_handoff():
     """A subject with no data still produces a valid handoff."""
     with _mock_repos():
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert result.subject_id == "user-1"
     assert result.session_id == "sess-1"
@@ -336,7 +337,7 @@ async def test_at_risk_customer_shows_in_handoff():
     )
 
     with _mock_repos(health=health):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert result.health_score == 20
     assert result.health_state == "at_risk"
@@ -351,7 +352,7 @@ async def test_healthy_state_renders_in_handoff():
     health = HealthResult(subject_id="user-1", score=100, state="healthy", factors=[])
 
     with _mock_repos(health=health):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert result.health_score == 100
     assert result.health_state == "healthy"
@@ -370,7 +371,7 @@ async def test_watch_state_renders_in_handoff():
     )
 
     with _mock_repos(health=health):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert result.health_score == 55
     assert result.health_state == "watch"
@@ -392,7 +393,7 @@ async def test_health_factors_explainable_in_handoff():
     )
 
     with _mock_repos(health=health):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert len(result.health_factors) == 2
     assert result.health_factors[0].signal == "unresolved_issues"
@@ -418,7 +419,7 @@ async def test_health_in_handoff_stays_compact():
     ep = _make_episode_row(session_id="sess-1", text="Need help urgently")
 
     with _mock_repos(episodes=[ep], health=health):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1", max_tokens=300)
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1", max_tokens=300)
 
     assert result.token_estimate <= 300
     # Health section is one compact section, not a huge dump
@@ -448,7 +449,7 @@ async def test_sla_breach_appears_in_handoff():
     )
 
     with _mock_repos(sla=sla):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "SLA Status" in result.handoff_notes
     assert "First-response SLA breached" in result.handoff_notes
@@ -470,7 +471,7 @@ async def test_sla_not_shown_when_clean():
     )
 
     with _mock_repos(sla=sla):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     # Only avg first response shown (no breaches, no open)
     # SLA section is present because avg_first_response is available
@@ -483,6 +484,6 @@ async def test_sla_section_absent_for_empty_history():
     sla = SLASummary(subject_id="user-1")
 
     with _mock_repos(sla=sla):
-        result = await assemble_handoff(AsyncMock(), "user-1", "sess-1")
+        result = await assemble_handoff(make_async_session(), "user-1", "sess-1")
 
     assert "SLA Status" not in result.handoff_notes

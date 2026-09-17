@@ -11,11 +11,12 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 from server.db import repositories as repo
+from tests._fakes import make_async_session
 
 
 async def test_upsert_scopes_existing_lookup_by_tenant():
     with patch.object(repo, "get_health_cache", new=AsyncMock(return_value=None)) as mock_get:
-        session = AsyncMock()
+        session = make_async_session()
         await repo.upsert_health_cache(session, "user-1", "at_risk", 30, tenant_id="tenant-a")
 
     mock_get.assert_awaited_once_with(session, "user-1", tenant_id="tenant-a")
@@ -23,7 +24,7 @@ async def test_upsert_scopes_existing_lookup_by_tenant():
 
 async def test_upsert_single_tenant_lookup_passes_none():
     with patch.object(repo, "get_health_cache", new=AsyncMock(return_value=None)) as mock_get:
-        session = AsyncMock()
+        session = make_async_session()
         await repo.upsert_health_cache(session, "user-1", "healthy", 100)
 
     mock_get.assert_awaited_once_with(session, "user-1", tenant_id=None)

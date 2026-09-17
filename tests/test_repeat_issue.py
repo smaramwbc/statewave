@@ -15,6 +15,7 @@ from server.services.context import (
     _session_keyword_overlap,
     assemble_context,
 )
+from tests._fakes import make_async_session
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +199,7 @@ async def test_repeat_issue_boosts_resolved_session():
         resolutions=resolutions,
     ):
         result = await assemble_context(
-            AsyncMock(), "user-1", "payment failed", max_tokens=4000, session_id="sess-current"
+            make_async_session(), "user-1", "payment failed", max_tokens=4000, session_id="sess-current"
         )
 
     # Current session ep should be first (session boost), old payment ep should be
@@ -223,7 +224,7 @@ async def test_no_false_boost_without_overlap():
         resolutions=[_make_resolution("sess-old", "Sent updated invoice")],
     ):
         result = await assemble_context(
-            AsyncMock(), "user-1", "login error", max_tokens=4000, session_id="sess-current"
+            make_async_session(), "user-1", "login error", max_tokens=4000, session_id="sess-current"
         )
 
     # Current session ep should rank first; old ep has resolved penalty, no repeat boost
@@ -252,7 +253,7 @@ async def test_repeat_resolved_boost_higher_than_plain_repeat():
         resolutions=resolutions,
     ):
         result = await assemble_context(
-            AsyncMock(), "user-1", "payment timeout", max_tokens=4000, session_id="sess-current"
+            make_async_session(), "user-1", "payment timeout", max_tokens=4000, session_id="sess-current"
         )
 
     # Session with resolution summary should rank above session without

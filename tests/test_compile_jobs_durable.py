@@ -21,6 +21,7 @@ from server.services.compile_jobs import (
     mark_failed_durable,
     _jobs,
 )
+from tests._fakes import make_async_session
 
 
 @pytest.fixture(autouse=True)
@@ -86,7 +87,7 @@ class TestDurableJobs:
     @pytest.mark.anyio
     async def test_submit_job_durable_persists_to_db(self):
         """Durable submit writes to Postgres and in-memory."""
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -107,7 +108,7 @@ class TestDurableJobs:
     @pytest.mark.anyio
     async def test_submit_job_durable_preserves_tenant_in_cache(self):
         """Durable submit keeps tenant ownership available for cache reads."""
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -181,7 +182,7 @@ class TestDurableJobs:
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = fake_row
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -206,7 +207,7 @@ class TestDurableJobs:
         """If job not in memory and not in DB, returns None."""
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = None
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -226,7 +227,7 @@ class TestDurableJobs:
     async def test_mark_running_durable_updates_both(self):
         """mark_running_durable updates in-memory and DB."""
         job = submit_job("sub")
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -245,7 +246,7 @@ class TestDurableJobs:
     async def test_mark_completed_durable_updates_both(self):
         """mark_completed_durable updates in-memory and DB."""
         job = submit_job("sub")
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
@@ -265,7 +266,7 @@ class TestDurableJobs:
     async def test_mark_failed_durable_updates_both(self):
         """mark_failed_durable updates in-memory and DB."""
         job = submit_job("sub")
-        mock_session = AsyncMock()
+        mock_session = make_async_session()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 

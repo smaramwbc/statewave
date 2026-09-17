@@ -1,7 +1,7 @@
 """Unit tests for the heuristic memory compiler."""
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from server.db.tables import EpisodeRow
 from server.services.compiler import compile_memories_from_episodes
@@ -16,7 +16,7 @@ def _make_episode(payload: dict, subject_id: str = "user-1") -> EpisodeRow:
         payload=payload,
         metadata_={},
         provenance={},
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(timezone.utc),
     )
     return row
 

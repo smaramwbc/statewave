@@ -25,7 +25,14 @@ logger = structlog.stdlib.get_logger()
 
 
 def get_app_version() -> str:
-    """Return the installed package version, or a dev sentinel when not installed."""
+    """Return the installed package version, or a dev sentinel when not installed.
+
+    `0.0.0-dev` is the one sentinel every version surface reports for that
+    condition — the startup log, OpenAPI `info.version`, `/v1/version` and
+    `/admin/info` all read it from here. It is deliberately version-shaped:
+    a client checking the server against a required floor sorts it below
+    every release and warns, where an unparseable value gets ignored.
+    """
     try:
         return version("statewave")
     except PackageNotFoundError:
@@ -265,15 +272,13 @@ def create_app() -> FastAPI:
         for smoke tests, support, and Docker users verifying which image is
         live. No auth, tenant, or rate-limit applies (see the middleware
         public-path sets).
-        """
-        from importlib.metadata import PackageNotFoundError
-        from importlib.metadata import version as pkg_version
 
-        try:
-            ver = pkg_version("statewave")
-        except PackageNotFoundError:
-            ver = "unknown"
-        return {"version": ver, "api_contract": "v1"}
+        Reads get_app_version() so the discovery endpoint and OpenAPI
+        `info.version` cannot disagree, sentinel included. (This route's own
+        name shadows the module-level `version` import within create_app,
+        which is why the helper is called here rather than the import.)
+        """
+        return {"version": get_app_version(), "api_contract": "v1"}
 
     @app.get("/readyz", tags=["ops"], summary="Deep readiness check")
     @app.get("/ready", tags=["ops"], summary="Readiness check (alias)", include_in_schema=False)

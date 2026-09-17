@@ -32,6 +32,12 @@ def _status_prefix(kind: str, plain: bool) -> str:
         return {"error": "ERROR:", "success": "OK:", "warning": "WARN:"}[kind]
     return {"error": "\u274c", "success": "\u2705", "warning": "\u26a0\ufe0f"}[kind]
 
+def _glyph(kind: str, plain: bool) -> str:
+    """Punctuation outside the status prefixes; --plain must reach it too."""
+    if plain:
+        return {"arrow": "->", "dash": "-"}[kind]
+    return {"arrow": "\u2192", "dash": "\u2014"}[kind]
+
 async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -50,12 +56,13 @@ async def main(argv: list[str] | None = None) -> int:
     status = await check_migration_status()
 
     if status.error:
-        print(f"{_status_prefix('error', args.plain)} ERROR: {status.error}")
+        print(f"{_status_prefix('error', args.plain)} {status.error}")
         print()
         print("Action: Fix the error above before proceeding.")
         return 1
 
-    print(f"  Current revision : {status.current_revision or '(none — fresh DB)'}")
+    fresh = f"(none {_glyph('dash', args.plain)} fresh DB)"
+    print(f"  Current revision : {status.current_revision or fresh}")
     print(f"  Expected head    : {status.expected_head}")
     print(f"  Pending          : {status.pending_count} migration(s)")
     print()
@@ -63,7 +70,7 @@ async def main(argv: list[str] | None = None) -> int:
     if status.pending_revisions:
         print("  Pending migrations:")
         for rev in status.pending_revisions:
-            print(f"    → {rev}")
+            print(f"    {_glyph('arrow', args.plain)} {rev}")
         print()
 
     if status.is_compatible:

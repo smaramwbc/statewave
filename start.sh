@@ -81,11 +81,16 @@ alembic upgrade head
 #   1. STATEWAVE_BOOTSTRAP_DOCS_PACK is unset or true (default true), AND
 #   2. The docs corpus is reachable at STATEWAVE_DOCS_PATH (default /docs).
 #
+# Condition 2 needs more than `-d`: a compose mount of a sibling repo that
+# isn't checked out resolves to an EMPTY directory, which exists. Seeding
+# from it used to die on the missing manifest and print a traceback into
+# the startup logs of anyone following DOCKER.md without the docs checkout.
+#
 # Idempotent — the bootstrap script exits 2 when the subject already has
-# episodes, which we treat as "already seeded, nothing to do". Production
-# deploys (Fly) don't ship the corpus inside the image, so the path check
-# silently skips this. Operators who want to disable explicitly can set
-# STATEWAVE_BOOTSTRAP_DOCS_PACK=false.
+# episodes and 3 when the path holds no corpus, both of which we treat as
+# "nothing to do". Production deploys (Fly) don't ship the corpus inside
+# the image, so the path check silently skips this. Operators who want to
+# disable explicitly can set STATEWAVE_BOOTSTRAP_DOCS_PACK=false.
 #
 # NOTE: This live-docs path is now superseded by the bundled-pack
 # auto-update below. We keep the live-docs path for dev environments
@@ -96,7 +101,7 @@ alembic upgrade head
 DOCS_PATH="${STATEWAVE_DOCS_PATH:-/docs}"
 BOOTSTRAP="${STATEWAVE_BOOTSTRAP_DOCS_PACK:-true}"
 DOCS_MOUNTED=0
-if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
+if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ] && [ -n "$(ls -A "$DOCS_PATH" 2>/dev/null)" ]; then
     DOCS_MOUNTED=1
     echo "Auto-bootstrap: docs pack will seed from /docs after API is ready (DOCS_PATH=$DOCS_PATH)"
     (
@@ -123,9 +128,12 @@ if [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
         case "$rc" in
             0) echo "Auto-bootstrap: Statewave Support docs pack seeded from /docs." ;;
             2) echo "Auto-bootstrap: docs pack already populated — skipped." ;;
+            3) echo "Auto-bootstrap: no docs corpus at $DOCS_PATH — skipped." ;;
             *) echo "Auto-bootstrap: bootstrap exited with code $rc (server is still serving)." >&2 ;;
         esac
     ) &
+elif [ "$BOOTSTRAP" = "true" ] && [ -d "$DOCS_PATH" ]; then
+    echo "Auto-bootstrap: $DOCS_PATH is empty (docs corpus not mounted) — docs pack seed skipped."
 fi
 
 # ─── Auto-update: support pack from bundled JSONL ────────────────────────

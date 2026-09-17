@@ -29,6 +29,9 @@ Async compile (why it no longer times out):
 Idempotency: by default, fails if the LIVE subject already has episodes.
 Re-run with --purge to replace it. Each episode carries a content_hash in
 provenance so future incremental refresh flows can diff section-by-section.
+
+Exit codes: 0 seeded, 1 failed, 2 live subject already populated,
+3 no corpus at the docs path (e.g. an empty `/docs` bind mount).
 """
 
 from __future__ import annotations
@@ -58,6 +61,12 @@ BATCH_SIZE = 50
 SOURCE = "statewave-docs"
 EPISODE_TYPE = "doc_section"
 STAGING_SUBJECT_ID = f"{SUBJECT_ID}-staging"
+
+# Exit codes start.sh branches on: 2 = live subject already seeded,
+# 3 = no corpus at the docs path (nothing to seed). Both are "skipped",
+# not failures.
+EXIT_ALREADY_POPULATED = 2
+EXIT_NO_CORPUS = 3
 
 # Async-compile job polling. The server drains the whole subject in the
 # background; each poll is a cheap status read, so the long-request idle
@@ -384,6 +393,15 @@ async def run(docs_path: Path, purge: bool, dry_run: bool) -> None:
         print(f"ERROR: docs path does not exist: {docs_path}", file=sys.stderr)
         sys.exit(1)
 
+    # A docs path that holds none of the manifest is "the corpus isn't
+    # checked out" — the documented skip (an empty /docs bind mount when
+    # the sibling repo is missing), not an error. A path holding SOME of
+    # it is a broken corpus, and load_docs below still fails loudly on it
+    # rather than publishing a partial pack.
+    if not any((docs_path / rel).exists() for rel in MANIFEST):
+        print(f"No docs corpus at {docs_path} — nothing to seed, skipping.")
+        sys.exit(EXIT_NO_CORPUS)
+
     print(f"Loading {len(MANIFEST)} curated docs...")
     sections = load_docs(docs_path)
     bytes_total = sum(len(s.body.encode("utf-8")) for s in sections)
@@ -417,7 +435,7 @@ async def run(docs_path: Path, purge: bool, dry_run: bool) -> None:
                 "episodes.\n       Re-run with --purge to replace it.",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            sys.exit(EXIT_ALREADY_POPULATED)
 
         # 1. Build into staging (never touch live yet).
         print(f"\nBuilding staging pack {STAGING_SUBJECT_ID!r}...")

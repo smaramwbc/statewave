@@ -11,6 +11,7 @@ mocked httpx call covering each transient-failure shape.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -280,3 +281,45 @@ async def test_rebuild_success_reports_count(capsys):
     result = await bootstrap._import_into(client, "http://x", {"doc": 1}, "live-subj")
     assert result["memories_imported"] == 5
     assert "rebuilt 42 entity rows" in capsys.readouterr().out
+
+
+# --- docs corpus guard (issue #395) -----------------------------------------
+#
+# Pinned because the skip is a contract with start.sh: a compose mount of a
+# sibling docs checkout that doesn't exist resolves to an EMPTY directory,
+# which passes every "is it there" test a shell can cheaply make. Seeding
+# from it used to raise FileNotFoundError listing all 33 manifest entries, so
+# the first thing a new operator saw in the logs was a traceback.
+
+
+@pytest.mark.asyncio
+async def test_empty_docs_mount_skips_cleanly(tmp_path: Path, capsys):
+    """An empty mount is "the corpus isn't checked out" — skip, don't raise."""
+    with pytest.raises(SystemExit) as exc_info:
+        await bootstrap.run(tmp_path, purge=False, dry_run=False)
+    assert exc_info.value.code == bootstrap.EXIT_NO_CORPUS
+
+    captured = capsys.readouterr()
+    skip_lines = [ln for ln in captured.out.splitlines() if "nothing to seed" in ln]
+    assert len(skip_lines) == 1, "the skip explains itself once"
+    assert str(tmp_path) in skip_lines[0]
+    assert not captured.err
+
+
+@pytest.mark.asyncio
+async def test_partial_docs_corpus_still_fails_loudly(tmp_path: Path):
+    """Some manifest entries present = a broken corpus, not an absent one.
+    Publishing that would ship a partial pack, so it must still raise."""
+    (tmp_path / "README.md").write_text("# Hi\n\nbody\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError):
+        await bootstrap.run(tmp_path, purge=False, dry_run=True)
+
+
+@pytest.mark.asyncio
+async def test_missing_docs_path_is_an_error_not_a_skip(tmp_path: Path):
+    """A path that doesn't exist at all is an operator mistake (bad
+    --docs-path), and keeps failing — only an existing-but-empty mount is
+    the documented skip."""
+    with pytest.raises(SystemExit) as exc_info:
+        await bootstrap.run(tmp_path / "not-a-checkout", purge=False, dry_run=True)
+    assert exc_info.value.code == 1

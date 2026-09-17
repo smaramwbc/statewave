@@ -4,7 +4,8 @@
 `pyproject.toml` is the source of truth. The server reads its version
 dynamically via `importlib.metadata`, so it never needs editing. Markdown
 and YAML cannot read package metadata at render time, so this script keeps
-the README status lines and issue-template examples in lockstep.
+the README status lines, the issue-template examples and the Helm chart's
+`appVersion` in lockstep.
 
 Usage:
     python scripts/bump_version.py 0.8.0     # rewrite pyproject + docs
@@ -84,8 +85,29 @@ def _issue_template_targets() -> list[Target]:
     ]
 
 
+def _helm_targets() -> list[Target]:
+    chart = ROOT / "helm" / "statewave"
+    return [
+        # `image.tag` defaults to empty and the templates fall back to
+        # `.Chart.AppVersion`, so a stale appVersion makes the documented
+        # default install deploy an old image with no warning. The chart's own
+        # `version:` field is deliberately NOT a target — it follows the
+        # chart's lifecycle, not the API image's.
+        Target(
+            path=chart / "Chart.yaml",
+            pattern=r'appVersion: "(?P<version>[^"]+)"',
+            template='appVersion: "{version}"',
+        ),
+        Target(
+            path=chart / "README.md",
+            pattern=r"--set image\.tag=(?P<version>\S+)",
+            template="--set image.tag={version}",
+        ),
+    ]
+
+
 def all_targets() -> list[Target]:
-    return _readme_targets() + _issue_template_targets()
+    return _readme_targets() + _issue_template_targets() + _helm_targets()
 
 
 def read_pyproject_version() -> str:

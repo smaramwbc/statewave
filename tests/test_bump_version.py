@@ -89,6 +89,27 @@ class BumpVersionAtomicityTests(unittest.TestCase):
         for path, text in before.items():
             self.assertEqual(path.read_text(encoding="utf-8"), text, path.name)
 
+class VersionDriftTests(unittest.TestCase):
+    """The drift guard is only worth what it pins; these are those claims."""
+
+
+    def test_helm_chart_app_version_matches_pyproject(self):
+        # image.tag defaults to empty and the chart falls back to
+        # .Chart.AppVersion, so this equality is what a default
+        # `helm install` actually deploys.
+        version = bump_version.read_pyproject_version()
+        chart = bump_version.ROOT / "helm" / "statewave" / "Chart.yaml"
+
+        self.assertIn(f'appVersion: "{version}"', chart.read_text(encoding="utf-8"))
+
+    def test_every_target_pattern_still_matches_its_file(self):
+        # A target whose pattern has rotted away is indistinguishable from real
+        # drift under --check, and aborts a real bump after pyproject.toml is
+        # already written. --check alone cannot tell the two apart.
+        for target in bump_version.all_targets():
+            with self.subTest(path=str(target.path.relative_to(bump_version.ROOT))):
+                self.assertRegex(target.path.read_text(encoding="utf-8"), target.pattern)
+
 
 if __name__ == "__main__":
     unittest.main()

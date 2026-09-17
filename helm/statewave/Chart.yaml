@@ -14,7 +14,7 @@ version: 0.2.0
 
 # appVersion tracks the Statewave API release this chart was validated
 # against. Operators can override the deployed image via image.tag.
-appVersion: "1.0.0"
+appVersion: "1.5.0"
 
 home: https://statewave.ai
 sources:

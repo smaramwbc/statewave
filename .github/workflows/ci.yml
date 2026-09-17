@@ -49,6 +49,14 @@ jobs:
       - name: Lint
         run: ruff check .
 
+      # pyproject.toml is the only version anyone edits; the README and the
+      # issue templates carry copies that nothing at runtime can derive, so
+      # drift is invisible until a reader trusts a stale number. This step
+      # lives inside the matrix because branch protection requires the
+      # aggregate "test" check, which only reflects matrix legs.
+      - name: Version consistency
+        run: python scripts/bump_version.py --check
+
       - name: Run migrations
         run: alembic upgrade head
 

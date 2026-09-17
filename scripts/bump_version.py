@@ -52,8 +52,8 @@ def _readme_targets() -> list[Target]:
     return [
         Target(
             path=ROOT / "README.md",
-            pattern=r"> \*\*Status:\*\* v(?P<version>\S+) — actively developed\.",
-            template="> **Status:** v{version} — actively developed.",
+            pattern=r"> \*\*v(?P<version>\S+)\*\* — actively developed\.",
+            template="> **v{version}** — actively developed.",
         ),
         Target(
             path=ROOT / "README.md",
@@ -95,27 +95,39 @@ def read_pyproject_version() -> str:
     return match["version"]
 
 
-def write_pyproject_version(new: str) -> None:
-    text = PYPROJECT.read_text(encoding="utf-8")
-    updated, count = PYPROJECT_VERSION_RE.subn(f'version = "{new}"', text, count=1)
+def plan_bump(new: str) -> dict[Path, str]:
+    """Return the post-bump text of every file that needs rewriting.
+
+    Nothing is written here: a missing anchor raises before the first write, so
+    a bump that cannot reach every surface leaves the working tree as it found
+    it instead of stranding a rewritten pyproject.toml next to stale docs.
+    Targets sharing a file edit one buffer, so later ones see earlier edits.
+    """
+    original: dict[Path, str] = {}
+    planned: dict[Path, str] = {}
+
+    def current_text(path: Path) -> str:
+        if path not in original:
+            original[path] = path.read_text(encoding="utf-8")
+        return planned.get(path, original[path])
+
+    updated, count = PYPROJECT_VERSION_RE.subn(
+        f'version = "{new}"', current_text(PYPROJECT), count=1
+    )
     if count != 1:
         raise RuntimeError('could not locate `version = "…"` in pyproject.toml')
-    PYPROJECT.write_text(updated, encoding="utf-8")
+    planned[PYPROJECT] = updated
 
+    for target in all_targets():
+        text = current_text(target.path)
+        pattern = re.compile(target.pattern)
+        if not pattern.search(text):
+            raise RuntimeError(
+                f"pattern not found in {target.path.relative_to(ROOT)}: {target.pattern!r}"
+            )
+        planned[target.path] = pattern.sub(target.expected(new), text, count=1)
 
-def apply_target(target: Target, new: str) -> bool:
-    text = target.path.read_text(encoding="utf-8")
-    pattern = re.compile(target.pattern)
-    match = pattern.search(text)
-    if not match:
-        raise RuntimeError(
-            f"pattern not found in {target.path.relative_to(ROOT)}: {target.pattern!r}"
-        )
-    if match.group("version") == new:
-        return False
-    updated = pattern.sub(target.expected(new), text, count=1)
-    target.path.write_text(updated, encoding="utf-8")
-    return True
+    return {path: text for path, text in planned.items() if text != original[path]}
 
 
 def cmd_bump(new: str) -> int:
@@ -124,18 +136,23 @@ def cmd_bump(new: str) -> int:
         return 1
 
     current = read_pyproject_version()
+    try:
+        writes = plan_bump(new)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print("no files were modified.", file=sys.stderr)
+        return 1
+
     if current == new:
         print(f"pyproject.toml already at {new}; checking docs are in sync…")
-    else:
-        write_pyproject_version(new)
-        print(f"pyproject.toml: {current} → {new}")
 
-    changed = 0
-    for target in all_targets():
-        if apply_target(target, new):
-            print(f"  updated {target.path.relative_to(ROOT)}")
-            changed += 1
-    if changed == 0:
+    for path, text in writes.items():
+        path.write_text(text, encoding="utf-8")
+        if path == PYPROJECT:
+            print(f"pyproject.toml: {current} → {new}")
+        else:
+            print(f"  updated {path.relative_to(ROOT)}")
+    if not any(path != PYPROJECT for path in writes):
         print("  (docs already in sync)")
     return 0
 

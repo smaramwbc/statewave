@@ -126,6 +126,19 @@ async def test_second_fresh_row_is_left_alone():
 # ---------------------------------------------------------------------------
 
 
+def _lockable_session():
+    """A session double whose `execute` is awaitable.
+
+    The async submit path takes a short advisory lock around the
+    find-then-insert so two concurrent submits cannot both create a job
+    row (#417). A bare MagicMock returns a non-awaitable from execute and
+    fails for its own shape rather than for the behaviour under test.
+    """
+    session = MagicMock()
+    session.execute = AsyncMock()
+    return session
+
+
 def _api():
     from server.api import memories as api_memories
 
@@ -144,7 +157,7 @@ async def test_compile_start_attaches_to_live_job(monkeypatch):
     monkeypatch.setattr(api_memories.compile_jobs, "submit_job_durable", submit)
 
     body = CompileMemoriesRequest(**{"subject_id": "subj", "async": True})
-    resp = await api_memories.compile_memories(body, session=MagicMock(), tenant_id=None)
+    resp = await api_memories.compile_memories(body, session=_lockable_session(), tenant_id=None)
 
     assert resp.status_code == 202
     import json
@@ -174,7 +187,7 @@ async def test_compile_start_submits_when_no_live_job(monkeypatch):
     monkeypatch.setattr(api_memories, "_run_compile", fake_run_compile)
 
     body = CompileMemoriesRequest(**{"subject_id": "subj", "async": True})
-    resp = await api_memories.compile_memories(body, session=MagicMock(), tenant_id=None)
+    resp = await api_memories.compile_memories(body, session=_lockable_session(), tenant_id=None)
     # Let the create_task'd noop settle before the loop closes.
     await asyncio.sleep(0)
 

@@ -52,12 +52,19 @@ class _FakeSession:
     async def commit(self) -> None:
         self.commits += 1
 
-    async def execute(self, _stmt):
+    async def execute(self, _stmt, _params=None):
         """No rows for any SELECT — enough for the tenant-config read that
         `_compile_one_batch` now makes to load a tenant's own claim keys
-        (#376). A tenant with no config row is the dominant case."""
+        (#376). A tenant with no config row is the dominant case.
+
+        `_params` is accepted because the subject claim lock (#417) executes
+        parameterised SQL through this same session; a double that refuses
+        the real signature would fail for its own shape rather than for the
+        behaviour under test."""
 
         class _Empty:
+            rowcount = 0
+
             @staticmethod
             def scalar_one_or_none():
                 return None

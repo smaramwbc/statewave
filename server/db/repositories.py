@@ -223,16 +223,27 @@ async def count_uncompiled_episodes(
 async def mark_episodes_compiled(
     session: AsyncSession,
     episode_ids: list[uuid.UUID],
-) -> None:
-    """Mark episodes as compiled so they won't be reprocessed."""
+) -> int:
+    """Mark episodes as compiled so they won't be reprocessed.
+
+    Returns the number of episodes this call actually claimed. The
+    `last_compiled_at IS NULL` guard makes the write conditional, so a
+    caller that lost a race marks nothing and can tell: it is a cheap
+    second line of defence behind the subject claim lock in
+    `_compile_one_batch`, not the guard itself (issue #417).
+    """
     if not episode_ids:
-        return
+        return 0
     stmt = (
         update(EpisodeRow)
-        .where(EpisodeRow.id.in_(episode_ids))
+        .where(
+            EpisodeRow.id.in_(episode_ids),
+            EpisodeRow.last_compiled_at.is_(None),
+        )
         .values(last_compiled_at=text("now()"))
     )
-    await session.execute(stmt)
+    result = await session.execute(stmt)
+    return int(result.rowcount or 0)
 
 
 async def get_episodes_by_ids(

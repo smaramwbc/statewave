@@ -11,7 +11,8 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select, update
+from sqlalchemy import select, text, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
@@ -49,6 +50,69 @@ _COMPILE_FAILED_MESSAGE = (
 _COMPILE_INTERNAL_ERROR_MESSAGE = "An internal error occurred during compilation."
 
 
+class CompileBusy(Exception):
+    """Another compile already holds this subject's claim lock.
+
+    Not an error in the runtime: it means the work is being done by
+    someone else right now. The caller decides whether that is a 409 (a
+    client asked and should retry) or a clean stop (a background drain
+    has nothing left to do).
+    """
+
+
+# How long a caller waits for the in-flight compile before giving up. The
+# pool is 5 + 10 overflow (server/db/engine.py), and an LLM compile runs for
+# minutes, so waiting it out would park a connection per queued caller and
+# starve unrelated requests. A short wait absorbs the common case, two
+# requests landing together, without any client-visible change; anything
+# longer means a real compile is running and the caller is told so.
+_COMPILE_LOCK_WAIT = "5s"
+
+
+async def _claim_subject_for_compile(
+    session: AsyncSession,
+    subject_id: str,
+    tenant_id: str | None,
+    *,
+    scope: str = "compile",
+) -> None:
+    """Serialise compiles of one subject, or raise `CompileBusy`.
+
+    Two compiles that read the same uncompiled episodes both compile them
+    and both write memories (issue #417). Under the heuristic compiler the
+    twins are then masked by lexical supersession, so only the row count
+    looks wrong; under the LLM compiler the wording differs enough to fall
+    under the Jaccard threshold and BOTH copies stay active and
+    retrievable. So this is a retrieval defect, not just table bloat.
+
+    The lock is transaction-scoped on purpose: it is released by COMMIT and
+    by ROLLBACK alike, so a failed compile leaves nothing held and issue
+    #201's guarantee (episodes are never consumed by a failed run) needs no
+    separate unwind.
+    """
+    key = f"{scope}:{tenant_id or ''}:{subject_id}"
+    await session.execute(text(f"SET LOCAL lock_timeout = '{_COMPILE_LOCK_WAIT}'"))
+    try:
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"), {"k": key}
+        )
+    except DBAPIError as exc:
+        if not _is_lock_timeout(exc):
+            raise
+        logger.info("compile_subject_busy", subject_id=subject_id, scope=scope)
+        raise CompileBusy(subject_id) from exc
+    finally:
+        # Scoped to the acquire only. Left set, it would also apply to the
+        # row locks taken later in this same transaction.
+        await session.execute(text("SET LOCAL lock_timeout = DEFAULT"))
+
+
+def _is_lock_timeout(exc: DBAPIError) -> bool:
+    """True when the driver error is Postgres `lock_not_available` (55P03)."""
+    sqlstate = getattr(getattr(exc, "orig", None), "sqlstate", None)
+    return sqlstate == "55P03" or "lock timeout" in str(exc).lower()
+
+
 async def _compile_one_batch(
     session: AsyncSession,
     subject_id: str,
@@ -76,6 +140,11 @@ async def _compile_one_batch(
     compiled.
     """
     from server.core.config import settings
+
+    # Before reading the uncompiled set, not after: the race is two readers
+    # seeing the same rows, so the claim and the read must be on one side of
+    # the same lock.
+    await _claim_subject_for_compile(session, subject_id, tenant_id)
 
     episodes = await repo.list_uncompiled_episodes(
         session, subject_id, tenant_id=tenant_id, limit=batch_size
@@ -164,7 +233,18 @@ async def _compile_one_batch(
                 subject_id=subject_id,
                 superseded=len(reconcile_superseded_ids),
             )
-        await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
+        claimed = await repo.mark_episodes_compiled(session, [ep.id for ep in episodes])
+        if claimed != len(episodes):
+            # Under the subject lock this should not happen; it would mean the
+            # lock was bypassed or another writer reached these rows. Log rather
+            # than fail: this batch's memories are real work, and the guard has
+            # already prevented the duplicate write.
+            logger.warning(
+                "compile_claimed_fewer_episodes_than_read",
+                subject_id=subject_id,
+                read=len(episodes),
+                claimed=claimed,
+            )
 
         superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
         if superseded_ids:
@@ -294,13 +374,26 @@ async def _run_compile(
     try:
         async with get_session_factory()() as session:
             for iteration in range(settings.compile_max_iterations):
-                batch_responses, created, remaining = await _compile_one_batch(
-                    session,
-                    subject_id,
-                    tenant_id,
-                    settings.compile_batch_size,
-                    progress_cb=_heartbeat_cb(job_id),
-                )
+                try:
+                    batch_responses, created, remaining = await _compile_one_batch(
+                        session,
+                        subject_id,
+                        tenant_id,
+                        settings.compile_batch_size,
+                        progress_cb=_heartbeat_cb(job_id),
+                    )
+                except CompileBusy:
+                    # A background drain has no one to report a conflict to,
+                    # and another worker is already draining this subject, so
+                    # there is nothing left for this one to do. Stop cleanly
+                    # and let the job complete with what it did compile.
+                    logger.info(
+                        "compile_drain_yielded",
+                        subject_id=subject_id,
+                        job_id=job_id,
+                        created_so_far=total_created,
+                    )
+                    break
                 total_created += created
                 last_batch_responses = batch_responses
                 last_remaining = remaining
@@ -393,6 +486,14 @@ async def compile_memories(
             # uncompiled. A stale-heartbeat row is a task that died with its
             # process (rolling deploy); find_active_job_durable supersedes it
             # so the fresh submission below resumes the remaining episodes.
+            # Separate key from the compile claim on purpose. Sharing it
+            # would make every submit during a running compile wait out that
+            # compile and then fail, when the right answer is to attach to
+            # the job already doing the work. This one is held only across
+            # the find-then-insert below, which is microseconds.
+            await _claim_subject_for_compile(
+                session, body.subject_id, tenant_id, scope="compile-submit"
+            )
             active = await compile_jobs.find_active_job_durable(
                 body.subject_id, tenant_id=tenant_id
             )
@@ -425,6 +526,20 @@ async def compile_memories(
             memory_responses, created, remaining = await _compile_one_batch(
                 session, body.subject_id, tenant_id, settings.compile_batch_size
             )
+        except CompileBusy as exc:
+            # Another compile of this subject is mid-flight. Deliberately not
+            # a 200 with memories_created=0: `has_more` would have to be
+            # either a lie (False while episodes are still uncompiled) or a
+            # busy-spin invitation (True with nothing for the caller to do).
+            # 409 says what is true, and Retry-After says when to come back.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A compile is already running for this subject. "
+                    "Retry once it finishes."
+                ),
+                headers={"Retry-After": "5"},
+            ) from exc
         except CompilationError as exc:
             # Extraction could not run (e.g. LLM compiler with no reachable
             # key). The episodes were left uncompiled (issue #201); surface

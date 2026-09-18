@@ -539,7 +539,9 @@ async def assemble_context(
                 # superseded atomic fact cannot leak back through it. The raw
                 # episode stays in timeline/admin/history.
                 continue
-            ep_text = _short_episode_text(row.payload, row.source, row.type)
+            ep_text = _short_episode_text(
+                row.payload, row.source, row.type, row.metadata_
+            )
             content_text = extract_payload_text(row.payload)
             ep_relevance = _relevance_score(content_text, task_tokens)
             # Issue #116: a meaningful (non-stopword) token overlap with an
@@ -669,7 +671,10 @@ async def assemble_context(
             current_lines: list[str] = []
             other_lines: list[str] = []
             for ep in included_episodes:
-                line = f"- {_short_episode_text(ep.payload, ep.source, ep.type)}"
+                # EpisodeResponse (pydantic) exposes `metadata`; the ORM row
+                # at the other call site exposes `metadata_`, since `metadata`
+                # is taken by SQLAlchemy's declarative base.
+                line = f"- {_short_episode_text(ep.payload, ep.source, ep.type, ep.metadata)}"
                 if ep.session_id == session_id:
                     current_lines.append(line)
                 else:
@@ -1093,12 +1098,71 @@ def _section_for_kind(kind: str) -> str:
     return "history"
 
 
-def _short_episode_text(payload: dict, source: str, type_: str) -> str:
-    """Render an episode as a single line for context text."""
+# Sub-key under EpisodeRow.metadata_ carrying an attempt's outcome (issue
+# #415). Same shape as the claim envelope in services/claims.py: a reserved
+# key holding a structured value, validated where it is read, degrading to
+# "no outcome" on anything unexpected.
+#
+# The envelope is REQUIRED, and that is the point rather than ceremony.
+# "outcome" is an ordinary word, so callers already keep their own bookkeeping
+# under it. A bare `metadata["outcome"] = "escalated to tier 2"` must not
+# suddenly start reaching the model: episodes are immutable, so there would be
+# no way to take it back, and the receipts for those subjects would change
+# hash with no action on their part.
+OUTCOME_METADATA_KEY = "outcome"
+# Deliberately two values. A non-zero exit says "this command failed", not
+# "this approach was wrong"; a wider vocabulary invites harnesses to encode
+# judgement the signal does not carry. Extend on evidence, not in advance.
+_OUTCOME_STATUSES = ("succeeded", "failed")
+_OUTCOME_REASON_MAX = 80
+
+
+def _episode_outcome_suffix(metadata: Any) -> str:
+    """Render the outcome envelope as a line suffix, or "" if there isn't one.
+
+    Never raises: a malformed value is the caller's, and it is not worth
+    failing a bundle over.
+    """
+    if not isinstance(metadata, dict):
+        return ""
+    envelope = metadata.get(OUTCOME_METADATA_KEY)
+    if not isinstance(envelope, dict):
+        return ""
+    status = envelope.get("status")
+    if status not in _OUTCOME_STATUSES:
+        # Present but unusable: the caller is trying to use this and getting
+        # it wrong, which is worth one line in the log. A bare string or an
+        # unrelated key never reaches here, so this cannot become chatter.
+        logger.warning(
+            "episode_outcome_envelope_invalid",
+            status=status if isinstance(status, str) else type(status).__name__,
+            expected=list(_OUTCOME_STATUSES),
+        )
+        return ""
+    reason = envelope.get("reason")
+    if isinstance(reason, str) and reason.strip():
+        # Collapse whitespace before truncating: a newline in the reason would
+        # otherwise forge a second bullet in the rendered list.
+        flat = " ".join(reason.split())[:_OUTCOME_REASON_MAX]
+        return f" [{status}: {flat}]"
+    return f" [{status}]"
+
+
+def _short_episode_text(
+    payload: dict, source: str, type_: str, metadata: Any = None
+) -> str:
+    """Render an episode as a single line for context text.
+
+    The outcome suffix is appended AFTER the body slice so a long body can
+    never truncate the label away. With no outcome envelope the output is
+    byte-for-byte what it was before #415, which is what keeps this change
+    off the benchmark's path.
+    """
+    suffix = _episode_outcome_suffix(metadata)
     text = extract_payload_text(payload)
     if text:
-        return f"[{source}/{type_}] {text[:150]}"
-    return f"[{source}/{type_}] (no text content)"
+        return f"[{source}/{type_}] {text[:150]}{suffix}"
+    return f"[{source}/{type_}] (no text content){suffix}"
 
 
 def _render_memory_line(row: Any) -> str:

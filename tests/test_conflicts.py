@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from server.services.conflicts import _are_conflicting, resolve_conflicts
 from server.db.tables import MemoryRow
+from tests._fakes import make_async_session
 
 
 def _make_memory(
@@ -93,7 +94,7 @@ async def test_resolve_conflicts_supersedes_despite_punctuation():
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[older, newer])
         mock_repo.mark_memories_superseded = AsyncMock()
 
-        session = AsyncMock()
+        session = make_async_session()
         result = await resolve_conflicts(session, "user-1")
 
     assert older.id in result
@@ -105,7 +106,7 @@ async def test_resolve_conflicts_scopes_memory_lookup_by_tenant():
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[])
         mock_repo.mark_memories_superseded = AsyncMock()
 
-        session = AsyncMock()
+        session = make_async_session()
         result = await resolve_conflicts(session, "user-1", tenant_id="tenant-a")
 
     assert result == []
@@ -124,7 +125,7 @@ async def test_resolve_conflicts_marks_older_superseded():
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[older, newer])
         mock_repo.mark_memories_superseded = AsyncMock()
 
-        session = AsyncMock()
+        session = make_async_session()
         result = await resolve_conflicts(session, "user-1")
 
     assert older.id in result
@@ -140,7 +141,7 @@ async def test_resolve_conflicts_no_conflicts():
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=[a, b])
         mock_repo.mark_memories_superseded = AsyncMock()
 
-        session = AsyncMock()
+        session = make_async_session()
         result = await resolve_conflicts(session, "user-1")
 
     assert result == []

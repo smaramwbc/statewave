@@ -178,7 +178,7 @@ async def test_compile_batch_emits_phase_timings(monkeypatch, caplog):
     async def fake_count(_session, _subject_id, *, tenant_id):
         return 0
 
-    async def fake_resolve(_session, _subject_id, *, tenant_id):
+    async def fake_resolve(_session, _subject_id, *, tenant_id, compile_job_id=None):
         return []
 
     async def fake_fire(*_a, **_kw):

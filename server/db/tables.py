@@ -215,6 +215,63 @@ class SubjectEntityRow(Base):
     )
 
 
+class SupersessionRecordRow(Base):
+    """Why a memory was retired — the decision, not just its outcome.
+
+    Written by every compile-time producer that supersedes a memory
+    (`server.services.conflicts`, `server.services.reconcile`) inside the
+    compile batch's own transaction, so a rolled-back compile records
+    nothing. Read by the admin relationship view, which before this had to
+    infer a successor from same-subject/same-kind/created_at ordering and
+    attributed the wrong one (issue #419).
+
+    Two invariants that are the reason for the column list, not decoration:
+
+    * **No memory text, no claim values, no LLM rationale.** Ids, a rule
+      name, a claim KEY, numbers. Renderable text is joined from `memories`,
+      which is what subject deletion reaps. See migration 0031.
+    * **Not a receipt.** A compile-time decision about stored state, not
+      bytes delivered to a caller: never chained, signed, or hashed into a
+      receipt body.
+
+    Schema mirrors migration 0031 — the integration suite builds its schema
+    with `Base.metadata.create_all`, so the two drifting apart means tests
+    stop exercising the shape production runs on.
+    """
+
+    __tablename__ = "supersession_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subject_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    superseded_memory_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    # Nullable, and no FK to memories on either side: reconcile can accept a
+    # candidate that supersedes a committed memory and then drop that same
+    # candidate in a later chunk, so the successor may never be inserted. An
+    # FK would abort the compile; an FK cascade would delete the audit row
+    # along with the memory it explains.
+    superseding_memory_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    rule: Mapped[str] = mapped_column(String(64), nullable=False)
+    claim_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
+    compile_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    # Room for #414 to record a non-supersession decision without a second
+    # migration. Nothing writes it today.
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_supersession_records_superseded", "superseded_memory_id", "created_at"),
+        Index("ix_supersession_records_superseding", "superseding_memory_id", "created_at"),
+        Index("ix_supersession_records_subject_id", "subject_id"),
+    )
+
+
 class WebhookEventRow(Base):
     """Persistent webhook delivery queue.
 

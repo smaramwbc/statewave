@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
+from tests._fakes import make_async_session
+
 from server.db.tables import MemoryRow
 from server.services.claims import build_v2_envelope, resolve_claim
 from server.services.conflicts import resolve_conflicts
@@ -180,7 +182,7 @@ async def _resolve(mems):
     with patch("server.services.conflicts.repo") as r:
         r.list_active_memories_by_subject = AsyncMock(return_value=mems)
         r.mark_memories_superseded = AsyncMock()
-        return await resolve_conflicts(AsyncMock(), "s")
+        return await resolve_conflicts(make_async_session(), "s")
 
 
 async def test_stripe_rate_supersedes_same_identity():

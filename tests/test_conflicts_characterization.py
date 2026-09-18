@@ -14,6 +14,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
+from tests._fakes import make_async_session
+
 from server.db.tables import MemoryRow
 from server.services.conflicts import resolve_conflicts
 
@@ -40,7 +42,7 @@ async def _resolve(memories):
     with patch("server.services.conflicts.repo") as mock_repo:
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=memories)
         mock_repo.mark_memories_superseded = AsyncMock()
-        result = await resolve_conflicts(AsyncMock(), "user-1")
+        result = await resolve_conflicts(make_async_session(), "user-1")
     return result
 
 

@@ -157,7 +157,7 @@ async def test_legitimate_empty_extraction_still_marks_compiled(monkeypatch):
     async def fake_count(_session, _subject_id, *, tenant_id):
         return 0
 
-    async def fake_resolve(_session, _subject_id, *, tenant_id):
+    async def fake_resolve(_session, _subject_id, *, tenant_id, compile_job_id=None):
         resolved.append((_subject_id, tenant_id))
         return []
 

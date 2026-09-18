@@ -18,15 +18,19 @@ Two paths, hybrid and strictly additive:
   never touches keyed pairs. Byte-identical to before for any memory without a
   usable single-valued claim.
 
-No opt-in flag, no schema change, no migration. The resolver runs only at
-compile time (``server.api.memories``); reads and server startup never invoke
-it, so an upgrade alone never changes stored supersession state.
+No opt-in flag for either path. The resolver runs only at compile time
+(``server.api.memories``); reads and server startup never invoke it, so an
+upgrade alone never changes stored supersession state.
 
 Strategy:
 - Group active memories by (subject_id, kind) for the legacy path and by
   (subject_id, claim_key) for the claim path.
 - When two memories conflict, the older one is marked as "superseded" with
   valid_to set to the newer memory's valid_from.
+- Each such decision is recorded — rule, score, threshold, successor — via
+  ``server.services.supersession`` (#419). Which memories get superseded is
+  unaffected: the record is written from the same comparison that made the
+  call, in the same transaction as the status write.
 """
 
 from __future__ import annotations
@@ -46,6 +50,13 @@ from server.services.claims import (
     intervals_overlap,
     resolve_claim,
     load_tenant_claim_keys,
+)
+from server.services.supersession import (
+    RULE_CLAIM_CONTRADICTION,
+    RULE_CLAIM_DUPLICATE,
+    RULE_LEXICAL,
+    SupersessionDecision,
+    record_supersessions,
 )
 from server.services.tokenization import EDGE_PUNCT, tokenize
 
@@ -76,11 +87,15 @@ async def resolve_conflicts(
     subject_id: str,
     *,
     tenant_id: str | None = None,
+    compile_job_id: str | None = None,
 ) -> list[uuid.UUID]:
     """Detect and resolve conflicting memories. Returns IDs of superseded memories.
 
     Call contract unchanged: exactly one ``list_active_memories_by_subject``
-    read and at most one ``mark_memories_superseded`` write.
+    read and at most one ``mark_memories_superseded`` write. Each supersession
+    additionally stages its decision (rule, score, successor) on the session —
+    same transaction as the write it explains, so the two cannot disagree
+    (#419).
     """
     memories = await repo.list_active_memories_by_subject(session, subject_id, tenant_id=tenant_id)
     if len(memories) < 2:
@@ -102,16 +117,24 @@ async def resolve_conflicts(
         if rc is not None and rc.scope == SCOPE_SINGLE:
             claims[m.id] = rc
 
-    superseded_ids: list[uuid.UUID] = []
+    decisions: list[SupersessionDecision] = []
     # Claim path first; it marks losers status="superseded" in place, so the
     # legacy pass skips them via its existing status guard. The legacy pass
     # additionally skips ALL single-valued keyed pairs so it can never undo a
     # temporal-coexistence or duplicate call the claim path made (#369).
-    superseded_ids.extend(_resolve_single_valued_claims(memories, claims))
-    superseded_ids.extend(_legacy_resolve(memories, claims))
+    decisions.extend(_resolve_single_valued_claims(memories, claims))
+    decisions.extend(_legacy_resolve(memories, claims))
 
+    superseded_ids = [d.superseded_memory_id for d in decisions]
     if superseded_ids:
         await repo.mark_memories_superseded(session, superseded_ids)
+        record_supersessions(
+            session,
+            subject_id,
+            decisions,
+            tenant_id=tenant_id,
+            compile_job_id=compile_job_id,
+        )
 
     return superseded_ids
 
@@ -124,7 +147,7 @@ async def resolve_conflicts(
 def _resolve_single_valued_claims(
     memories: list[MemoryRow],
     claims: dict[uuid.UUID, ResolvedClaim],
-) -> list[uuid.UUID]:
+) -> list[SupersessionDecision]:
     keyed = [m for m in memories if m.id in claims]
     if len(keyed) < 2:
         return []
@@ -136,7 +159,7 @@ def _resolve_single_valued_claims(
     for m in keyed:
         by_bucket.setdefault(claims[m.id].bucket, []).append(m)
 
-    superseded_ids: list[uuid.UUID] = []
+    decisions: list[SupersessionDecision] = []
     for _bucket, group in by_bucket.items():
         if len(group) < 2:
             continue
@@ -160,7 +183,20 @@ def _resolve_single_valued_claims(
                 # a duplicate.
                 if not _claim_overlap(group[i], ci, group[j], cj):
                     continue
-                superseded_ids.append(group[i].id)
+                strategy = (
+                    RULE_CLAIM_CONTRADICTION if ci.value != cj.value else RULE_CLAIM_DUPLICATE
+                )
+                decisions.append(
+                    SupersessionDecision(
+                        superseded_memory_id=group[i].id,
+                        superseding_memory_id=group[j].id,
+                        rule=strategy,
+                        # The canonical KEY only. `ci.bucket` is deliberately
+                        # not recorded: a v2 bucket carries the claim's entity,
+                        # which can be personal data.
+                        claim_key=ci.canonical_key,
+                    )
+                )
                 group[i].status = "superseded"
                 # End the loser's window where the WINNER's claim says its
                 # validity starts — the same window _claim_cmp ordered on and
@@ -176,14 +212,10 @@ def _resolve_single_valued_claims(
                     old_id=str(group[i].id),
                     new_id=str(group[j].id),
                     claim_key=ci.canonical_key,
-                    strategy=(
-                        "claim_contradiction"
-                        if ci.value != cj.value
-                        else "claim_duplicate"
-                    ),
+                    strategy=strategy,
                 )
                 break
-    return superseded_ids
+    return decisions
 
 
 def _claim_cmp(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim]) -> int:
@@ -221,7 +253,7 @@ def _claim_overlap(mi: MemoryRow, ci: ResolvedClaim, mj: MemoryRow, cj: Resolved
 def _legacy_resolve(
     memories: list[MemoryRow],
     claims: dict[uuid.UUID, ResolvedClaim],
-) -> list[uuid.UUID]:
+) -> list[SupersessionDecision]:
     if len(memories) < 2:
         return []
 
@@ -229,7 +261,7 @@ def _legacy_resolve(
     for m in memories:
         by_kind.setdefault(m.kind, []).append(m)
 
-    superseded_ids: list[uuid.UUID] = []
+    decisions: list[SupersessionDecision] = []
     for kind, group in by_kind.items():
         if len(group) < 2:
             continue
@@ -245,8 +277,20 @@ def _legacy_resolve(
                 # never let lexical overlap undo its call (#369).
                 if _claim_owned_pair(group[i], group[j], claims):
                     continue
-                if _are_conflicting(group[i], group[j]):
-                    superseded_ids.append(group[i].id)
+                # One computation answers both "do these conflict" and "at what
+                # score" — a score computed separately from the comparison it
+                # is filed under would not be evidence of anything.
+                score, threshold = _overlap_score(group[i], group[j])
+                if score >= threshold:
+                    decisions.append(
+                        SupersessionDecision(
+                            superseded_memory_id=group[i].id,
+                            superseding_memory_id=group[j].id,
+                            rule=RULE_LEXICAL,
+                            score=score,
+                            threshold=threshold,
+                        )
+                    )
                     group[i].status = "superseded"
                     group[i].valid_to = group[j].valid_from or datetime.now(timezone.utc)
                     logger.info(
@@ -254,10 +298,10 @@ def _legacy_resolve(
                         old_id=str(group[i].id),
                         new_id=str(group[j].id),
                         kind=kind,
-                        strategy="lexical",
+                        strategy=RULE_LEXICAL,
                     )
                     break
-    return superseded_ids
+    return decisions
 
 
 def _claim_owned_pair(a: MemoryRow, b: MemoryRow, claims: dict[uuid.UUID, ResolvedClaim]) -> bool:
@@ -281,8 +325,14 @@ def _legacy_sort_key(m: MemoryRow) -> tuple[datetime, datetime, str]:
     return (_aware(m.created_at), _aware(m.valid_from), str(m.id))
 
 
-def _are_conflicting(older: MemoryRow, newer: MemoryRow) -> bool:
-    """Determine if two memories of the same kind conflict.
+def _overlap_score(older: MemoryRow, newer: MemoryRow) -> tuple[float, float]:
+    """Jaccard similarity of two memories' token sets, and the threshold that
+    similarity is judged against.
+
+    Split out of ``_are_conflicting`` so the resolver can record the number it
+    decided on (#419) instead of recomputing one afterwards. An empty token set
+    on either side scores 0.0, which is below every threshold — the same "no
+    conflict" answer the explicit guard used to give.
 
     For profile_facts: high word overlap means the newer one replaces the older.
     For other kinds: require very high overlap.
@@ -295,11 +345,14 @@ def _are_conflicting(older: MemoryRow, newer: MemoryRow) -> bool:
     newer_tokens = _tokenize(newer.content)
 
     if not older_tokens or not newer_tokens:
-        return False
+        return 0.0, threshold
 
-    # Jaccard similarity
     intersection = len(older_tokens & newer_tokens)
     union = len(older_tokens | newer_tokens)
-    similarity = intersection / union if union else 0.0
+    return (intersection / union if union else 0.0), threshold
 
-    return similarity >= threshold
+
+def _are_conflicting(older: MemoryRow, newer: MemoryRow) -> bool:
+    """Determine if two memories of the same kind conflict."""
+    score, threshold = _overlap_score(older, newer)
+    return score >= threshold

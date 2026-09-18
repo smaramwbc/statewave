@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 import pytest
 from unittest.mock import AsyncMock, patch
 
+from tests._fakes import make_async_session
+
 from server.db.tables import EpisodeRow
 from server.services.compilers.heuristic import HeuristicCompiler
 from server.services.compilers.llm import LLMCompiler, _llm_claim_metadata, _safe_dt
@@ -234,7 +236,7 @@ async def _resolve(memories):
     with patch("server.services.conflicts.repo") as mock_repo:
         mock_repo.list_active_memories_by_subject = AsyncMock(return_value=memories)
         mock_repo.mark_memories_superseded = AsyncMock()
-        return await resolve_conflicts(AsyncMock(), "user-1")
+        return await resolve_conflicts(make_async_session(), "user-1")
 
 
 def _compiled_fact(text, *, created_days):

@@ -24,6 +24,7 @@ from server.db.tables import (
     ResolutionRow,
     SubjectEntityRow,
     SubjectHealthCacheRow,
+    SupersessionRecordRow,
     TenantConfigRow,
 )
 
@@ -853,6 +854,22 @@ async def delete_entities_by_subject(
     delete_subject(subject_id) removes both memories AND entities."""
     stmt = delete(SubjectEntityRow).where(SubjectEntityRow.subject_id == subject_id)
     stmt = _tenant_filter(stmt, SubjectEntityRow.tenant_id, tenant_id)
+    result = await session.execute(stmt)
+    return result.rowcount  # type: ignore[return-value]
+
+
+async def delete_supersession_records_by_subject(
+    session: AsyncSession, subject_id: str, *, tenant_id: str | None = None
+) -> int:
+    """Wipe every supersession record for a subject.
+
+    Deliberately not an FK cascade (see migration 0031): the records must
+    outlive an individual memory delete, but not the subject they describe.
+    Without this the subject's ids and compile-time decisions would survive
+    "delete all subject data" — the same defect #423 is open on, which this
+    table was built not to widen."""
+    stmt = delete(SupersessionRecordRow).where(SupersessionRecordRow.subject_id == subject_id)
+    stmt = _tenant_filter(stmt, SupersessionRecordRow.tenant_id, tenant_id)
     result = await session.execute(stmt)
     return result.rowcount  # type: ignore[return-value]
 

@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -62,6 +63,12 @@ from server.db import repositories as repo
 from server.db.tables import MemoryRow
 from server.services import llm as llm_adapter
 from server.services.embeddings import get_provider as get_embedding_provider
+from server.services.supersession import (
+    RULE_RECONCILE_DELETE,
+    RULE_RECONCILE_UPDATE,
+    SupersessionDecision,
+    record_supersessions,
+)
 
 logger = structlog.stdlib.get_logger()
 
@@ -221,6 +228,7 @@ async def reconcile_compile_batch(
     candidates: Sequence[MemoryRow],
     *,
     tenant_id: str | None = None,
+    compile_job_id: str | None = None,
 ) -> tuple[list[MemoryRow], set[uuid.UUID]]:
     """Reconcile freshly-compiled candidate memories against existing memory.
 
@@ -231,8 +239,15 @@ async def reconcile_compile_batch(
       * ``superseded_existing_ids`` — ids of EXISTING committed memories the
         caller must mark superseded.
 
+    Every id in that set also gets its decision staged on ``session`` — which
+    action retired it and which candidate replaced it (#419). Reconcile is on
+    by default and retires more memories than the deterministic resolver does,
+    so leaving this path unrecorded would leave the admin relationship view
+    with nothing to read for most superseded memories.
+
     Fail-open: on any problem returns ``(list(candidates), set())`` so the
     compile degrades to the prior additive behaviour rather than losing rows.
+    Those paths supersede nothing, so they record nothing.
     """
     candidates = list(candidates)
     if not candidates:
@@ -266,6 +281,10 @@ async def reconcile_compile_batch(
 
     existing_ids = {m.id for m in existing}
     supersede_existing: set[uuid.UUID] = set()
+    # One entry per retired EXISTING memory, in decision order. The successor
+    # is resolved to None below when the candidate that retired it was itself
+    # dropped by a later chunk and never reaches the table.
+    supersession_decisions: list[SupersessionDecision] = []
     accepted_ids: list[uuid.UUID] = []           # candidate ids kept, in order
     llm_failures = 0
     dropped_ids: set[uuid.UUID] = set()          # candidate ids retired/duplicate
@@ -347,7 +366,27 @@ async def reconcile_compile_batch(
                 if tkind == "E":
                     trow = ctx_rows[tidx]
                     if trow.id in existing_ids:
+                        # One record per supersession, not per mention: a
+                        # second chunk can target an already-retired memory,
+                        # and the set below writes the status once.
+                        already_retired = trow.id in supersede_existing
                         supersede_existing.add(trow.id)
+                        if not already_retired:
+                            supersession_decisions.append(
+                                SupersessionDecision(
+                                    superseded_memory_id=trow.id,
+                                    superseding_memory_id=cand.id,
+                                    rule=(
+                                        RULE_RECONCILE_UPDATE
+                                        if action == "UPDATE"
+                                        else RULE_RECONCILE_DELETE
+                                    ),
+                                    # No score: the model returns an action, not
+                                    # a number. Its `reason` string is not
+                                    # recorded either — it is written FROM the
+                                    # memories and would carry their text in.
+                                )
+                            )
                     else:
                         # Target is a previously-accepted candidate → drop it.
                         dropped_ids.add(trow.id)
@@ -405,5 +444,24 @@ async def reconcile_compile_batch(
         # burned up to reconcile_chunk_timeout_seconds — nonzero here is the
         # one-line explanation for both a slow compile and duplicate leakage.
         llm_failures=llm_failures,
+    )
+
+    # Staged last, with nothing fallible after it: the caller treats a raising
+    # reconcile as "superseded nothing", so a record written on a path that
+    # then throws would claim a supersession the compile did not perform.
+    # A candidate can retire an existing memory and then be retired itself by a
+    # later chunk, in which case it never reaches the table. The existing memory
+    # stays superseded either way, so the record keeps the decision and drops
+    # the successor rather than naming a row that will not exist.
+    kept_ids = {m.id for m in kept}
+    record_supersessions(
+        session,
+        subject_id,
+        [
+            d if d.superseding_memory_id in kept_ids else replace(d, superseding_memory_id=None)
+            for d in supersession_decisions
+        ],
+        tenant_id=tenant_id,
+        compile_job_id=compile_job_id,
     )
     return kept, supersede_existing

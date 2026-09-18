@@ -2312,6 +2312,14 @@ class RelatedMemoryItem(BaseModel):
     status: str
     created_at: str
     relationship: str  # "supersedes" | "sibling" | "superseded_by"
+    # Set only when this row comes from a recorded supersession decision
+    # (#419); None for an inferred row and for siblings. `score`/`threshold`
+    # are filled for scored rules (lexical overlap) only, `claim_key` for the
+    # claim path only.
+    rule: str | None = None
+    score: float | None = None
+    threshold: float | None = None
+    claim_key: str | None = None
 
 
 class MemoryEvolutionResponse(BaseModel):
@@ -2324,6 +2332,13 @@ class MemoryEvolutionResponse(BaseModel):
     superseded_memories: list[RelatedMemoryItem]  # Memories this one replaced
     sibling_memories: list[RelatedMemoryItem]  # Other memories from same sources
     source_episode_count: int
+    # Where the supersession relationship above came from. "recorded" = the
+    # decision the compile actually made; "inferred" = the same-subject /
+    # same-kind / created_at derivation this endpoint has always used, which
+    # is a guess and can name the wrong successor. Memories superseded before
+    # #419 landed have no record — the decisions were never stored and cannot
+    # be backfilled — so they stay "inferred" rather than losing the panel.
+    relationship_source: Literal["recorded", "inferred"] = "inferred"
 
 
 @router.get(
@@ -2341,13 +2356,17 @@ async def get_memory_related(
     - superseding_memory: If this memory is superseded, the active memory that replaced it
     - superseded_memories: If this memory is active, older memories it superseded
     - sibling_memories: Other memories derived from the same source episodes
+    - relationship_source: "recorded" when the supersession above is the
+      decision the compile made (#419), "inferred" when it is this endpoint's
+      read-time derivation — which cannot tell two superseded memories of one
+      kind apart and will name the wrong successor for at least one of them.
     """
     import uuid as uuid_module
 
     from sqlalchemy import any_, or_, select
 
     from server.db import engine as engine_module
-    from server.db.tables import MemoryRow
+    from server.db.tables import MemoryRow, SupersessionRecordRow
 
     # Validate memory_id is a valid UUID
     try:
@@ -2373,9 +2392,68 @@ async def get_memory_related(
         superseding_memory = None
         superseded_memories: list[RelatedMemoryItem] = []
         sibling_memories: list[RelatedMemoryItem] = []
+        relationship_source = "inferred"
+
+        def _record_scope(stmt):
+            """Scope a record lookup exactly like the memory lookup above it."""
+            stmt = stmt.where(SupersessionRecordRow.subject_id == subject_id)
+            if tenant_id:
+                stmt = stmt.where(SupersessionRecordRow.tenant_id == tenant_id)
+            return stmt
+
+        def _item(m: MemoryRow, relationship: str, record=None) -> RelatedMemoryItem:
+            """A related-memory row; the decision's own fields when one backs it.
+
+            The record holds ids and numbers only — everything readable comes
+            from the memory row, which is what subject deletion reaps."""
+            return RelatedMemoryItem(
+                id=str(m.id),
+                kind=m.kind,
+                content=m.content,
+                summary=m.summary,
+                confidence=m.confidence,
+                status=m.status,
+                created_at=m.created_at.isoformat(),
+                relationship=relationship,
+                rule=record.rule if record else None,
+                score=record.score if record else None,
+                threshold=record.threshold if record else None,
+                claim_key=record.claim_key if record else None,
+            )
+
+        # Recorded decisions first. A memory with a record needs no derivation
+        # — and must not get one: the derivation would overwrite a fact with a
+        # guess. A record whose successor was never persisted (reconcile can
+        # drop the candidate that retired a memory) legitimately resolves to
+        # no successor, and that is still "recorded".
+        record = None
+        if target.status == "superseded":
+            record_stmt = _record_scope(
+                select(SupersessionRecordRow)
+                .where(SupersessionRecordRow.superseded_memory_id == memory_uuid)
+                .order_by(
+                    SupersessionRecordRow.created_at.desc(),
+                    SupersessionRecordRow.id.desc(),
+                )
+                .limit(1)
+            )
+            record = (await session.execute(record_stmt)).scalar_one_or_none()
+
+        if record is not None:
+            relationship_source = "recorded"
+            if record.superseding_memory_id is not None:
+                successor_stmt = select(MemoryRow).where(
+                    MemoryRow.id == record.superseding_memory_id,
+                    MemoryRow.subject_id == subject_id,
+                )
+                if tenant_id:
+                    successor_stmt = successor_stmt.where(MemoryRow.tenant_id == tenant_id)
+                successor = (await session.execute(successor_stmt)).scalar_one_or_none()
+                if successor:
+                    superseding_memory = _item(successor, "supersedes", record)
 
         # If this memory is superseded, find the active memory that replaced it
-        if target.status == "superseded" and target.source_episode_ids:
+        if record is None and target.status == "superseded" and target.source_episode_ids:
             # Look for an active memory of the same kind with overlapping source episodes
             # that was created after this one
             superseder_stmt = (
@@ -2397,19 +2475,38 @@ async def get_memory_related(
             superseder = superseder_result.scalar_one_or_none()
 
             if superseder:
-                superseding_memory = RelatedMemoryItem(
-                    id=str(superseder.id),
-                    kind=superseder.kind,
-                    content=superseder.content,
-                    summary=superseder.summary,
-                    confidence=superseder.confidence,
-                    status=superseder.status,
-                    created_at=superseder.created_at.isoformat(),
-                    relationship="supersedes",
-                )
+                superseding_memory = _item(superseder, "supersedes")
 
         # If this memory is active, find memories it superseded
         if target.status == "active":
+            records_stmt = _record_scope(
+                select(SupersessionRecordRow)
+                .where(SupersessionRecordRow.superseding_memory_id == memory_uuid)
+                .order_by(SupersessionRecordRow.created_at.desc())
+                .limit(5)
+            )
+            records = list((await session.execute(records_stmt)).scalars().all())
+        else:
+            records = []
+
+        if records:
+            relationship_source = "recorded"
+            losers_stmt = select(MemoryRow).where(
+                MemoryRow.id.in_([r.superseded_memory_id for r in records]),
+                MemoryRow.subject_id == subject_id,
+            )
+            if tenant_id:
+                losers_stmt = losers_stmt.where(MemoryRow.tenant_id == tenant_id)
+            losers = {m.id: m for m in (await session.execute(losers_stmt)).scalars().all()}
+            for r in records:
+                loser = losers.get(r.superseded_memory_id)
+                # A deleted memory leaves its record behind (no FK cascade, by
+                # design) — there is nothing to render, so it is skipped rather
+                # than shown as a blank row.
+                if loser is not None:
+                    superseded_memories.append(_item(loser, "superseded_by", r))
+
+        if target.status == "active" and not records:
             superseded_stmt = (
                 select(MemoryRow)
                 .where(
@@ -2427,18 +2524,7 @@ async def get_memory_related(
 
             superseded_result = await session.execute(superseded_stmt)
             for m in superseded_result.scalars().all():
-                superseded_memories.append(
-                    RelatedMemoryItem(
-                        id=str(m.id),
-                        kind=m.kind,
-                        content=m.content,
-                        summary=m.summary,
-                        confidence=m.confidence,
-                        status=m.status,
-                        created_at=m.created_at.isoformat(),
-                        relationship="superseded_by",
-                    )
-                )
+                superseded_memories.append(_item(m, "superseded_by"))
 
         # Find sibling memories (same source episodes, different memory)
         if target.source_episode_ids:
@@ -2468,18 +2554,7 @@ async def get_memory_related(
                 if any(s.id == str(m.id) for s in superseded_memories):
                     continue
 
-                sibling_memories.append(
-                    RelatedMemoryItem(
-                        id=str(m.id),
-                        kind=m.kind,
-                        content=m.content,
-                        summary=m.summary,
-                        confidence=m.confidence,
-                        status=m.status,
-                        created_at=m.created_at.isoformat(),
-                        relationship="sibling",
-                    )
-                )
+                sibling_memories.append(_item(m, "sibling"))
 
         return MemoryEvolutionResponse(
             memory_id=str(target.id),
@@ -2489,6 +2564,7 @@ async def get_memory_related(
             superseded_memories=superseded_memories,
             sibling_memories=sibling_memories,
             source_episode_count=len(target.source_episode_ids),
+            relationship_source=relationship_source,
         )
 
 
@@ -3236,6 +3312,10 @@ async def delete_subject_admin(
         mem_count = await repo.delete_memories_by_subject(session, subject_id, tenant_id=tenant_id)
         await repo.delete_resolutions_by_subject(session, subject_id, tenant_id=tenant_id)
         await repo.delete_health_cache_by_subject(session, subject_id, tenant_id=tenant_id)
+        # Supersession records have no FK to the memories they describe (#419),
+        # so they only go when a subject-delete path takes them. This endpoint
+        # advertises the same cascade as DELETE /v1/subjects/{id}.
+        await repo.delete_supersession_records_by_subject(session, subject_id, tenant_id=tenant_id)
 
         # Also clean up any compile jobs for this subject (including pending/running).
         job_stmt = sa_delete(CompileJobRow).where(CompileJobRow.subject_id == subject_id)

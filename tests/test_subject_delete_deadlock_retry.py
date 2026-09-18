@@ -43,6 +43,7 @@ def _wire(monkeypatch, delete_memories):
     monkeypatch.setattr(api_subjects.repo, "delete_resolutions_by_subject", none)
     monkeypatch.setattr(api_subjects.repo, "delete_health_cache_by_subject", none)
     monkeypatch.setattr(api_subjects.repo, "delete_entities_by_subject", none)
+    monkeypatch.setattr(api_subjects.repo, "delete_supersession_records_by_subject", none)
     monkeypatch.setattr(api_subjects.webhooks, "fire", AsyncMock())
 
 

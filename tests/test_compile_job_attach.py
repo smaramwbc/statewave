@@ -209,7 +209,9 @@ async def test_run_compile_threads_a_working_heartbeat_cb(monkeypatch):
 
     seen_cbs = []
 
-    async def fake_batch(_session, _subject_id, _tenant_id, _batch_size, progress_cb=None):
+    async def fake_batch(
+        _session, _subject_id, _tenant_id, _batch_size, progress_cb=None, job_id=None
+    ):
         seen_cbs.append(progress_cb)
         return ([], 0, 0)
 

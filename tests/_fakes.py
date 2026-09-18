@@ -79,10 +79,12 @@ def make_async_session() -> AsyncMock:
     `AsyncSession.add()` is a plain method: an `AsyncMock` returns a coroutine
     nobody awaits, which both leaks a RuntimeWarning pointing at the
     production `session.add(row)` and lets a test pass against code that
-    awaits `add()` — a TypeError against a real session.
+    awaits `add()` — a TypeError against a real session. `add_all()` is the
+    same kind of method and gets the same treatment.
     """
     session = AsyncMock()
     session.add = MagicMock(return_value=None)  # as the real add() returns
+    session.add_all = MagicMock(return_value=None)
     session.execute.return_value = make_empty_result()
     return session
 

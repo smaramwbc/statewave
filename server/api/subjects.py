@@ -76,6 +76,12 @@ async def delete_subject(
             # memory_ids that no longer exist — Phase 3 retrieval would surface
             # boost from ghost memories.
             await repo.delete_entities_by_subject(session, subject_id, tenant_id=tenant_id)
+            # Supersession records (#419) are out-of-band for the same reason
+            # and carry the subject's id plus the compile-time decisions about
+            # it. No FK to ride on, so the cascade is explicit here too.
+            await repo.delete_supersession_records_by_subject(
+                session, subject_id, tenant_id=tenant_id
+            )
             await session.commit()
             break
         except DBAPIError as exc:

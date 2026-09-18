@@ -119,6 +119,7 @@ async def _compile_one_batch(
     tenant_id: str | None,
     batch_size: int,
     progress_cb=None,
+    job_id: str | None = None,
 ) -> tuple[list[MemoryResponse], int, int]:
     """Compile ONE batch of uncompiled episodes for `subject_id`.
 
@@ -138,6 +139,10 @@ async def _compile_one_batch(
     (issue #201). An empty `new_rows` from a *successful* run is the opposite
     case — a legitimate "extracted nothing" — and does mark the episodes
     compiled.
+
+    `job_id` is stamped on the supersession decisions this batch records
+    (#419), so a memory retired during a compile can be traced back to it.
+    None for a synchronous compile, which has no job row.
     """
     from server.core.config import settings
 
@@ -216,7 +221,11 @@ async def _compile_one_batch(
                 from server.services.reconcile import reconcile_compile_batch
 
                 new_rows, reconcile_superseded_ids = await reconcile_compile_batch(
-                    session, subject_id, new_rows, tenant_id=tenant_id
+                    session,
+                    subject_id,
+                    new_rows,
+                    tenant_id=tenant_id,
+                    compile_job_id=job_id,
                 )
             except Exception:
                 logger.warning("reconcile_failed", subject_id=subject_id, exc_info=True)
@@ -246,7 +255,9 @@ async def _compile_one_batch(
                 claimed=claimed,
             )
 
-        superseded_ids = await resolve_conflicts(session, subject_id, tenant_id=tenant_id)
+        superseded_ids = await resolve_conflicts(
+            session, subject_id, tenant_id=tenant_id, compile_job_id=job_id
+        )
         if superseded_ids:
             logger.info("conflicts_resolved", superseded=len(superseded_ids))
         _phase_done("conflicts")
@@ -381,6 +392,7 @@ async def _run_compile(
                         tenant_id,
                         settings.compile_batch_size,
                         progress_cb=_heartbeat_cb(job_id),
+                        job_id=job_id,
                     )
                 except CompileBusy:
                     # A background drain has no one to report a conflict to,

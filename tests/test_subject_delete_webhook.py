@@ -33,6 +33,7 @@ def _stub_repo_deletes(monkeypatch, *, episodes: int, memories: int) -> None:
         "delete_resolutions_by_subject",
         "delete_health_cache_by_subject",
         "delete_entities_by_subject",
+        "delete_supersession_records_by_subject",
     ):
         monkeypatch.setattr(subjects_api.repo, name, AsyncMock(return_value=0))
 

@@ -14,6 +14,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
+from tests._fakes import make_async_session
+
 from server.db.tables import EpisodeRow
 from server.services.compilers.heuristic import episode_valid_from
 from server.services.structured import compile_candidates
@@ -171,7 +173,7 @@ def test_compile_then_resolve_is_deterministic_end_to_end():
         with patch("server.services.conflicts.repo") as mock_repo:
             mock_repo.list_active_memories_by_subject = AsyncMock(return_value=rows)
             mock_repo.mark_memories_superseded = AsyncMock()
-            await resolve_conflicts(AsyncMock(), "s-1")
+            await resolve_conflicts(make_async_session(), "s-1")
         (winner,) = [r for r in rows if r.status == "active"]
         return winner.metadata_["claim"]["value"]
 

@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from server.db.tables import MemoryRow
-from server.services.conflicts import _are_conflicting, _tokenize, resolve_conflicts
+from server.services.conflicts import _are_conflicting, _tokenize, _widens, resolve_conflicts
 from server.services.supersession import (
     RULE_LEXICAL,
     RULE_WIDENING_SKIPPED,
@@ -255,3 +255,63 @@ def test_a_decision_knows_whether_it_retired_anything():
     ids = {"superseded_memory_id": uuid.uuid4(), "superseding_memory_id": uuid.uuid4()}
     assert SupersessionDecision(rule=RULE_LEXICAL, **ids).supersedes() is True
     assert SupersessionDecision(rule=RULE_WIDENING_SKIPPED, **ids).supersedes() is False
+
+
+# --- regressions the guard itself introduced, found in review ---------------
+#
+# The first version treated any strict subset as "asserts nothing new". Two
+# shapes break that assumption, and both are worse than the bug the guard
+# fixes, because coexistence there serves the reader a contradiction rather
+# than a lost qualifier.
+
+
+@pytest.mark.parametrize(
+    "older, newer",
+    [
+        ("Refunds are not approved for digital goods", "Refunds are approved for digital goods"),
+        ("Statewave never sends telemetry to a vendor", "Statewave sends telemetry to a vendor"),
+        ("Acme is no longer a paying customer", "Acme is a paying customer"),
+        ("Deploys run without a manual approval step", "Deploys run with a manual approval step"),
+        ("The API is not rate limited", "The API is rate limited"),
+    ],
+)
+def test_dropping_a_negation_is_a_reversal_not_a_widening(older, newer):
+    """A removed polarity marker leaves a strict subset, but it asserts the
+    opposite rather than nothing. Letting both rows stay active would serve
+    both sides of a contradiction with nothing to say which is current."""
+    assert _widens(_mem(older), _mem(newer, days_ago=-1)) is False
+
+
+@pytest.mark.parametrize(
+    "older, newer",
+    [
+        ("enterprise price is 1,500 EUR per seat", "enterprise price is 500 EUR per seat"),
+        ("the rate limit is 10,000 requests per minute", "the rate limit is 10 requests per minute"),
+        ("partner discount is 12.5 percent", "partner discount is 12 percent"),
+        ("uptime commitment is 99.9 percent", "uptime commitment is 99 percent"),
+    ],
+)
+def test_a_decrease_to_a_component_of_the_old_value_still_supersedes(older, newer):
+    """A digit-run view reads "1,500" as {1, 500}, which makes a cut to 500
+    look like a subset of the old value. Price cuts, rate-limit reductions
+    and SLA downgrades are exactly that direction."""
+    assert _widens(_mem(older), _mem(newer, days_ago=-1)) is False
+
+
+def test_a_dropped_condition_marker_is_still_a_widening():
+    """The exemption covers polarity only. Dropping a condition is the case
+    this guard exists for and must keep being blocked."""
+    assert _widens(
+        _mem("Refunds allowed except international orders"),
+        _mem("Refunds allowed", days_ago=-1),
+    ) is True
+
+
+def test_a_short_negation_is_left_to_the_resolver():
+    """`no` is two characters, so it never reaches the significant-token view
+    and the pair supersedes as it always did. Stated so the asymmetry with
+    `not` is a recorded decision rather than a surprise."""
+    assert _widens(
+        _mem("There are no refunds after delivery"),
+        _mem("There are refunds after delivery", days_ago=-1),
+    ) is False

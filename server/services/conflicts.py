@@ -45,10 +45,11 @@ import uuid
 from datetime import datetime, timezone
 
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
-from server.db.tables import MemoryRow
+from server.db.tables import MemoryRow, SupersessionRecordRow
 from server.services.claims import (
     SCOPE_SINGLE,
     ResolvedClaim,
@@ -61,6 +62,7 @@ from server.services.supersession import (
     RULE_CLAIM_DUPLICATE,
     RULE_LEXICAL,
     RULE_WIDENING_SKIPPED,
+    SUPERSEDING_RULES,
     SupersessionDecision,
     record_supersessions,
 )
@@ -86,6 +88,48 @@ def _aware(dt: datetime | None) -> datetime:
     if dt is None:
         return _MIN_DT
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+async def _drop_already_recorded_skips(
+    session: AsyncSession,
+    subject_id: str,
+    decisions: list[SupersessionDecision],
+    *,
+    tenant_id: str | None,
+) -> list[SupersessionDecision]:
+    """Filter out skips this subject already has a record for.
+
+    Read-then-stage is safe here rather than racy: compiles of one subject are
+    serialised by the claim lock in `_compile_one_batch` (#417), so no second
+    writer can slip a row in between. The worst case if that ever changed is a
+    duplicate audit row, which is noise rather than a wrong answer.
+    """
+    skips = [d for d in decisions if not d.supersedes()]
+    if not skips:
+        return decisions
+
+    stmt = select(
+        SupersessionRecordRow.superseded_memory_id,
+        SupersessionRecordRow.superseding_memory_id,
+        SupersessionRecordRow.rule,
+    ).where(
+        SupersessionRecordRow.subject_id == subject_id,
+        SupersessionRecordRow.rule.notin_(tuple(SUPERSEDING_RULES)),
+    )
+    if tenant_id is None:
+        stmt = stmt.where(SupersessionRecordRow.tenant_id.is_(None))
+    else:
+        stmt = stmt.where(SupersessionRecordRow.tenant_id == tenant_id)
+    seen = {tuple(row) for row in (await session.execute(stmt)).all()}
+    if not seen:
+        return decisions
+
+    return [
+        d
+        for d in decisions
+        if d.supersedes()
+        or (d.superseded_memory_id, d.superseding_memory_id, d.rule) not in seen
+    ]
 
 
 async def resolve_conflicts(
@@ -139,6 +183,15 @@ async def resolve_conflicts(
     superseded_ids = [d.superseded_memory_id for d in decisions if d.supersedes()]
     if superseded_ids:
         await repo.mark_memories_superseded(session, superseded_ids)
+
+    # A real supersession is recorded once because the loser leaves the active
+    # set. A SKIP is different: both rows stay active by design, so the same
+    # pair is re-examined on every compile and would be recorded again each
+    # time. That grows the table without bound and turns "how often does the
+    # guard fire" into a count of compiles rather than of pairs.
+    decisions = await _drop_already_recorded_skips(
+        session, subject_id, decisions, tenant_id=tenant_id
+    )
     if decisions:
         record_supersessions(
             session,
@@ -387,6 +440,17 @@ def _overlap_score(older: MemoryRow, newer: MemoryRow) -> tuple[float, float]:
     return (intersection / union if union else 0.0), threshold
 
 
+# Words whose removal flips a statement rather than broadening it. Condition
+# markers are deliberately NOT here: dropping "except international orders" or
+# "unless the order is late" is the widening this guard is for. Short markers
+# like "no" never reach this set because `sig_tokens` discards tokens under
+# three characters, which is why the check runs on the sig view and the
+# resolver still supersedes "no refunds" -> "refunds".
+_POLARITY_MARKERS = frozenset(
+    {"not", "never", "cannot", "nor", "neither", "none", "without", "longer"}
+)
+
+
 def _widens(older: MemoryRow, newer: MemoryRow) -> bool:
     """Whether ``newer`` only restates ``older`` more broadly (#414).
 
@@ -417,6 +481,12 @@ def _widens(older: MemoryRow, newer: MemoryRow) -> bool:
     older_sig, newer_sig = sig_tokens(older.content), sig_tokens(newer.content)
     older_nums, newer_nums = number_set(older.content), number_set(newer.content)
     if not (newer_sig <= older_sig and newer_nums <= older_nums):
+        return False
+    if _POLARITY_MARKERS & (older_sig - newer_sig):
+        # Dropping a negation is the opposite of asserting nothing new: it
+        # reverses the statement. Coexisting there would serve both sides of
+        # a contradiction with no signal for which is current, which is worse
+        # than the qualifier loss this guard exists to prevent.
         return False
     return newer_sig < older_sig or newer_nums < older_nums
 

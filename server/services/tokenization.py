@@ -32,7 +32,11 @@ import re
 # Punctuation stripped from the edges of each token before comparison.
 EDGE_PUNCT = "?.,:;()[]{}'\"!"
 
-_NUM = re.compile(r"\d+")
+# Grouped and decimal values stay whole: a bare ``\d+`` turns "1,500" into
+# {"1","500"} and "12.5" into {"12","5"}, which makes a DECREASE to a
+# component of the old value look like a subset of it. Price cuts, rate-limit
+# reductions and SLA downgrades are exactly that shape.
+_NUM = re.compile(r"\d+(?:[.,]\d+)*")
 _TOK = re.compile(r"[a-z0-9]+")
 _MONTHS = frozenset(
     "january february march april may june july august september october "

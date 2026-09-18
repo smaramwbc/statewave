@@ -595,3 +595,43 @@ async def test_the_chain_walker_does_not_follow_a_skip_record(client, session_fa
     assert body["superseding_memory"]["id"] == str(b_id)
     assert body["current_memory"]["id"] == str(c_id)
     assert body["current_memory"]["id"] != str(decoy_id)
+
+
+async def test_a_surviving_skip_is_recorded_once_not_once_per_compile(
+    client, session_factory
+):
+    """A skipped pair stays active by design, so it is re-examined on every
+    compile. Without a guard it would be recorded again each time: the table
+    grows without bound and the count answers "how many compiles ran" rather
+    than "how often did the guard fire"."""
+    from server.services.conflicts import resolve_conflicts
+
+    subject_id = f"skiponce-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        narrow = _memory(
+            subject_id,
+            "Refunds are approved up to 500 EUR for orders under 30 days",
+            days_ago=5,
+        )
+        wide = _memory(
+            subject_id, "Refunds are approved up to 500 EUR for orders", days_ago=1
+        )
+        session.add_all([narrow, wide])
+        await session.commit()
+
+    for _ in range(3):
+        async with session_factory() as session:
+            superseded = await resolve_conflicts(session, subject_id, tenant_id=None)
+            await session.commit()
+        assert superseded == [], "the widening must never retire the narrow row"
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(SupersessionRecordRow).where(
+                    SupersessionRecordRow.subject_id == subject_id
+                )
+            )
+        ).scalars().all()
+    assert len(rows) == 1, f"three compiles recorded {len(rows)} rows"
+    assert rows[0].rule == "widening_skipped"

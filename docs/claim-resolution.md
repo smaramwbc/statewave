@@ -105,7 +105,26 @@ For the active memories of a subject:
   else — unkeyed, malformed, unknown-key, unsupported-version, multi-valued,
   mixed keyed/unkeyed, and single-valued *same-value* duplicates.
 
-### The widening guard
+### Where the widening guard does not apply
+
+The guard runs on the lexical path only. Two other routes can retire a
+narrower memory, and both are deliberate carve-outs rather than oversights.
+
+**The claim path.** When two memories carry the same registered claim key,
+they occupy the same single-valued slot and the newer one wins. That is a
+declared identity, supplied by the producer, and it is a stronger statement
+than any overlap score: the point of declared cardinality is that the system
+does not have to infer it. Overriding a declaration with a lexical heuristic
+would undo that. So `location.current_home = Berlin` still retires
+`"Alice lives in Berlin during the winter months"`, and a qualifier that
+matters has to live in the claim rather than beside it.
+
+**Reconcile.** The LLM reconciler can judge a widened restatement an UPDATE
+and retire the narrow row. Constraining that means a prompt rule, which no
+test can verify and which moves benchmark results. The recorded skips make
+how often this happens a question the data can answer first.
+
+## The widening guard
 
 Jaccard overlap is symmetric, so on its own it cannot tell *"later and
 different"* from *"later and emptier"*. A broadly worded restatement scores

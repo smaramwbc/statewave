@@ -254,7 +254,10 @@ class SupersessionRecordRow(Base):
         UUID(as_uuid=True), nullable=True
     )
     rule: Mapped[str] = mapped_column(String(64), nullable=False)
-    claim_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Text rather than a bounded String: tenant-registered claim keys have no
+    # length limit, and a truncation error here would roll back the compile
+    # batch that produced the decision.
+    claim_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
     compile_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

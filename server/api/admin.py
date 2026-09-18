@@ -2322,6 +2322,66 @@ class RelatedMemoryItem(BaseModel):
     claim_key: str | None = None
 
 
+async def _follow_supersession_chain(
+    session, start, subject_id: str, tenant_id: str | None, *, max_hops: int = 32
+):
+    """Walk recorded supersessions from `start` to the live memory.
+
+    A fact updated twice leaves the direct successor superseded as well, so
+    the recorded decision alone answers "what replaced this" but not "what is
+    true now". Both are worth having: the first is the audit fact, the second
+    is what an operator is looking at the panel to find out.
+
+    Bounded and cycle-guarded. A cycle should be impossible, since a memory is
+    superseded once and only while active, but a walk that can loop forever on
+    corrupt data does not belong on an admin read path. Returns None when the
+    chain ends without an active memory, which is honest: nothing is known to
+    be current.
+    """
+    from sqlalchemy import select
+
+    from server.db.tables import MemoryRow, SupersessionRecordRow
+
+    seen = {start.id}
+    node = start
+    for _ in range(max_hops):
+        if node.status == "active":
+            return node
+        stmt = select(SupersessionRecordRow).where(
+            SupersessionRecordRow.superseded_memory_id == node.id,
+            SupersessionRecordRow.subject_id == subject_id,
+        )
+        if tenant_id is None:
+            stmt = stmt.where(SupersessionRecordRow.tenant_id.is_(None))
+        else:
+            stmt = stmt.where(SupersessionRecordRow.tenant_id == tenant_id)
+        stmt = stmt.order_by(
+            SupersessionRecordRow.created_at.desc(), SupersessionRecordRow.id.desc()
+        ).limit(1)
+        rec = (await session.execute(stmt)).scalar_one_or_none()
+        if rec is None or rec.superseding_memory_id is None:
+            return None
+        if rec.superseding_memory_id in seen:
+            logger.warning(
+                "supersession_chain_cycle",
+                subject_id=subject_id,
+                memory_id=str(rec.superseding_memory_id),
+            )
+            return None
+        seen.add(rec.superseding_memory_id)
+        nxt_stmt = select(MemoryRow).where(
+            MemoryRow.id == rec.superseding_memory_id,
+            MemoryRow.subject_id == subject_id,
+        )
+        if tenant_id:
+            nxt_stmt = nxt_stmt.where(MemoryRow.tenant_id == tenant_id)
+        node = (await session.execute(nxt_stmt)).scalar_one_or_none()
+        if node is None:
+            return None
+    logger.warning("supersession_chain_too_long", subject_id=subject_id)
+    return None
+
+
 class MemoryEvolutionResponse(BaseModel):
     """Response for memory evolution/related memories lookup."""
 
@@ -2329,6 +2389,13 @@ class MemoryEvolutionResponse(BaseModel):
     status: str
     created_at: str
     superseding_memory: RelatedMemoryItem | None  # The memory that replaced this one
+    # The live end of the supersession chain. `superseding_memory` is the
+    # DIRECT successor, which is the decision that was actually recorded, but
+    # a fact updated twice leaves that intermediate superseded too. Following
+    # the chain here means a panel can show "replaced by X, currently Y"
+    # without every consumer reimplementing the walk. None when the direct
+    # successor is already active (nothing further to follow) or unknown.
+    current_memory: RelatedMemoryItem | None = None
     superseded_memories: list[RelatedMemoryItem]  # Memories this one replaced
     sibling_memories: list[RelatedMemoryItem]  # Other memories from same sources
     source_episode_count: int
@@ -2353,7 +2420,11 @@ async def get_memory_related(
     """Get memory evolution and related memories.
 
     Returns:
-    - superseding_memory: If this memory is superseded, the active memory that replaced it
+    - superseding_memory: If this memory is superseded, the memory that directly
+      replaced it. For a recorded decision this is the successor the compile
+      chose, which may itself have been superseded since; see current_memory.
+    - current_memory: The active memory at the end of the supersession chain,
+      when the direct successor is not itself active
     - superseded_memories: If this memory is active, older memories it superseded
     - sibling_memories: Other memories derived from the same source episodes
     - relationship_source: "recorded" when the supersession above is the
@@ -2390,6 +2461,7 @@ async def get_memory_related(
             raise HTTPException(status_code=404, detail="Memory not found")
 
         superseding_memory = None
+        current_memory = None
         superseded_memories: list[RelatedMemoryItem] = []
         sibling_memories: list[RelatedMemoryItem] = []
         relationship_source = "inferred"
@@ -2451,6 +2523,15 @@ async def get_memory_related(
                 successor = (await session.execute(successor_stmt)).scalar_one_or_none()
                 if successor:
                     superseding_memory = _item(successor, "supersedes", record)
+                    if successor.status != "active":
+                        # A fact updated twice leaves the direct successor
+                        # superseded too. Walk the recorded chain so the
+                        # caller gets the live row without reimplementing it.
+                        live = await _follow_supersession_chain(
+                            session, successor, subject_id, tenant_id
+                        )
+                        if live is not None:
+                            current_memory = _item(live, "supersedes")
 
         # If this memory is superseded, find the active memory that replaced it
         if record is None and target.status == "superseded" and target.source_episode_ids:
@@ -2561,6 +2642,7 @@ async def get_memory_related(
             status=target.status,
             created_at=target.created_at.isoformat(),
             superseding_memory=superseding_memory,
+            current_memory=current_memory,
             superseded_memories=superseded_memories,
             sibling_memories=sibling_memories,
             source_episode_count=len(target.source_episode_ids),
@@ -3379,7 +3461,14 @@ async def _delete_subject_key(session, subject_id: str, tenant_id: str | None) -
     """
     from sqlalchemy import delete
 
-    from server.db.tables import EpisodeRow, MemoryRow, ResolutionRow, SubjectHealthCacheRow
+    from server.db.tables import (
+        EpisodeRow,
+        MemoryRow,
+        ResolutionRow,
+        SubjectEntityRow,
+        SubjectHealthCacheRow,
+        SupersessionRecordRow,
+    )
 
     async def _delete_from(row_model) -> int:
         stmt = delete(row_model).where(row_model.subject_id == subject_id)
@@ -3394,6 +3483,12 @@ async def _delete_subject_key(session, subject_id: str, tenant_id: str | None) -
     mem_n = await _delete_from(MemoryRow)
     await _delete_from(ResolutionRow)
     await _delete_from(SubjectHealthCacheRow)
+    # This is the mass-erasure path, so it has to reap everything the
+    # single-subject delete does. Supersession records carry the subject id
+    # and its compile-time decisions; the entity store was already being
+    # left behind here, which is the same defect one table earlier.
+    await _delete_from(SubjectEntityRow)
+    await _delete_from(SupersessionRecordRow)
     return ep_n, mem_n
 
 

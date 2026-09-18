@@ -236,3 +236,172 @@ async def test_delete_subject_reap_is_tenant_scoped(
             )
         ).scalars().all()
     assert survivors == ["tenant-a"]
+
+
+# --- regressions found in review ------------------------------------------
+
+
+async def test_a_long_tenant_claim_key_does_not_abort_the_compile(session_factory):
+    """Tenant-registered claim keys carry no length bound.
+
+    Before the column was Text, a key longer than 256 characters turned the
+    record INSERT into a truncation error. Because the record rides the
+    compile batch's transaction, that rolled the whole batch back: no
+    memories written, episodes never marked compiled, and the same failure
+    on every retry. The key only ever lived in memory before this table
+    existed, so nothing upstream bounds it.
+    """
+    from server.services.supersession import SupersessionDecision, record_supersessions
+
+    subject_id = f"longkey-{uuid.uuid4().hex[:8]}"
+    long_key = "custom." + ("k" * 400)
+
+    async with session_factory() as session:
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=uuid.uuid4(),
+                    superseding_memory_id=uuid.uuid4(),
+                    rule="claim_contradiction",
+                    claim_key=long_key,
+                )
+            ],
+        )
+        await session.commit()
+
+    async with session_factory() as session:
+        stored = (
+            await session.execute(
+                select(SupersessionRecordRow).where(
+                    SupersessionRecordRow.subject_id == subject_id
+                )
+            )
+        ).scalar_one()
+        assert stored.claim_key == long_key, "the key must survive unmodified"
+
+
+async def test_real_conflict_resolution_writes_a_readable_row(client, session_factory):
+    """Producer to real table, end to end.
+
+    Every other test here hand-inserts the row or drives the producers
+    against a mocked session, so no test ever put a producer-generated value
+    into a real column. That gap is exactly why a column-width mismatch
+    survived the whole suite. This closes the class: run the real conflict
+    resolver against Postgres and read back what it wrote.
+    """
+    from server.services.conflicts import resolve_conflicts
+
+    subject_id = f"real-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        older = _memory(subject_id, "the user lives in Berlin and works remotely", days_ago=5)
+        newer = _memory(subject_id, "the user lives in Berlin and works remotely now", days_ago=1)
+        session.add_all([older, newer])
+        await session.commit()
+        older_id, newer_id = older.id, newer.id
+
+    async with session_factory() as session:
+        superseded = await resolve_conflicts(session, subject_id, tenant_id=None)
+        await session.commit()
+
+    assert superseded, "the fixture is meant to produce a supersession"
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(SupersessionRecordRow).where(
+                    SupersessionRecordRow.subject_id == subject_id
+                )
+            )
+        ).scalars().all()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row.superseded_memory_id == older_id
+        assert row.superseding_memory_id == newer_id
+        assert row.rule == "lexical"
+        assert row.score is not None and row.threshold is not None
+        assert row.score >= row.threshold
+        # The owner's rule: ids and scores, never the text they came from.
+        assert older.content not in (row.claim_key or "")
+        assert row.details == {}
+
+
+async def test_a_twice_updated_fact_reports_both_the_direct_and_the_live_memory(
+    client, session_factory
+):
+    """A fact updated twice retires the intermediate too.
+
+    `superseding_memory` is the decision that was recorded, so it stays the
+    DIRECT successor even once that successor is itself retired: changing it
+    would make the endpoint disagree with the audit record. `current_memory`
+    follows the chain to the live row, so a panel can say "replaced by B,
+    currently C" without every consumer reimplementing the walk.
+    """
+    from server.services.supersession import SupersessionDecision, record_supersessions
+
+    subject_id = f"chain-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        a = _memory(subject_id, "the user is in CET", days_ago=9, status="superseded")
+        b = _memory(subject_id, "the user is in GMT", days_ago=5, status="superseded")
+        c = _memory(subject_id, "the user is in JST", days_ago=1)
+        session.add_all([a, b, c])
+        await session.commit()
+        a_id, b_id, c_id = a.id, b.id, c.id
+
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=a_id, superseding_memory_id=b_id, rule="lexical"
+                ),
+                SupersessionDecision(
+                    superseded_memory_id=b_id, superseding_memory_id=c_id, rule="lexical"
+                ),
+            ],
+        )
+        await session.commit()
+
+    resp = await client.get(f"/admin/subjects/{subject_id}/memories/{a_id}/related")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+
+    assert body["relationship_source"] == "recorded"
+    # The recorded decision, unchanged: B is what actually replaced A.
+    assert body["superseding_memory"]["id"] == str(b_id)
+    assert body["superseding_memory"]["status"] == "superseded"
+    # And the answer an operator is looking for.
+    assert body["current_memory"]["id"] == str(c_id)
+    assert body["current_memory"]["status"] == "active"
+
+
+async def test_no_current_memory_when_the_direct_successor_is_already_live(
+    client, session_factory
+):
+    """Nothing to follow, so the field stays empty rather than echoing."""
+    from server.services.supersession import SupersessionDecision, record_supersessions
+
+    subject_id = f"chain1-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        old = _memory(subject_id, "the user is in CET", days_ago=5, status="superseded")
+        new = _memory(subject_id, "the user is in JST", days_ago=1)
+        session.add_all([old, new])
+        await session.commit()
+        old_id, new_id = old.id, new.id
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=old_id, superseding_memory_id=new_id, rule="lexical"
+                )
+            ],
+        )
+        await session.commit()
+
+    body = (
+        await client.get(f"/admin/subjects/{subject_id}/memories/{old_id}/related")
+    ).json()
+    assert body["superseding_memory"]["id"] == str(new_id)
+    assert body["current_memory"] is None

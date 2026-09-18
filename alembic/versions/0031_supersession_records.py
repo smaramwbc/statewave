@@ -90,7 +90,12 @@ def upgrade() -> None:
         # Claim path only: the canonical registry KEY. Never the value, and
         # never the v2 contradiction bucket, whose entity component can carry
         # personal data.
-        sa.Column("claim_key", sa.String(256), nullable=True),
+        # Text, not a bounded VARCHAR. Tenant-registered claim keys carry no
+        # length limit (server/schemas/requests.py accepts any key matching
+        # the scope pattern), and before this table that key only ever lived
+        # in memory. A bounded column turns an over-long key into a failed
+        # INSERT that rolls back the whole compile batch, on every retry.
+        sa.Column("claim_key", sa.Text, nullable=True),
         # Scored rules only (lexical overlap): the similarity and the
         # threshold it was compared against, both from the one computation
         # that made the call.

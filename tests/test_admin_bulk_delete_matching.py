@@ -157,16 +157,39 @@ async def test_matching_subjects_escapes_prefix_like_metacharacters(monkeypatch)
 
 @pytest.mark.anyio
 async def test_delete_subject_key_treats_none_tenant_as_global_only():
-    session = _DeleteSession(rowcounts=[1, 2, 3, 4])
+    session = _DeleteSession(rowcounts=[1, 2, 3, 4, 5, 6])
 
     ep_count, mem_count = await _delete_subject_key(session, "shared", tenant_id=None)
 
     assert (ep_count, mem_count) == (1, 2)
-    assert len(session.statements) == 4
     for statement in session.statements:
         sql = str(_compiled(statement))
         assert "tenant_id IS NULL" in sql
         assert "tenant_id =" not in sql
+
+
+@pytest.mark.anyio
+async def test_bulk_delete_reaps_every_subject_scoped_table():
+    """Pins WHICH tables the mass-erasure path clears, not how many.
+
+    This endpoint is the one used to wipe a customer, and a table added to
+    the schema but forgotten here leaves subject-identifying rows behind
+    after a delete that reported success. Naming the set means adding or
+    dropping one is a deliberate edit with a failing test to justify it.
+    """
+    session = _DeleteSession(rowcounts=[1, 2, 3, 4, 5, 6])
+
+    await _delete_subject_key(session, "shared", tenant_id=None)
+
+    tables = {statement.table.name for statement in session.statements}
+    assert tables == {
+        "episodes",
+        "memories",
+        "resolutions",
+        "subject_health_cache",
+        "subject_entities",
+        "supersession_records",
+    }
 
 
 @pytest.mark.anyio

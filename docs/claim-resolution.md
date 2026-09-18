@@ -101,9 +101,67 @@ For the active memories of a subject:
   newest wins (supersede the older). Non-overlapping windows **coexist** as
   history. The legacy path is told to skip these pairs so lexical overlap can
   never undo the temporal/cardinality decision.
-- **Legacy path** (unchanged lexical Jaccard): everything else — unkeyed,
-  malformed, unknown-key, unsupported-version, multi-valued, mixed
-  keyed/unkeyed, and single-valued *same-value* duplicates.
+- **Legacy path** (lexical Jaccard, plus the widening guard below): everything
+  else — unkeyed, malformed, unknown-key, unsupported-version, multi-valued,
+  mixed keyed/unkeyed, and single-valued *same-value* duplicates.
+
+### The widening guard
+
+Jaccard overlap is symmetric, so on its own it cannot tell *"later and
+different"* from *"later and emptier"*. A broadly worded restatement scores
+just as high against a narrow rule as a genuine correction does, and
+superseding on that score alone takes the narrow rule's condition out of every
+retrieval path:
+
+| | text | outcome before |
+|---|---|---|
+| T1 | Refunds are approved up to 500 EUR for orders under 30 days | superseded |
+| T2 | Refunds are approved up to 500 EUR for orders | survives |
+
+The two score 0.75 against the 0.6 `profile_fact` threshold, and *"under 30
+days"* is gone.
+
+The lexical pass therefore checks one more thing before superseding: **does the
+newer statement add anything?** It compares two token views of each side —
+content words (≥3 characters, stopwords removed) and numbers/month names — and
+declines to supersede only when the newer side is a subset on **both** views
+and a *strict* subset on at least one. The two views are checked separately
+because short numbers never reach the content-word view: a lost `30` in *"under
+30 days"* would otherwise look like a stopword edit.
+
+Everything else supersedes exactly as before:
+
+| Shape | Example | Subset? | Result |
+|---|---|---|---|
+| Value replacement | `Munich` → `Berlin` | neither side | supersedes |
+| Narrowing | `Alice` → `Alice Chen` | newer is a superset | supersedes |
+| Duplicate / reword | `I use Stripe` → `I use Stripe.` | equal, nothing strict | supersedes |
+| **Widening** | drops `under 30 days` | newer is a strict subset | **coexist** |
+
+A skipped pair is not abandoned: a later memory can still supersede the same
+row, so a genuine correction arriving after a widening restatement still
+retires the stale rule.
+
+### Skips are recorded, not logged
+
+Each refusal is written to `supersession_records` under the rule
+`widening_skipped`, with the score and threshold it declined to act on and a
+`details` object giving the *size* of the drop (never the dropped tokens —
+that table holds no memory text). "How often does the guard fire, and on which
+memories" is a query.
+
+A skip row uses the same two id columns as a real supersession, so **every
+reader must filter on the rule**. The rules that mean a memory was retired are
+enumerated in `SUPERSEDING_RULES` (`server/services/supersession.py`); the
+admin relationship endpoint filters every record lookup, including its chain
+walk, on that set. Unfiltered, a skip row reports an active, retrievable memory
+as superseded.
+
+The LLM reconcile pass (`server/services/reconcile.py`) is **not** covered by
+this guard — it can still retire a narrow memory in favour of a broader one by
+its own judgement. Constraining that is a prompt change, which no test can
+verify and which moves benchmark numbers; the recorded skips make the
+deterministic side observable in data first.
 
 ### Temporal and cardinality safeguards
 

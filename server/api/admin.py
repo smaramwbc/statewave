@@ -13,6 +13,7 @@ from server.core.config import settings
 from server.schemas.requests import TenantConfigPatch
 from server.schemas.responses import TenantConfigResponse
 from server.services import webhooks
+from server.services.supersession import SUPERSEDING_RULES
 
 logger = structlog.stdlib.get_logger()
 
@@ -2322,6 +2323,21 @@ class RelatedMemoryItem(BaseModel):
     claim_key: str | None = None
 
 
+def _superseding_only(stmt):
+    """Restrict a record lookup to decisions that actually retired a memory.
+
+    `supersession_records` also holds decisions NOT to supersede — the
+    widening guard's skips (#414) — and they use the same two id columns as a
+    real supersession. Unfiltered, a skip row makes an ACTIVE memory read as
+    superseded, and, on a memory that was later genuinely retired, outranks
+    the real decision because it can be the newer row. Every read of this
+    table on this page goes through here.
+    """
+    from server.db.tables import SupersessionRecordRow
+
+    return stmt.where(SupersessionRecordRow.rule.in_(sorted(SUPERSEDING_RULES)))
+
+
 async def _follow_supersession_chain(
     session, start, subject_id: str, tenant_id: str | None, *, max_hops: int = 32
 ):
@@ -2347,9 +2363,11 @@ async def _follow_supersession_chain(
     for _ in range(max_hops):
         if node.status == "active":
             return node
-        stmt = select(SupersessionRecordRow).where(
-            SupersessionRecordRow.superseded_memory_id == node.id,
-            SupersessionRecordRow.subject_id == subject_id,
+        stmt = _superseding_only(
+            select(SupersessionRecordRow).where(
+                SupersessionRecordRow.superseded_memory_id == node.id,
+                SupersessionRecordRow.subject_id == subject_id,
+            )
         )
         if tenant_id is None:
             stmt = stmt.where(SupersessionRecordRow.tenant_id.is_(None))
@@ -2467,11 +2485,12 @@ async def get_memory_related(
         relationship_source = "inferred"
 
         def _record_scope(stmt):
-            """Scope a record lookup exactly like the memory lookup above it."""
+            """Scope a record lookup exactly like the memory lookup above it,
+            and to real supersessions only."""
             stmt = stmt.where(SupersessionRecordRow.subject_id == subject_id)
             if tenant_id:
                 stmt = stmt.where(SupersessionRecordRow.tenant_id == tenant_id)
-            return stmt
+            return _superseding_only(stmt)
 
         def _item(m: MemoryRow, relationship: str, record=None) -> RelatedMemoryItem:
             """A related-memory row; the decision's own fields when one backs it.

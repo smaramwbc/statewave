@@ -11,12 +11,13 @@ Two paths, hybrid and strictly additive:
   different-value pairs and explicitly removes them from the lexical pass, so
   lexical overlap can never undo its cardinality/temporal decisions.
 
-* **Legacy path** (unchanged) — token-overlap (Jaccard) supersession for
-  EVERYTHING else: unkeyed, malformed, unknown-key, unsupported-version,
-  multi-valued, and mixed keyed/unkeyed pairings. Single-valued same-value
-  duplicates are collapsed by the claim path itself (#369), so the legacy pass
-  never touches keyed pairs. Byte-identical to before for any memory without a
-  usable single-valued claim.
+* **Legacy path** — token-overlap (Jaccard) supersession for EVERYTHING else:
+  unkeyed, malformed, unknown-key, unsupported-version, multi-valued, and
+  mixed keyed/unkeyed pairings. Single-valued same-value duplicates are
+  collapsed by the claim path itself (#369), so the legacy pass never touches
+  keyed pairs. Since #414 one guard sits in front of it: a newer statement
+  whose content is a strict SUBSET of the older one's adds nothing and only
+  drops, so it does not supersede (see :func:`_widens`).
 
 No opt-in flag for either path. The resolver runs only at compile time
 (``server.api.memories``); reads and server startup never invoke it, so an
@@ -31,6 +32,10 @@ Strategy:
   ``server.services.supersession`` (#419). Which memories get superseded is
   unaffected: the record is written from the same comparison that made the
   call, in the same transaction as the status write.
+- The widening guard's REFUSALS are recorded the same way, under a rule that
+  is not in ``SUPERSEDING_RULES``. They are decisions about the same pair, so
+  they belong in the same table; they are not supersessions, so nothing
+  derives status from them.
 """
 
 from __future__ import annotations
@@ -55,10 +60,11 @@ from server.services.supersession import (
     RULE_CLAIM_CONTRADICTION,
     RULE_CLAIM_DUPLICATE,
     RULE_LEXICAL,
+    RULE_WIDENING_SKIPPED,
     SupersessionDecision,
     record_supersessions,
 )
-from server.services.tokenization import EDGE_PUNCT, tokenize
+from server.services.tokenization import EDGE_PUNCT, number_set, sig_tokens, tokenize
 
 logger = structlog.stdlib.get_logger()
 
@@ -96,6 +102,10 @@ async def resolve_conflicts(
     additionally stages its decision (rule, score, successor) on the session —
     same transaction as the write it explains, so the two cannot disagree
     (#419).
+
+    Decisions NOT to supersede are staged too (#414) but never reach
+    ``mark_memories_superseded`` or the return value: the status write is
+    driven off ``SUPERSEDING_RULES``, not off the presence of a record.
     """
     memories = await repo.list_active_memories_by_subject(session, subject_id, tenant_id=tenant_id)
     if len(memories) < 2:
@@ -125,9 +135,11 @@ async def resolve_conflicts(
     decisions.extend(_resolve_single_valued_claims(memories, claims))
     decisions.extend(_legacy_resolve(memories, claims))
 
-    superseded_ids = [d.superseded_memory_id for d in decisions]
+    # A recorded decision is not by itself a supersession: the rule decides.
+    superseded_ids = [d.superseded_memory_id for d in decisions if d.supersedes()]
     if superseded_ids:
         await repo.mark_memories_superseded(session, superseded_ids)
+    if decisions:
         record_supersessions(
             session,
             subject_id,
@@ -281,26 +293,49 @@ def _legacy_resolve(
                 # score" — a score computed separately from the comparison it
                 # is filed under would not be evidence of anything.
                 score, threshold = _overlap_score(group[i], group[j])
-                if score >= threshold:
+                if score < threshold:
+                    continue
+                if _widens(group[i], group[j]):
+                    # The newer statement only drops. Record the refusal and
+                    # keep looking: a LATER memory may still legitimately
+                    # supersede group[i], which a `break` here would prevent.
                     decisions.append(
                         SupersessionDecision(
                             superseded_memory_id=group[i].id,
                             superseding_memory_id=group[j].id,
-                            rule=RULE_LEXICAL,
+                            rule=RULE_WIDENING_SKIPPED,
                             score=score,
                             threshold=threshold,
+                            details=_widening_details(group[i], group[j]),
                         )
                     )
-                    group[i].status = "superseded"
-                    group[i].valid_to = group[j].valid_from or datetime.now(timezone.utc)
                     logger.info(
-                        "memory_superseded",
+                        "memory_supersession_skipped",
                         old_id=str(group[i].id),
                         new_id=str(group[j].id),
                         kind=kind,
-                        strategy=RULE_LEXICAL,
+                        strategy=RULE_WIDENING_SKIPPED,
                     )
-                    break
+                    continue
+                decisions.append(
+                    SupersessionDecision(
+                        superseded_memory_id=group[i].id,
+                        superseding_memory_id=group[j].id,
+                        rule=RULE_LEXICAL,
+                        score=score,
+                        threshold=threshold,
+                    )
+                )
+                group[i].status = "superseded"
+                group[i].valid_to = group[j].valid_from or datetime.now(timezone.utc)
+                logger.info(
+                    "memory_superseded",
+                    old_id=str(group[i].id),
+                    new_id=str(group[j].id),
+                    kind=kind,
+                    strategy=RULE_LEXICAL,
+                )
+                break
     return decisions
 
 
@@ -352,7 +387,59 @@ def _overlap_score(older: MemoryRow, newer: MemoryRow) -> tuple[float, float]:
     return (intersection / union if union else 0.0), threshold
 
 
+def _widens(older: MemoryRow, newer: MemoryRow) -> bool:
+    """Whether ``newer`` only restates ``older`` more broadly (#414).
+
+    Jaccard overlap is symmetric and so cannot tell "later and different" from
+    "later and emptier". "Refunds are approved up to 500 EUR for orders under
+    30 days" followed by "Refunds are approved up to 500 EUR for orders" scores
+    0.75 against the 0.6 profile_fact threshold, and superseding on that alone
+    takes the condition out of retrieval entirely.
+
+    The distinguishing property is not specificity in the abstract — it is
+    whether the newer statement ADDS anything:
+
+    * value replacement (Munich -> Berlin): each side has content the other
+      lacks, so it is not a subset — supersedes, as before;
+    * narrowing ("Alice" -> "Alice Chen"): the newer is a superset —
+      supersedes, as before;
+    * duplicate or reword: equal sets, nothing is strict — supersedes, as
+      before;
+    * widening: the newer is a STRICT subset on at least one of the two views
+      and a subset on both. It asserts nothing the older did not, and drops
+      something the older had. Only this case is skipped.
+
+    Numbers are checked separately from content words because they are exactly
+    what a content-word comparison misses: ``"30"`` is two characters, so
+    ``sig_tokens`` drops it and a lost "under 30 days" would look like a pure
+    stopword edit.
+    """
+    older_sig, newer_sig = sig_tokens(older.content), sig_tokens(newer.content)
+    older_nums, newer_nums = number_set(older.content), number_set(newer.content)
+    if not (newer_sig <= older_sig and newer_nums <= older_nums):
+        return False
+    return newer_sig < older_sig or newer_nums < older_nums
+
+
+def _widening_details(older: MemoryRow, newer: MemoryRow) -> dict:
+    """What the skip record says about the drop, in counts.
+
+    The dropped tokens themselves are memory text and never go in a record
+    (``server.services.supersession``); the shape of the drop is enough to ask
+    "is the guard firing on trivia or on real conditions" without joining
+    anything.
+    """
+    return {
+        "dropped_sig_tokens": len(sig_tokens(older.content) - sig_tokens(newer.content)),
+        "dropped_numbers": len(number_set(older.content) - number_set(newer.content)),
+    }
+
+
 def _are_conflicting(older: MemoryRow, newer: MemoryRow) -> bool:
-    """Determine if two memories of the same kind conflict."""
+    """Determine if two memories of the same kind conflict.
+
+    Same two gates as ``_legacy_resolve``, in the same order, so the predicate
+    and the resolver can never answer differently.
+    """
     score, threshold = _overlap_score(older, newer)
-    return score >= threshold
+    return score >= threshold and not _widens(older, newer)

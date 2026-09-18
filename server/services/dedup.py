@@ -58,27 +58,16 @@ from server.core.config import settings
 from server.db.tables import MemoryRow
 from server.services.embeddings import get_provider as get_embedding_provider
 
+# Gates (b) and (c) below. Shared with the widening guard in conflicts.py, which
+# asks the same "what does this statement assert" question about the same two
+# token views — one definition, so the two can never drift apart (#414).
+from server.services.tokenization import number_set, sig_tokens
+
 logger = structlog.stdlib.get_logger()
 
 _MIN_DT = datetime.min.replace(tzinfo=timezone.utc)
 _WS = re.compile(r"\s+")
-_NUM = re.compile(r"\d+")
-_TOK = re.compile(r"[a-z0-9]+")
-_MONTHS = frozenset(
-    "january february march april may june july august september october "
-    "november december".split()
-)
 _TRAILING = " .,;:!?-—\"'()[]{}"
-# Function words ignored when comparing the "significant content" of two facts.
-# Differences confined to these (or to word order / punctuation) are safe to
-# merge; a difference in ANY non-stopword token (a name, place, noun, verb) is
-# treated as a potentially-distinct fact and left for the LLM reconcile.
-_STOPWORDS = frozenset(
-    "the a an and or but of to in on at for with from by as is are was were be "
-    "been being has have had do does did this that these those it its their his "
-    "her my your our we you they he she i me us them about into over under than "
-    "then now during while which who whom whose what when where why how also".split()
-)
 
 
 def _normalize_core(content: str) -> str:
@@ -86,27 +75,6 @@ def _normalize_core(content: str) -> str:
     s = unicodedata.normalize("NFKC", content or "").casefold()
     s = _WS.sub(" ", s).strip()
     return s.strip(_TRAILING)
-
-
-def _number_set(content: str) -> frozenset[str]:
-    """Numbers + month names — the guard that keeps knowledge-update / date pairs
-    distinct so dedup never collapses a changed value into its predecessor."""
-    low = (content or "").casefold()
-    nums = set(_NUM.findall(low))
-    months = {m for m in _MONTHS if m in low}
-    return frozenset(nums | months)
-
-
-def _sig_tokens(content: str) -> frozenset[str]:
-    """Significant content words: tokens >=3 chars, minus stopwords. Two facts
-    may only merge when these are IDENTICAL — so any differing name/place/noun/
-    verb (e.g. "Mia" vs "Mary", "hiking" vs "biking") blocks the merge, while
-    word-order / stopword / punctuation differences (the windowing-reformat
-    case) do not."""
-    return frozenset(
-        t for t in _TOK.findall((content or "").casefold())
-        if len(t) >= 3 and t not in _STOPWORDS
-    )
 
 
 def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -205,8 +173,8 @@ async def dedup_candidates(
         for i in idx:
             row = survivors[i]
             vec = vecs[i]
-            nums = _number_set(row.content)
-            sig = _sig_tokens(row.content)
+            nums = number_set(row.content)
+            sig = sig_tokens(row.content)
             canonical = None
             for krow, kvec, knums, ksig in kept:
                 if krow.kind != row.kind:

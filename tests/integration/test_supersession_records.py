@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from server.db.tables import EpisodeRow, MemoryRow, SupersessionRecordRow
 
@@ -405,3 +405,193 @@ async def test_no_current_memory_when_the_direct_successor_is_already_live(
     ).json()
     assert body["superseding_memory"]["id"] == str(new_id)
     assert body["current_memory"] is None
+
+
+# --- decisions that are NOT supersessions (#414) ----------------------------
+#
+# The widening guard records the pairs it declined to supersede, in this table,
+# on these same two id columns. Every read here must filter on the rule or it
+# will report a memory that is still active — and still retrievable — as
+# retired. These are that filter's tests.
+
+NARROW = "Refunds are approved up to 500 EUR for orders under 30 days"
+WIDE = "Refunds are approved up to 500 EUR for orders"
+
+
+async def test_a_skip_record_never_makes_an_active_memory_look_superseded(
+    client, session_factory
+):
+    """Both memories are active; only a decision NOT to supersede was recorded.
+
+    Unfiltered, the newer memory's panel lists the older one as something it
+    retired, sourced "recorded" — the confident wrong answer this table exists
+    to remove.
+    """
+    from server.services.supersession import (
+        RULE_WIDENING_SKIPPED,
+        SupersessionDecision,
+        record_supersessions,
+    )
+
+    subject_id = f"skip-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        narrow = _memory(subject_id, NARROW, days_ago=5)
+        wide = _memory(subject_id, WIDE, days_ago=1)
+        session.add_all([narrow, wide])
+        await session.commit()
+        narrow_id, wide_id = narrow.id, wide.id
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=narrow_id,
+                    superseding_memory_id=wide_id,
+                    rule=RULE_WIDENING_SKIPPED,
+                    score=0.75,
+                    threshold=0.6,
+                )
+            ],
+        )
+        await session.commit()
+
+    wide_body = (
+        await client.get(f"/admin/subjects/{subject_id}/memories/{wide_id}/related")
+    ).json()
+    assert wide_body["superseded_memories"] == []
+    assert wide_body["relationship_source"] == "inferred"
+
+    narrow_body = (
+        await client.get(f"/admin/subjects/{subject_id}/memories/{narrow_id}/related")
+    ).json()
+    assert narrow_body["status"] == "active"
+    assert narrow_body["superseding_memory"] is None
+    assert narrow_body["current_memory"] is None
+
+
+async def test_the_real_resolver_records_a_skip_without_disturbing_the_panel(
+    client, session_factory
+):
+    """Producer to endpoint, against Postgres, on the reported pair.
+
+    One compile stages both rows in ONE transaction, so they share a
+    `created_at` and "newest record wins" falls through to a random uuid.
+    Unfiltered, this endpoint would name the skip's counterpart as the
+    successor for whichever id happened to sort higher — a coin flip in
+    production. The tie is pinned the unfavourable way below so this test is
+    not one too.
+    """
+    from server.services.conflicts import resolve_conflicts
+
+    subject_id = f"skip-real-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        narrow = _memory(subject_id, NARROW, days_ago=10)
+        wide = _memory(subject_id, WIDE, days_ago=5)
+        changed = _memory(
+            subject_id,
+            "Refunds are approved up to 500 EUR for orders under 60 days",
+            days_ago=1,
+        )
+        session.add_all([narrow, wide, changed])
+        await session.commit()
+        narrow_id, wide_id, changed_id = narrow.id, wide.id, changed.id
+
+    async with session_factory() as session:
+        superseded = await resolve_conflicts(session, subject_id, tenant_id=None)
+        await session.commit()
+
+    # The widening pair is skipped; 30 days -> 60 days is a real change.
+    assert narrow_id in superseded
+
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(SupersessionRecordRow).where(
+                    SupersessionRecordRow.subject_id == subject_id
+                )
+            )
+        ).scalars().all()
+    by_rule = {r.rule: r for r in rows}
+    skip = by_rule["widening_skipped"]
+    assert skip.superseded_memory_id == narrow_id
+    assert skip.superseding_memory_id == wide_id
+    assert skip.score is not None and skip.score >= skip.threshold
+    assert skip.details == {"dropped_sig_tokens": 1, "dropped_numbers": 1}
+    # One transaction, one `now()`: nothing but the id separates the two rows.
+    assert skip.created_at == by_rule["lexical"].created_at
+
+    async with session_factory() as session:
+        await session.execute(
+            update(SupersessionRecordRow)
+            .where(SupersessionRecordRow.id == skip.id)
+            .values(id=uuid.UUID("ffffffff-ffff-ffff-ffff-ffffffffffff"))
+        )
+        await session.commit()
+
+    body = (
+        await client.get(f"/admin/subjects/{subject_id}/memories/{narrow_id}/related")
+    ).json()
+    assert body["relationship_source"] == "recorded"
+    assert body["superseding_memory"]["id"] == str(changed_id)
+    assert body["superseding_memory"]["rule"] == "lexical"
+
+
+async def test_the_chain_walker_does_not_follow_a_skip_record(client, session_factory):
+    """`current_memory` walks recorded decisions from a retired memory to the
+    live one. A skip row on an intermediate points at a memory that retired
+    nothing, so an unfiltered walk ends on the wrong live row — and says
+    "currently" about it.
+    """
+    from server.services.supersession import (
+        RULE_WIDENING_SKIPPED,
+        SupersessionDecision,
+        record_supersessions,
+    )
+
+    subject_id = f"skipchain-{uuid.uuid4().hex[:8]}"
+    async with session_factory() as session:
+        a = _memory(subject_id, "the user is in CET", days_ago=9, status="superseded")
+        b = _memory(subject_id, "the user is in GMT", days_ago=7, status="superseded")
+        c = _memory(subject_id, "the user is in JST", days_ago=5)
+        decoy = _memory(subject_id, "the user is in UTC", days_ago=1)
+        session.add_all([a, b, c, decoy])
+        await session.commit()
+        a_id, b_id, c_id, decoy_id = a.id, b.id, c.id, decoy.id
+
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=a_id, superseding_memory_id=b_id, rule="lexical"
+                ),
+                SupersessionDecision(
+                    superseded_memory_id=b_id, superseding_memory_id=c_id, rule="lexical"
+                ),
+            ],
+        )
+        await session.commit()
+
+    # Written later, so it is the newest row for b and wins the ordering.
+    async with session_factory() as session:
+        record_supersessions(
+            session,
+            subject_id,
+            [
+                SupersessionDecision(
+                    superseded_memory_id=b_id,
+                    superseding_memory_id=decoy_id,
+                    rule=RULE_WIDENING_SKIPPED,
+                    score=0.9,
+                    threshold=0.6,
+                )
+            ],
+        )
+        await session.commit()
+
+    body = (
+        await client.get(f"/admin/subjects/{subject_id}/memories/{a_id}/related")
+    ).json()
+    assert body["superseding_memory"]["id"] == str(b_id)
+    assert body["current_memory"]["id"] == str(c_id)
+    assert body["current_memory"]["id"] != str(decoy_id)

@@ -1,7 +1,7 @@
 """API key authentication middleware.
 
 When STATEWAVE_API_KEY is set, all requests (except health checks) must
-include a matching ``X-API-Key`` header or ``?api_key=`` query param.
+include a matching ``X-API-Key`` header.
 
 When STATEWAVE_API_KEY is unset/empty, authentication is disabled
 (open access — suitable for local dev).
@@ -36,8 +36,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        # Check header first, then query param
-        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        provided = request.headers.get("X-API-Key")
 
         if not provided:
             return JSONResponse(

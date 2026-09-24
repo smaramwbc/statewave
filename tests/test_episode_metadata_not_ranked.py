@@ -1,14 +1,20 @@
-"""Episode `metadata` is inert for retrieval, ranking and context assembly.
+"""Episode `metadata` is inert for retrieval and ranking.
 
-The ingest API documents `metadata` as stored and returned unchanged, taking
-no part in what the model ends up reading. A caller who labels an episode
-`{"topic": "..."}` is told those labels will not help it surface. These tests
-pin that promise against the assembly path, so the documented sentence cannot
-quietly become false.
+The ingest API documents `metadata` as stored and returned unchanged. A caller
+who labels an episode `{"topic": "..."}` is told those labels will not help it
+surface and will not reach the model either. These tests pin that promise
+against the assembly path, so the documented sentence cannot quietly become
+false.
+
+Context assembly has exactly one exception: the reserved `outcome` envelope
+from #415, whose behaviour is pinned in test_episode_outcome_in_bundle.py. The
+documented rule has to name that exception, which is what the last test here
+checks, because it went a while without naming it (#442).
 """
 
 from __future__ import annotations
 
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,7 +23,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from server.services.context import assemble_context
+from server.api.episodes import create_episode, create_episodes_batch
+from server.schemas.requests import CreateEpisodeRequest
+from server.services.context import OUTCOME_METADATA_KEY, assemble_context
 
 
 TASK = "deploy pipeline staging"
@@ -147,3 +155,34 @@ async def test_metadata_is_returned_unchanged():
         "topic": TASK,
         "priority": "critical",
     }
+
+
+# The sentence this catches, in the two phrasings it has actually been written
+# in: "takes no part in retrieval, ranking or context assembly" and "retrieval,
+# ranking and context assembly never read it". Both were true until the
+# `outcome` envelope landed, and both survived it.
+_INERT_FOR_ASSEMBLY_CLAIM = re.compile(r"(no part in|never read)[^.]*context assembl", re.I)
+
+
+def test_the_documented_rule_names_the_outcome_exception():
+    """The rule callers read has to match the rule the code follows.
+
+    The `metadata` field description is published in the OpenAPI schema and
+    the two ingest routes carry the same rule in their docstrings, so all
+    three are places a caller learns what `metadata` does.
+    """
+    documented = {
+        "metadata field description": CreateEpisodeRequest.model_fields["metadata"].description,
+        "create_episode docstring": create_episode.__doc__,
+        "create_episodes_batch docstring": create_episodes_batch.__doc__,
+    }
+    for where, text in documented.items():
+        assert text, f"{where} is empty"
+        # Docstrings are hard-wrapped, so the claim is matched against one
+        # long line: otherwise a line break in the middle of the phrase would
+        # be enough to slip it past this test.
+        flat = " ".join(text.split())
+        assert OUTCOME_METADATA_KEY in flat, f"{where} does not name the `outcome` exception"
+        assert not _INERT_FOR_ASSEMBLY_CLAIM.search(flat), (
+            f"{where} still says context assembly never reads metadata"
+        )

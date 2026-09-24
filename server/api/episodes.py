@@ -25,9 +25,13 @@ async def create_episode(
 ):
     """Record a raw interaction episode. Episodes are append-only and immutable.
 
-    `metadata` is stored and returned unchanged. It takes no part in retrieval,
-    ranking or context assembly — anything the model has to read belongs in the
-    episode's `payload`, `source` or `type`.
+    `metadata` is stored and returned unchanged, and takes no part in retrieval
+    or ranking. One key is read when the context is assembled:
+    `metadata["outcome"]`, if it is an object of the form
+    `{"status": "succeeded" | "failed", "reason": "..."}`, is appended to the
+    episode's context line. Any other value under `outcome`, a bare string or
+    an unknown status, is ignored. Everything else the model has to read
+    belongs in the episode's `payload`, `source` or `type`.
     """
     # `occurred_at` is optional in the request: when None, the database column
     # server-defaults to now() (= ingest time), which matches the legacy behaviour.
@@ -75,8 +79,12 @@ async def create_episodes_batch(
 ):
     """Record multiple episodes in a single request. Max 100 per call.
 
-    Each episode's `metadata` is stored and returned unchanged. It takes no part
-    in retrieval, ranking or context assembly — anything the model has to read
+    Each episode's `metadata` is stored and returned unchanged, and takes no
+    part in retrieval or ranking. One key is read when the context is
+    assembled: `metadata["outcome"]`, if it is an object of the form
+    `{"status": "succeeded" | "failed", "reason": "..."}`, is appended to the
+    episode's context line. Any other value under `outcome`, a bare string or
+    an unknown status, is ignored. Everything else the model has to read
     belongs in the episode's `payload`, `source` or `type`.
     """
     with span("create_episodes_batch", {"count": len(body.episodes)}):

@@ -89,6 +89,31 @@ async def test_auth_disabled_when_no_key():
     assert r.status_code == 200
 
 
+async def test_debug_mode_does_not_disable_auth(monkeypatch):
+    # docker-compose.yml runs the api with STATEWAVE_DEBUG=true, and people
+    # read that as "auth is off in debug mode". It is not: debug only picks
+    # the console log renderer. Whether a key is demanded depends solely on
+    # STATEWAVE_API_KEY. This pins the real app's middleware wiring so a
+    # future convenience shortcut cannot quietly open a keyed server.
+    from server.app import create_app
+    from server.core.config import settings
+    from server.core.logging import setup_logging
+
+    monkeypatch.setattr(settings, "debug", True)
+    monkeypatch.setattr(settings, "api_key", "test-secret-key")
+
+    try:
+        app = create_app()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            missing = await c.get("/v1/subjects")
+            wrong = await c.get("/v1/subjects", headers={"X-API-Key": "dev-local-placeholder"})
+    finally:
+        setup_logging(debug=False)
+
+    assert missing.status_code == 401
+    assert wrong.status_code == 403
+
+
 # ---------------------------------------------------------------------------
 # Rate limit tests
 # ---------------------------------------------------------------------------

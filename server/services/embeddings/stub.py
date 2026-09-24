@@ -26,6 +26,13 @@ class StubEmbeddingProvider:
         return self._dimensions
 
     @property
+    def model(self) -> str:
+        # Not a real model id: stub vectors are already incomparable (see
+        # `provides_semantic_similarity`), fixed so `embedding_model` has a
+        # stable value to write.
+        return "stub"
+
+    @property
     def provides_semantic_similarity(self) -> bool:
         # Hash-based vectors have no semantic meaning — see module docstring.
         # Callers (context assembly, etc.) MUST NOT use stub cosine distance

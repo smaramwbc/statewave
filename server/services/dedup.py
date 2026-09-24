@@ -195,6 +195,7 @@ async def dedup_candidates(
                 # Reuse this vector for the persisted memory.embedding column so
                 # the post-commit backfill can skip this row.
                 row.embedding = vec
+                row.embedding_model = getattr(prov, "model", None)
                 kept.append((row, vec, nums, sig))
 
         result = [r for (r, _v, _n, _t) in kept]

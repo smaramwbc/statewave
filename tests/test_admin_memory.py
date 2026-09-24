@@ -790,6 +790,60 @@ async def test_ingest_skips_scheduling_when_embedding_already_present(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_ingest_preserves_embedding_model_for_a_bundled_embedding(monkeypatch):
+    """A pre-computed embedding's producing model must ride along with it
+    (#421). `clone_subject` builds its `memories_data` from `export_subject`,
+    which carries `embedding_model` next to `embedding`; if the ingest side
+    dropped it, every cloned memory that already had a vector would land as
+    unknown-provenance and be permanently exempt from stale-model detection,
+    silently reopening the bug this fix exists to catch. A memory with no
+    bundled `embedding_model` (starter packs, older `.swmem` exports) still
+    lands `None`, same as before."""
+    fake_session = AsyncMock()
+    fake_session.add = MagicMock()
+    fake_session.execute = AsyncMock()
+    fake_session.commit = AsyncMock()
+    fake_session_ctx = MagicMock()
+    fake_session_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session_ctx.__aexit__ = AsyncMock(return_value=None)
+    monkeypatch.setattr(
+        "server.db.engine.get_session_factory",
+        lambda: MagicMock(return_value=fake_session_ctx),
+    )
+    monkeypatch.setattr(
+        "server.services.embeddings.backfill.schedule_embedding_backfill",
+        lambda ids, texts: None,
+    )
+
+    pre_embedded = [0.1] * 4
+    await mp._ingest_records_async(
+        target_subject_id="test-subject",
+        target_tenant_id=None,
+        episodes_data=[],
+        memories_data=[
+            {
+                "kind": "fact",
+                "content": "Cloned with its vector.",
+                "embedding": pre_embedded,
+                "embedding_model": "text-embedding-3-small",
+            },
+            {
+                "kind": "fact",
+                "content": "Cloned from before #421.",
+                "embedding": pre_embedded,
+            },
+        ],
+        extra_provenance={},
+        extra_metadata={},
+    )
+
+    added_rows = [call.args[0] for call in fake_session.add.call_args_list]
+    by_content = {row.content: row.embedding_model for row in added_rows}
+    assert by_content["Cloned with its vector."] == "text-embedding-3-small"
+    assert by_content["Cloned from before #421."] is None
+
+
+@pytest.mark.asyncio
 async def test_ingest_does_not_schedule_when_no_memories(monkeypatch):
     """Episode-only imports must not schedule embedding work."""
     monkeypatch.setattr(

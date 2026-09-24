@@ -91,7 +91,9 @@ async def generate_embeddings_background(
         async with get_session_factory()() as session:
             for mid, emb in zip(memory_ids, embeddings):
                 await session.execute(
-                    update(MemoryRow).where(MemoryRow.id == mid).values(embedding=emb)
+                    update(MemoryRow)
+                    .where(MemoryRow.id == mid)
+                    .values(embedding=emb, embedding_model=provider.model)
                 )
             await session.commit()
         logger.info("embeddings_generated_background", count=len(embeddings))

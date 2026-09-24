@@ -127,6 +127,10 @@ class MemoryRow(Base):
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIMENSIONS), nullable=True
     )
+    # Model that produced `embedding` (#421): lets retrieval detect a row
+    # predating the configured model. NULL = unknown provenance (pre-column
+    # row, or an import without the field), never treated as a mismatch.
+    embedding_model: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Postgres-generated tsvector for the BM25 lane of hybrid retrieval.
     # Mirrors migration 0027 (GENERATED ALWAYS ... STORED) so a `create_all`
     # schema (tests) matches the migrated production schema.

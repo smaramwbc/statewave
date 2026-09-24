@@ -364,6 +364,8 @@ async def _ingest_records_async(
                 metadata_=dict(metadata),
                 status=mem.get("status") or "active",
                 embedding=embedding,
+                # (#421) rides along when the source carries it; None otherwise.
+                embedding_model=mem.get("embedding_model"),
                 created_at=_parse_iso_or_now(mem.get("created_at")),
                 updated_at=_parse_iso_or_now(mem.get("updated_at")),
             )

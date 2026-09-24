@@ -75,6 +75,22 @@ class Settings(BaseSettings):
             )
         return value
 
+    # A candidate memory whose `embedding_model` (#421) no longer matches the
+    # configured model: "warn" still serves it (logged, in provenance),
+    # the default until a re-embed path exists. "refuse" drops it instead.
+    embedding_model_mismatch_policy: str = "warn"  # "warn" | "refuse"
+
+    @field_validator("embedding_model_mismatch_policy")
+    @classmethod
+    def _validate_embedding_model_mismatch_policy(cls, value: str) -> str:
+        allowed = {"warn", "refuse"}
+        if value not in allowed:
+            raise ValueError(
+                f"STATEWAVE_EMBEDDING_MODEL_MISMATCH_POLICY must be one of "
+                f"{sorted(allowed)}, got {value!r}"
+            )
+        return value
+
     # LiteLLM — single provider abstraction. See server/services/llm.py for
     # the provider-neutral env-var contract. LiteLLM dispatches to the
     # underlying SDK (OpenAI, Anthropic, Azure, Bedrock, Ollama, …) by

@@ -140,6 +140,7 @@ async def create_snapshot(
                     metadata_=mem.metadata_,
                     status=mem.status,
                     embedding=mem.embedding,
+                    embedding_model=mem.embedding_model,
                     created_at=mem.created_at,
                     updated_at=mem.updated_at,
                 )
@@ -335,6 +336,7 @@ async def restore_snapshot(
                     },
                     status=mem.status,
                     embedding=mem.embedding,
+                    embedding_model=mem.embedding_model,
                     created_at=mem_created + time_shift,
                     updated_at=mem_updated + time_shift,
                 )

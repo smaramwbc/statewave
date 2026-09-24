@@ -96,6 +96,7 @@ async def export_subject(subject_id: str, *, tenant_id: str | None = None) -> di
             "embedding": (
                 [float(x) for x in mem.embedding] if mem.embedding is not None else None
             ),
+            "embedding_model": mem.embedding_model,
             "created_at": mem.created_at.isoformat(),
             "updated_at": mem.updated_at.isoformat(),
         }
@@ -261,6 +262,10 @@ async def import_subject(
                 metadata_=mem_data.get("metadata", {}),
                 status=mem_data.get("status", "active"),
                 embedding=mem_data.get("embedding"),
+                # Absent on a backup taken before this field existed, and None
+                # is the correct value for that case too (unknown provenance,
+                # same as any other pre-existing row).
+                embedding_model=mem_data.get("embedding_model"),
                 created_at=datetime.fromisoformat(mem_data["created_at"]),
                 updated_at=datetime.fromisoformat(mem_data["updated_at"]),
             )

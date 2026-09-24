@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from server.core.config import settings
 from server.services.context import (
     _BREADCRUMB_MAX,
     _LEXICAL_BONUS_MAX,
@@ -315,6 +316,7 @@ def _make_memory_row(
     kind: str,
     content: str,
     minutes_ago: int = 0,
+    embedding_model: str | None = None,
 ):
     base = datetime(2026, 5, 5, 12, 0, 0, tzinfo=timezone.utc)
     when = base - timedelta(minutes=minutes_ago)
@@ -333,16 +335,19 @@ def _make_memory_row(
         status="active",
         created_at=when,
         updated_at=when,
+        embedding_model=embedding_model,
     )
 
 
 @contextmanager
 def _mock_semantic_repos(
-    *, fact_rows, procedure_rows, summary_rows, semantic_results
+    *, fact_rows, procedure_rows, summary_rows, semantic_results, current_model="test-model-v2"
 ):
     """Mock the repo layer so assemble_context can run with a realistic
     semantic-provider candidate pool. `semantic_results` is a list of
-    (row, cosine_distance) tuples."""
+    (row, cosine_distance) tuples. `current_model` is what
+    `current_embedding_model_id()` reports as the presently configured
+    model (#421 stale-model detection)."""
 
     async def _search_memories(_session, _subject_id, *, tenant_id=None, kind=None, limit=None):
         if kind == "profile_fact":
@@ -381,6 +386,10 @@ def _mock_semantic_repos(
         patch(
             "server.services.context.cached_embed_query",
             new=AsyncMock(side_effect=_embed_query),
+        ),
+        patch(
+            "server.services.context.current_embedding_model_id",
+            return_value=current_model,
         ),
         patch(
             "server.db.engine.get_session_factory",
@@ -556,3 +565,101 @@ async def test_breadcrumb_source_episode_lookup_is_scoped_to_context_tenant():
     mocks["get_episodes_by_ids"].assert_awaited_once_with(
         session, [episode_id], tenant_id="tenant-a"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #421: a same-dimension embedding-model swap must not silently mix
+# vectors from two models in one index
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_embedding_model_is_served_but_flagged_in_provenance():
+    """Default policy is "warn": a memory embedded under a since-replaced
+    model is still served (no recovery path exists yet to justify refusing
+    it), but the bundle's provenance names it so a caller can tell."""
+    stale = _make_memory_row(
+        kind="profile_fact",
+        content="The user's timezone is Europe/Madrid.",
+        embedding_model="text-embedding-3-small",
+    )
+    fresh = _make_memory_row(
+        kind="profile_fact",
+        content="The user prefers metric units.",
+        embedding_model="test-model-v2",
+    )
+
+    with _mock_semantic_repos(
+        fact_rows=[stale, fresh],
+        procedure_rows=[],
+        summary_rows=[],
+        semantic_results=[(stale, 0.1), (fresh, 0.1)],
+        current_model="test-model-v2",
+    ):
+        result = await assemble_context(
+            AsyncMock(), "statewave-support-docs", "what are the user's preferences?"
+        )
+
+    assert str(stale.id) in result.provenance["fact_ids"]
+    assert result.provenance["stale_embedding_model_memory_ids"] == [str(stale.id)]
+
+
+@pytest.mark.asyncio
+async def test_legacy_row_with_no_recorded_model_is_never_flagged():
+    """A row predating the `embedding_model` column (or an import that
+    dropped the field) has `embedding_model=None`: unknown provenance,
+    not a mismatch. Flagging it would warn forever about every pre-#421
+    row the moment the column exists."""
+    legacy = _make_memory_row(
+        kind="profile_fact",
+        content="The user's timezone is Europe/Madrid.",
+        embedding_model=None,
+    )
+
+    with _mock_semantic_repos(
+        fact_rows=[legacy],
+        procedure_rows=[],
+        summary_rows=[],
+        semantic_results=[(legacy, 0.1)],
+        current_model="test-model-v2",
+    ):
+        result = await assemble_context(
+            AsyncMock(), "statewave-support-docs", "what is the user's timezone?"
+        )
+
+    assert str(legacy.id) in result.provenance["fact_ids"]
+    assert result.provenance["stale_embedding_model_memory_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_refuse_policy_drops_stale_model_memory_instead_of_serving_it(monkeypatch):
+    """`embedding_model_mismatch_policy=refuse` is for once a re-embed path
+    exists: a stale-model memory is dropped from the candidate pool rather
+    than served, instead of merely being flagged."""
+    monkeypatch.setattr(settings, "embedding_model_mismatch_policy", "refuse")
+
+    stale = _make_memory_row(
+        kind="profile_fact",
+        content="The user's timezone is Europe/Madrid.",
+        embedding_model="text-embedding-3-small",
+    )
+    fresh = _make_memory_row(
+        kind="profile_fact",
+        content="The user prefers metric units.",
+        embedding_model="test-model-v2",
+    )
+
+    with _mock_semantic_repos(
+        fact_rows=[stale, fresh],
+        procedure_rows=[],
+        summary_rows=[],
+        semantic_results=[(stale, 0.1), (fresh, 0.1)],
+        current_model="test-model-v2",
+    ):
+        result = await assemble_context(
+            AsyncMock(), "statewave-support-docs", "what are the user's preferences?"
+        )
+
+    assert str(stale.id) not in result.provenance["fact_ids"]
+    assert str(fresh.id) in result.provenance["fact_ids"]
+    assert result.provenance["stale_embedding_model_memory_ids"] == []

@@ -67,6 +67,7 @@ class FakeMemory:
         metadata_=None,
         status="active",
         embedding=None,
+        embedding_model=None,
     ):
         self.id = id
         self.subject_id = subject_id
@@ -80,6 +81,7 @@ class FakeMemory:
         self.metadata_ = metadata_ or {}
         self.status = status
         self.embedding = embedding
+        self.embedding_model = embedding_model
         self.created_at = created_at
         self.updated_at = updated_at
 

@@ -32,6 +32,7 @@ from server.services import policy as policy_service
 from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.structured import is_structured_episode
+from server.services.embeddings import current_embedding_model_id
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.query_cache import cached_embed_query
 from server.services.tokenization import EDGE_PUNCT, tokenize
@@ -206,6 +207,7 @@ async def assemble_context(
         provider and getattr(provider, "provides_semantic_similarity", True)
     )
     semantic_results: list[tuple[Any, float]] = []
+    stale_embedding_model_ids: set[uuid.UUID] = set()
     if use_semantic_provider:
         try:
             # Cross-machine query embedding cache: hits the Postgres-backed
@@ -353,6 +355,34 @@ async def assemble_context(
             denied=denied_count,
             redacted=redacted_count,
         )
+
+    # Flag/drop stale-embedding-model candidates (#421).
+    # Over the full candidate pool so a stale row is caught regardless of
+    # which fetch surfaced it. NULL embedding_model is unknown provenance, never a mismatch.
+    current_model = current_embedding_model_id()
+    if current_model is not None:
+        candidate_rows = list(fact_rows) + list(procedure_rows) + list(summary_rows)
+        stale_embedding_model_ids = {
+            row.id
+            for row in candidate_rows
+            if getattr(row, "embedding_model", None) not in (None, current_model)
+        }
+        if stale_embedding_model_ids:
+            logger.warning(
+                "embedding_model_mismatch",
+                subject_id=subject_id,
+                current_model=current_model,
+                count=len(stale_embedding_model_ids),
+                policy=settings.embedding_model_mismatch_policy,
+            )
+            if settings.embedding_model_mismatch_policy == "refuse":
+                fact_rows = [r for r in fact_rows if r.id not in stale_embedding_model_ids]
+                procedure_rows = [
+                    r for r in procedure_rows if r.id not in stale_embedding_model_ids
+                ]
+                summary_rows = [
+                    r for r in summary_rows if r.id not in stale_embedding_model_ids
+                ]
 
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)
@@ -692,11 +722,21 @@ async def assemble_context(
     assembled = "\n".join(parts)
     token_estimate = len(enc.encode(assembled))
 
+    # Only report stale-model memories (#421) that made it into this bundle:
+    # one that lost on ranking/budget was never served to the caller.
+    included_ids = (
+        {f.id for f in included_facts}
+        | {s.id for s in included_summaries}
+        | {p.id for p in included_procedures}
+    )
+    stale_ids_in_bundle = stale_embedding_model_ids & included_ids
+
     provenance = {
         "fact_ids": [str(f.id) for f in included_facts],
         "summary_ids": [str(s.id) for s in included_summaries],
         "procedure_ids": [str(p.id) for p in included_procedures],
         "episode_ids": [str(e.id) for e in included_episodes],
+        "stale_embedding_model_memory_ids": sorted(str(i) for i in stale_ids_in_bundle),
     }
 
     # Build session info from included episodes

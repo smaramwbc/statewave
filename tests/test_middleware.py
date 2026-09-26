@@ -70,6 +70,13 @@ async def test_auth_same_length_wrong_key(auth_app):
     assert r.status_code == 403
 
 
+async def test_auth_query_param_rejected(auth_app):
+    async with AsyncClient(transport=ASGITransport(app=auth_app), base_url="http://test") as c:
+        r = await c.get("/test?api_key=test-secret-key")
+    assert r.status_code == 401
+    assert r.json()["error"]["code"] == "missing_api_key"
+
+
 async def test_auth_healthz_no_key_needed(auth_app):
     async with AsyncClient(transport=ASGITransport(app=auth_app), base_url="http://test") as c:
         r = await c.get("/healthz")

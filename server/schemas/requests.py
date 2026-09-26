@@ -21,13 +21,17 @@ class CreateEpisodeRequest(BaseModel):
         default_factory=dict,
         description=(
             "Free-form attributes stored with the episode and returned "
-            "unchanged. Retrieval, ranking and context assembly never read it: "
-            "compilation works from `payload`, and a context line is built from "
-            "the episode text plus `source` and `type`. Labels written here do "
-            "not make an episode easier to retrieve — anything the model has to "
-            "see belongs in `payload`, `source` or `type`. The only key ingest "
-            "itself reads is `idempotency_key`, as a fallback for the "
-            "top-level field of that name."
+            "unchanged. Retrieval and ranking never read it: compilation "
+            "works from `payload`, and a context line is built from the "
+            "episode text plus `source` and `type`. Labels written here do "
+            "not make an episode easier to retrieve, so anything the model "
+            "has to see belongs in `payload`, `source` or `type`. Two keys "
+            "are read by name. `idempotency_key` is a fallback for the "
+            "top-level field of that name. `outcome`, if it is an object of "
+            'the form {"status": "succeeded" | "failed", "reason": "..."}, is '
+            "appended to the episode's context line when the context is "
+            "assembled; any other value under `outcome`, a bare string or an "
+            "unknown status, is ignored."
         ),
     )
     provenance: dict[str, Any] = Field(default_factory=dict)

@@ -15,6 +15,8 @@ local fake rather than force-fitting it into this one.
 
 from __future__ import annotations
 
+import re
+
 from unittest.mock import AsyncMock, MagicMock
 
 
@@ -96,3 +98,19 @@ def install_fake_session_factory(monkeypatch):
         lambda: lambda: FakeSessionContext(session),
     )
     return session
+
+
+# SQLAlchemy renders the LIKE escape character differently across releases:
+# 2.0 doubles the backslash, 2.1 emits it single, and single is the correct SQL
+# literal for one backslash. Match either so the assertion tracks the escape
+# clause being present rather than one release's rendering of it. That an escape
+# clause exists is all the SQL-level check can prove; the callers' parameter
+# assertions are what pin the escaping itself.
+_BACKSLASH_LIKE_ESCAPE = re.compile(r" ESCAPE '\\{1,2}'")
+
+
+def assert_backslash_like_escape(sql: str) -> None:
+    """Assert the compiled statement carries a backslash LIKE ESCAPE clause."""
+    assert _BACKSLASH_LIKE_ESCAPE.search(sql), (
+        f"compiled SQL carries no backslash LIKE ESCAPE clause: {sql}"
+    )

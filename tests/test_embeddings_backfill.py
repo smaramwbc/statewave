@@ -91,6 +91,58 @@ async def test_happy_path_writes_one_embedding_per_memory():
 
 
 @pytest.mark.anyio
+async def test_happy_path_stamps_embedding_model_from_the_provider():
+    """#421 write-side regression: every UPDATE this function issues must
+    stamp `embedding_model` alongside `embedding`, matching dedup.py's write
+    and the migration's backfill. The read path (context.py) treats a NULL
+    `embedding_model` as "unknown provenance" and never flags it, so if
+    this field is ever silently dropped here, every background-embedded
+    memory reads back as unknown-provenance forever and a real model swap
+    stops being detectable for exactly the rows this function writes.
+
+    Calls the real `generate_embeddings_background` (no mock of the
+    function under test) and inspects the actual compiled `UPDATE`
+    statement it builds, rather than only counting `execute` calls the way
+    `test_happy_path_writes_one_embedding_per_memory` above does, that
+    call-count assertion is satisfied identically whether or not
+    `embedding_model=provider.model` is present in `.values(...)`."""
+    ids = [uuid4(), uuid4()]
+    texts = ["a", "b"]
+    fake_vectors = [[0.1] * 4, [0.2] * 4]
+
+    fake_provider = MagicMock()
+    fake_provider.model = "test-embed-v7"
+    fake_provider.embed_texts = AsyncMock(return_value=fake_vectors)
+
+    captured_statements = []
+
+    async def _capture_execute(stmt):
+        captured_statements.append(stmt)
+
+    fake_session = AsyncMock()
+    fake_session.execute = AsyncMock(side_effect=_capture_execute)
+    fake_session.commit = AsyncMock()
+
+    fake_session_ctx = MagicMock()
+    fake_session_ctx.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session_ctx.__aexit__ = AsyncMock(return_value=None)
+    fake_factory = MagicMock(return_value=fake_session_ctx)
+
+    with (
+        patch.object(backfill_mod, "get_provider", return_value=fake_provider),
+        patch.object(backfill_mod, "get_session_factory", return_value=fake_factory),
+    ):
+        await backfill_mod.generate_embeddings_background(ids, texts)
+
+    assert len(captured_statements) == len(ids)
+    for stmt in captured_statements:
+        params = stmt.compile().params
+        assert params.get("embedding_model") == fake_provider.model, (
+            f"UPDATE statement is missing the embedding_model stamp: {params!r}"
+        )
+
+
+@pytest.mark.anyio
 async def test_count_mismatch_short_circuits_without_partial_write():
     """If the provider returns fewer vectors than inputs, ``zip`` would
     silently drop the trailing memories (leaving them ``embedding IS NULL``)

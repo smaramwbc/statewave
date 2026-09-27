@@ -36,6 +36,7 @@ def _mem(content: str, *, kind: str = "profile_fact", days_ago: int = 0,
 class _FakeProvider:
     """Maps each text to a fixed vector so cosine is deterministic in tests."""
     provides_semantic_similarity = True
+    model = "test-embed-v1"
 
     def __init__(self, vectors: dict[str, list[float]]):
         self._v = vectors
@@ -129,6 +130,23 @@ async def test_semantic_survivors_get_embeddings_stapled():
     out = await dedup.dedup_candidates([a, b], provider=prov)
     assert len(out) == 2
     assert all(m.embedding is not None for m in out)   # reused for .embedding col
+
+
+@pytest.mark.asyncio
+async def test_semantic_survivors_are_stamped_with_the_producing_model():
+    """#421: dedup computes+staples an embedding for each semantic survivor
+    (`row.embedding = vec`), and must stamp `row.embedding_model` with the
+    SAME provider's `.model` right alongside it: the read path (context.py)
+    compares this field against `current_embedding_model_id()`, and an
+    un-stamped (None) row is treated as "unknown provenance", silently
+    exempting a fresh, real vector from ever being flagged as stale later.
+    Calls the real `dedup_candidates`, not a mock of it."""
+    a = _mem("Dana plays the cello", days_ago=2)
+    b = _mem("Dana enjoys astronomy", days_ago=1)
+    prov = _FakeProvider({a.content: [1.0, 0.0], b.content: [0.0, 1.0]})  # orthogonal
+    out = await dedup.dedup_candidates([a, b], provider=prov)
+    assert len(out) == 2
+    assert all(m.embedding_model == prov.model for m in out)
 
 
 # ── Fail-open / guards ──────────────────────────────────────────────────────

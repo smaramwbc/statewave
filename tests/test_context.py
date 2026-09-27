@@ -341,13 +341,32 @@ def _make_memory_row(
 
 @contextmanager
 def _mock_semantic_repos(
-    *, fact_rows, procedure_rows, summary_rows, semantic_results, current_model="test-model-v2"
+    *,
+    fact_rows,
+    procedure_rows,
+    summary_rows,
+    semantic_results,
+    current_model="test-model-v2",
+    provides_semantic_similarity=True,
 ):
     """Mock the repo layer so assemble_context can run with a realistic
     semantic-provider candidate pool. `semantic_results` is a list of
-    (row, cosine_distance) tuples. `current_model` is what
-    `current_embedding_model_id()` reports as the presently configured
-    model (#421 stale-model detection)."""
+    (row, cosine_distance) tuples. `current_model` is the `.model` the fake
+    provider reports.
+
+    `current_embedding_model_id()` (#421 stale-model detection) is NOT
+    mocked directly: patching it would skip its own body (the "which
+    provider, which model" resolution) entirely, so a mutation that broke
+    that body would still pass every test. Instead this patches the
+    provider factory at its source (`server.services.embeddings.get_provider`)
+    so the real `current_embedding_model_id()` runs and derives `current_model`
+    from `fake_provider.model` itself, exactly as production does. Context.py
+    also holds its own bound alias (`get_embedding_provider`, imported as
+    `from ... import get_provider as get_embedding_provider`), which is a
+    separate name pointing at the same original function, so patching the
+    source alone would not affect it: both are patched to the same
+    `fake_provider`.
+    """
 
     async def _search_memories(_session, _subject_id, *, tenant_id=None, kind=None, limit=None):
         if kind == "profile_fact":
@@ -358,7 +377,10 @@ def _mock_semantic_repos(
             return summary_rows
         return []
 
-    fake_provider = SimpleNamespace(provides_semantic_similarity=True)
+    fake_provider = SimpleNamespace(
+        provides_semantic_similarity=provides_semantic_similarity,
+        model=current_model,
+    )
 
     async def _embed_query(_session_factory, _provider, _task):
         return [0.0] * 16  # shape doesn't matter — we mock the search
@@ -384,12 +406,12 @@ def _mock_semantic_repos(
             return_value=fake_provider,
         ),
         patch(
-            "server.services.context.cached_embed_query",
-            new=AsyncMock(side_effect=_embed_query),
+            "server.services.embeddings.get_provider",
+            return_value=fake_provider,
         ),
         patch(
-            "server.services.context.current_embedding_model_id",
-            return_value=current_model,
+            "server.services.context.cached_embed_query",
+            new=AsyncMock(side_effect=_embed_query),
         ),
         patch(
             "server.db.engine.get_session_factory",
@@ -632,34 +654,109 @@ async def test_legacy_row_with_no_recorded_model_is_never_flagged():
 
 
 @pytest.mark.asyncio
-async def test_refuse_policy_drops_stale_model_memory_instead_of_serving_it(monkeypatch):
-    """`embedding_model_mismatch_policy=refuse` is for once a re-embed path
-    exists: a stale-model memory is dropped from the candidate pool rather
-    than served, instead of merely being flagged."""
+async def test_refuse_policy_drops_the_semantic_score_not_the_row(monkeypatch):
+    """`embedding_model_mismatch_policy=refuse` distrusts the stale row's
+    VECTOR (computed under a model that is no longer current, so its cosine
+    distance to the query isn't trustworthy): it must not delete the row
+    outright. A row that would win a slot on lexical/word-overlap relevance
+    alone must still be servable, and it is still reported as stale in
+    provenance since it was, in fact, served.
+
+    This used to remove the row from every kind bucket entirely, which also
+    discarded a lexical win together with the untrustworthy vector, see
+    `test_refuse_never_drops_a_row_on_the_non_semantic_stub_path` for the
+    stub-provider half of the same bug (nothing computed there at all)."""
     monkeypatch.setattr(settings, "embedding_model_mismatch_policy", "refuse")
 
+    # Only one candidate, and it wins purely on literal keyword overlap with
+    # the task: with the OLD "delete the whole row" behaviour this bundle
+    # would come back with zero facts. `semantic_results` gives it a cosine
+    # distance of 0.9 (weak/near-orthogonal) so nothing about its ranking
+    # depends on the (untrustworthy) semantic score being honoured.
     stale = _make_memory_row(
         kind="profile_fact",
-        content="The user's timezone is Europe/Madrid.",
+        content="The user's preferred timezone is Europe/Madrid.",
         embedding_model="text-embedding-3-small",
-    )
-    fresh = _make_memory_row(
-        kind="profile_fact",
-        content="The user prefers metric units.",
-        embedding_model="test-model-v2",
     )
 
     with _mock_semantic_repos(
-        fact_rows=[stale, fresh],
+        fact_rows=[stale],
         procedure_rows=[],
         summary_rows=[],
-        semantic_results=[(stale, 0.1), (fresh, 0.1)],
+        semantic_results=[(stale, 0.9)],
         current_model="test-model-v2",
     ):
         result = await assemble_context(
-            AsyncMock(), "statewave-support-docs", "what are the user's preferences?"
+            AsyncMock(), "statewave-support-docs", "what is the user's preferred timezone?"
         )
 
-    assert str(stale.id) not in result.provenance["fact_ids"]
-    assert str(fresh.id) in result.provenance["fact_ids"]
+    assert str(stale.id) in result.provenance["fact_ids"], (
+        "a stale-model row that wins on lexical overlap must still be served "
+        "under refuse: only its semantic signal is untrustworthy"
+    )
+    assert result.provenance["stale_embedding_model_memory_ids"] == [str(stale.id)], (
+        "a row actually served with a mismatched embedding_model must still "
+        "be flagged, even when it got there via lexical scoring, not semantic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_refuse_never_flags_or_drops_anything_on_the_non_semantic_stub_path():
+    """On the stub provider (or any provider that doesn't produce real
+    semantic similarity), NOTHING was embedded or compared: there is no
+    cosine distance to distrust. `current_embedding_model_id()` still
+    reports a real id ("stub" in production), so gating only on
+    `current_model is not None` would flag every row carrying a prior real
+    model id as a manufactured mismatch and, under refuse, drop it without
+    a single vector ever being computed."""
+    stale_looking = _make_memory_row(
+        kind="profile_fact",
+        content="The user's preferred timezone is Europe/Madrid.",
+        embedding_model="text-embedding-3-small",
+    )
+
+    with (
+        patch.object(settings, "embedding_model_mismatch_policy", "refuse"),
+        _mock_semantic_repos(
+            fact_rows=[stale_looking],
+            procedure_rows=[],
+            summary_rows=[],
+            semantic_results=[],
+            current_model="stub",
+            provides_semantic_similarity=False,
+        ),
+    ):
+        result = await assemble_context(
+            AsyncMock(), "statewave-support-docs", "what is the user's preferred timezone?"
+        )
+
+    assert str(stale_looking.id) in result.provenance["fact_ids"]
+    assert result.provenance["stale_embedding_model_memory_ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_provider_prefixed_model_name_is_not_a_manufactured_mismatch():
+    """`openai/text-embedding-3-small` and `text-embedding-3-small` name the
+    identical OpenAI model: LiteLLM treats the prefix as an alias for the
+    default provider. Without normalizing before comparing, a deployment
+    (or a migration backfill) that spells the model either way relative to
+    the other reads as a model swap and warns on its entire corpus."""
+    prefixed = _make_memory_row(
+        kind="profile_fact",
+        content="The user's preferred timezone is Europe/Madrid.",
+        embedding_model="openai/text-embedding-3-small",
+    )
+
+    with _mock_semantic_repos(
+        fact_rows=[prefixed],
+        procedure_rows=[],
+        summary_rows=[],
+        semantic_results=[(prefixed, 0.1)],
+        current_model="text-embedding-3-small",
+    ):
+        result = await assemble_context(
+            AsyncMock(), "statewave-support-docs", "what is the user's preferred timezone?"
+        )
+
+    assert str(prefixed.id) in result.provenance["fact_ids"]
     assert result.provenance["stale_embedding_model_memory_ids"] == []

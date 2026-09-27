@@ -330,6 +330,21 @@ CATALOGUE: dict[str, SettingSpec] = {
         tenant_overridable=True,
         description="LiteLLM embedding model (e.g. `text-embedding-3-small`).",
     ),
+    "embedding_model_mismatch_policy": SettingSpec(
+        key="embedding_model_mismatch_policy",
+        env_name="STATEWAVE_EMBEDDING_MODEL_MISMATCH_POLICY",
+        category="embeddings",
+        kind="string",
+        hot_reloadable=True,
+        description=(
+            "How to treat a memory whose stored `embedding_model` (#421) no "
+            "longer matches the presently configured model: `warn` still "
+            "serves it (flagged in provenance, logged), `refuse` drops its "
+            "vector signal instead (the row can still surface on lexical "
+            "match alone). Read per-request, no restart needed."
+        ),
+        allowed_values=("warn", "refuse"),
+    ),
     # ─── Webhooks ────────────────────────────────────────────────────────
     "webhook_url": SettingSpec(
         key="webhook_url",

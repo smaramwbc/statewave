@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,7 +12,78 @@ from server.services.migrations import (
     _resolve_pending,
     check_migration_status,
     get_all_revisions,
+    get_script_directory,
 )
+
+
+@pytest.fixture(scope="module")
+def embedding_model_migration():
+    """The loaded 0032 revision module, via the same ScriptDirectory this
+    file already uses to introspect revisions (never a raw import, the
+    filename starts with a digit and is not a normal Python module path)."""
+    return get_script_directory().get_revision("0032_memories_embedding_model").module
+
+
+class TestConfiguredEmbeddingModel:
+    """#421 backfill precedence: system_settings (global_db) before
+    server.core.config.settings (env, already folding in .env). Rows are
+    (key, value) tuples, matching what `dict(result.fetchall())` in the
+    real function consumes."""
+
+    def _bind(self, rows):
+        bind = MagicMock()
+        bind.execute.return_value.fetchall.return_value = rows
+        return bind
+
+    def test_no_overrides_falls_back_to_env_settings_stub(self, embedding_model_migration, monkeypatch):
+        from server.core.config import settings
+
+        monkeypatch.setattr(settings, "embedding_provider", "stub")
+        result = embedding_model_migration._configured_embedding_model(self._bind([]))
+        assert result == "stub"
+
+    def test_no_overrides_falls_back_to_env_settings_litellm(self, embedding_model_migration, monkeypatch):
+        from server.core.config import settings
+
+        monkeypatch.setattr(settings, "embedding_provider", "litellm")
+        monkeypatch.setattr(settings, "litellm_embedding_model", "text-embedding-3-small")
+        result = embedding_model_migration._configured_embedding_model(self._bind([]))
+        assert result == "text-embedding-3-small"
+
+    def test_global_db_provider_override_wins_over_env(self, embedding_model_migration, monkeypatch):
+        """Regression for the maintainer's review: an admin-UI-configured
+        deployment (litellm set via system_settings, never via env/.env)
+        must not backfill as "stub"."""
+        from server.core.config import settings
+
+        monkeypatch.setattr(settings, "embedding_provider", "stub")
+        monkeypatch.setattr(settings, "litellm_embedding_model", "text-embedding-3-small")
+        rows = [
+            ("embedding_provider", "litellm"),
+            ("litellm_embedding_model", "admin-configured-model"),
+        ]
+        result = embedding_model_migration._configured_embedding_model(self._bind(rows))
+        assert result == "admin-configured-model"
+
+    def test_global_db_provider_override_with_env_model_fallback(
+        self, embedding_model_migration, monkeypatch
+    ):
+        """Only the provider is overridden in system_settings; the model
+        name still falls back to env/.env settings."""
+        from server.core.config import settings
+
+        monkeypatch.setattr(settings, "embedding_provider", "stub")
+        monkeypatch.setattr(settings, "litellm_embedding_model", "env-configured-model")
+        rows = [("embedding_provider", "litellm")]
+        result = embedding_model_migration._configured_embedding_model(self._bind(rows))
+        assert result == "env-configured-model"
+
+    def test_provider_none_returns_none(self, embedding_model_migration, monkeypatch):
+        from server.core.config import settings
+
+        monkeypatch.setattr(settings, "embedding_provider", "none")
+        result = embedding_model_migration._configured_embedding_model(self._bind([]))
+        assert result is None
 
 
 class TestMigrationStatus:

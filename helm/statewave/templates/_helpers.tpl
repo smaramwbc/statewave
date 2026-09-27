@@ -110,9 +110,28 @@ migration Job so that DB credentials and provider config stay aligned.
 {{- end }}
 
 {{/*
+Migration environment, emitted by the migration Job. commonEnv's DB URL
+plus the two embedding-model settings the #421 backfill in
+0032_memories_embedding_model.py reads to stamp existing rows: without
+these the Job falls back to the pydantic Settings defaults ("stub"),
+mismatching whatever the Deployment is actually configured to run.
+Deliberately NOT the full runtimeEnv block: HOST/PORT/compiler/LLM-chat
+settings have no bearing on any migration and would only make the Job's
+own config drift harder to reason about.
+*/}}
+{{- define "statewave.migrationEnv" -}}
+{{ include "statewave.commonEnv" . }}
+- name: STATEWAVE_EMBEDDING_PROVIDER
+  value: {{ .Values.embedding.provider | quote }}
+- name: STATEWAVE_LITELLM_EMBEDDING_MODEL
+  value: {{ .Values.llm.embeddingModel | quote }}
+{{- end }}
+
+{{/*
 Runtime environment — only emitted by the Deployment. Pulls in the
 common block plus everything the API process needs at request time.
-The migration Job intentionally only needs the DB URL.
+The migration Job intentionally only needs the DB URL (plus, since #421,
+migrationEnv's two embedding settings above).
 */}}
 {{- define "statewave.runtimeEnv" -}}
 {{ include "statewave.commonEnv" . }}

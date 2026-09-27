@@ -32,7 +32,7 @@ from server.services import policy as policy_service
 from server.services import receipts as receipts_service
 from server.services.compilers.heuristic import extract_payload_text
 from server.services.structured import is_structured_episode
-from server.services.embeddings import current_embedding_model_id
+from server.services.embeddings import current_embedding_model_id, same_embedding_model
 from server.services.embeddings import get_provider as get_embedding_provider
 from server.services.embeddings.query_cache import cached_embed_query
 from server.services.tokenization import EDGE_PUNCT, tokenize
@@ -359,13 +359,22 @@ async def assemble_context(
     # Flag/drop stale-embedding-model candidates (#421).
     # Over the full candidate pool so a stale row is caught regardless of
     # which fetch surfaced it. NULL embedding_model is unknown provenance, never a mismatch.
+    #
+    # Gated on `use_semantic_provider`: on the stub (or any non-semantic)
+    # provider nothing was ever embedded or compared, yet
+    # `current_embedding_model_id()` still reports a real id ("stub"), so
+    # every row carrying a real prior model id would otherwise read as a
+    # mismatch with zero cosine distances computed. Comparison is also
+    # normalized (`same_embedding_model`) so an `openai/<model>` vs bare
+    # `<model>` respelling of the identical model isn't a manufactured swap.
     current_model = current_embedding_model_id()
-    if current_model is not None:
+    if use_semantic_provider and current_model is not None:
         candidate_rows = list(fact_rows) + list(procedure_rows) + list(summary_rows)
         stale_embedding_model_ids = {
             row.id
             for row in candidate_rows
-            if getattr(row, "embedding_model", None) not in (None, current_model)
+            if getattr(row, "embedding_model", None) is not None
+            and not same_embedding_model(getattr(row, "embedding_model", None), current_model)
         }
         if stale_embedding_model_ids:
             logger.warning(
@@ -376,13 +385,15 @@ async def assemble_context(
                 policy=settings.embedding_model_mismatch_policy,
             )
             if settings.embedding_model_mismatch_policy == "refuse":
-                fact_rows = [r for r in fact_rows if r.id not in stale_embedding_model_ids]
-                procedure_rows = [
-                    r for r in procedure_rows if r.id not in stale_embedding_model_ids
-                ]
-                summary_rows = [
-                    r for r in summary_rows if r.id not in stale_embedding_model_ids
-                ]
+                # Drop only the tainted semantic signal, not the row: the
+                # vector was computed under a different model so its cosine
+                # distance to the query is not trustworthy, but the row can
+                # still legitimately win a slot on lexical/word-overlap
+                # relevance alone. Removing the row outright (as this used
+                # to do) threw away a lexical match together with the
+                # untrustworthy vector.
+                for stale_id in stale_embedding_model_ids:
+                    semantic_scores.pop(stale_id, None)
 
     # -- Score all candidates ------------------------------------------------
     task_tokens = _tokenize_for_relevance(task)

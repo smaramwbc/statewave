@@ -55,7 +55,7 @@ spec:
           command: ["alembic"]
           args: ["upgrade", "head"]
           env:
-            {{- include "statewave.commonEnv" . | nindent 12 }}
+            {{- include "statewave.migrationEnv" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}

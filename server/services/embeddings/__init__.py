@@ -138,3 +138,34 @@ def current_embedding_model_id() -> str | None:
     """
     provider = get_provider()
     return provider.model if provider is not None else None
+
+
+def normalize_embedding_model_id(model_id: str | None) -> str | None:
+    """Canonical form of a stored/current model id for equality comparison.
+
+    LiteLLM treats an explicit `openai/<model>` prefix as an alias for the
+    same bare model name (both route to the identical OpenAI endpoint),
+    the same convention `server.services.llm._omit_temperature` already
+    strips before matching reasoning-model prefixes. Without normalizing
+    here, a deployment that later spells its already-openai model
+    explicitly (or a migration/backfill that writes the prefixed form)
+    reads as a model swap and flags its entire corpus (#421 follow-up).
+    """
+    if model_id is None:
+        return None
+    normalized = model_id.lower()
+    if normalized.startswith("openai/"):
+        normalized = normalized[len("openai/"):]
+    return normalized
+
+
+def same_embedding_model(a: str | None, b: str | None) -> bool:
+    """True iff `a` and `b` name the same model after normalization.
+
+    NULL never compares equal here (including NULL == NULL): callers are
+    responsible for the "unknown provenance" NULL exemption themselves;
+    this only answers "are these two known ids the same model."
+    """
+    if a is None or b is None:
+        return False
+    return normalize_embedding_model_id(a) == normalize_embedding_model_id(b)

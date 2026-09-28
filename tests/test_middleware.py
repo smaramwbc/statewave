@@ -145,3 +145,71 @@ async def test_rate_limit_disabled_when_zero():
         for _ in range(50):
             r = await c.get("/test")
             assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Public schema endpoints (#398)
+# ---------------------------------------------------------------------------
+
+
+async def test_schema_endpoints_stay_public_when_api_key_set(monkeypatch):
+    """/docs, /redoc and /openapi.json sit in the auth exemption set, so on a
+    deployment with an API key they answer without one while /v1 stays 401.
+    This is the behavior #398 asked about; the test records it as intended
+    rather than leaving it to be discovered by reading auth.py."""
+    from server.app import create_app
+    from server.core.config import settings
+
+    monkeypatch.setattr(settings, "api_key", "secret-key")
+    app = create_app()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        schema = await c.get("/openapi.json")
+        swagger = await c.get("/docs")
+        redoc = await c.get("/redoc")
+        guarded = await c.get("/v1/subjects")
+
+    assert schema.status_code == 200
+    assert schema.json()["info"]["version"]
+    assert swagger.status_code == 200
+    assert redoc.status_code == 200
+    assert guarded.status_code == 401
+
+
+async def test_debug_mode_does_not_change_the_schema_exemption(monkeypatch):
+    # debug=False is the setting that would have to matter for a
+    # "gate /docs on settings.debug" fix to close anything, so this pins the
+    # other half of the pairing that test_debug_mode_does_not_disable_auth
+    # already asserts for the key itself. The exemption is keyed on
+    # STATEWAVE_API_KEY alone, in both directions: debug changes only the log
+    # renderer, and with debug off the schema trio is still exempt. A gate on
+    # debug would be dead code on the compose deployment, which sets it true.
+    from server.app import create_app
+    from server.core.config import settings
+
+    monkeypatch.setattr(settings, "debug", False)
+    monkeypatch.setattr(settings, "api_key", "secret-key")
+    app = create_app()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        schema = await c.get("/openapi.json")
+        guarded = await c.get("/v1/subjects")
+
+    assert schema.status_code == 200
+    assert guarded.status_code == 401
+
+
+def test_exemption_sets_agree_across_middlewares():
+    """auth, tenant and residency each carry their own exempt-path literal.
+
+    residency_middleware.py states the rule out loud — "the same _PUBLIC_PATHS
+    set as TenantMiddleware" — and a request has to clear all three, so a path
+    added to one set and not the others becomes a route that authenticates
+    fine but answers 400 missing_tenant, or a schema path that 403s on a
+    regional pin. Nothing but this test keeps the three copies together.
+    """
+    from server.core.auth import _PUBLIC_PATHS as auth_paths
+    from server.core.residency_middleware import _EXEMPT_PATHS as residency_paths
+    from server.core.tenant import _PUBLIC_PATHS as tenant_paths
+
+    assert auth_paths == tenant_paths == residency_paths

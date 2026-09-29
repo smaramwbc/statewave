@@ -38,8 +38,18 @@ def setup_tracing(service_name: str = "statewave") -> None:
     """
     if not _HAS_OTEL:
         return
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.resources import Resource
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.resources import Resource
+    except ImportError:
+        # The API and the SDK are separate packages, and the API is commonly
+        # pulled in transitively by another dependency while the SDK is not
+        # installed at all. _HAS_OTEL above only proves the API imports, so
+        # without this guard a transitive API brings the whole process down
+        # at startup with ModuleNotFoundError: opentelemetry.sdk. Spans still
+        # no-op through the API's default tracer, so there is nothing to set
+        # up and nothing to warn about.
+        return
 
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)

@@ -187,7 +187,7 @@ to prevent silent contract drift.
 
 The Statewave Admin UI immediately wraps this payload in an authenticated
 `.swmem` container before saving to disk — see
-[statewave-admin/README.md](../../statewave-admin/README.md) for the
+[statewave-admin](https://github.com/smaramwbc/statewave-admin) for the
 container format. The server intentionally does **not** see the
 passphrase.
 

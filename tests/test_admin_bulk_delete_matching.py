@@ -6,6 +6,8 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy.dialects import postgresql
 
+from tests._fakes import assert_backslash_like_escape
+
 from server.api.admin import (
     BulkDeleteCommitRequest,
     BulkDeleteFilter,
@@ -151,7 +153,7 @@ async def test_matching_subjects_escapes_prefix_like_metacharacters(monkeypatch)
 
     for statement in session.statements:
         compiled = _compiled(statement)
-        assert " ESCAPE '\\\\'" in str(compiled)
+        assert_backslash_like_escape(str(compiled))
         assert "demo\\_web\\_%" in set(compiled.params.values())
 
 

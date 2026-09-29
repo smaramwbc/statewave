@@ -1,7 +1,7 @@
 """API key authentication middleware.
 
 When STATEWAVE_API_KEY is set, all requests (except health checks) must
-include a matching ``X-API-Key`` header or ``?api_key=`` query param.
+include a matching ``X-API-Key`` header.
 
 When STATEWAVE_API_KEY is unset/empty, authentication is disabled
 (open access — suitable for local dev).
@@ -18,7 +18,20 @@ from starlette.responses import JSONResponse, Response
 
 logger = structlog.stdlib.get_logger()
 
-# Paths that never require authentication
+# Paths that never require authentication.
+#
+# The health/readiness pair and /v1/version are exempt because probes and
+# version discovery have no credential to present. The schema trio — /docs,
+# /redoc, /openapi.json — is a deliberate second category (#398): it is the
+# self-describing surface the Swagger UI needs, and it stays readable on a
+# keyed deployment. Gating it on `debug` is not a fix, because docker-compose
+# ships the API with STATEWAVE_DEBUG=true, so such a gate would look like a
+# hardening win while staying open on the default deployment. An operator who
+# wants the schema private blocks those three paths at the proxy.
+#
+# ``server.core.tenant`` and ``server.core.residency_middleware`` carry their
+# own copies of this set for the same paths; tests/test_middleware.py fails if
+# the three drift apart.
 _PUBLIC_PATHS = {"/healthz", "/readyz", "/health", "/ready", "/docs", "/redoc", "/openapi.json", "/v1/version"}
 
 
@@ -36,8 +49,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
         if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        # Check header first, then query param
-        provided = request.headers.get("X-API-Key") or request.query_params.get("api_key")
+        provided = request.headers.get("X-API-Key")
 
         if not provided:
             return JSONResponse(

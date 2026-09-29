@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from server.api.admin import _like_escape
-from tests._fakes import install_fake_session_factory
+from tests._fakes import assert_backslash_like_escape, install_fake_session_factory
 
 
 def test_percent_is_escaped():
@@ -67,7 +67,7 @@ async def test_admin_subjects_search_and_internal_prefixes_use_like_escape(monke
     compiled = _compiled(session.statements[-1])
     sql = str(compiled)
 
-    assert " ESCAPE '\\\\'" in sql
+    assert_backslash_like_escape(sql)
     assert r"\_snapshot/%" in _param_values(compiled)
     assert r"\_bootstrap_tmp/%" in _param_values(compiled)
     assert r"%user\_123%" in _param_values(compiled)
@@ -83,7 +83,7 @@ async def test_admin_memory_search_uses_like_escape(monkeypatch):
 
     compiled = _compiled(session.statements[-1])
 
-    assert " ESCAPE '\\\\'" in str(compiled)
+    assert_backslash_like_escape(str(compiled))
     assert r"%100\%\_match%" in _param_values(compiled)
 
 
@@ -97,5 +97,5 @@ async def test_admin_episode_search_uses_like_escape(monkeypatch):
 
     compiled = _compiled(session.statements[-1])
 
-    assert " ESCAPE '\\\\'" in str(compiled)
+    assert_backslash_like_escape(str(compiled))
     assert r"%sess\_100\%%" in _param_values(compiled)

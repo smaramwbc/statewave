@@ -338,3 +338,31 @@ def test_setup_tracing_still_registers_the_provider_without_an_exporter(monkeypa
     assert trace_api.providers == [provider]
     assert provider.span_processors == []
     assert record["processors"] == []
+
+
+def test_setup_tracing_survives_the_api_being_present_without_the_sdk(monkeypatch):
+    """opentelemetry-api and opentelemetry-sdk are separate packages, and the
+    API is commonly pulled in transitively by some other dependency while the
+    SDK is not installed. _HAS_OTEL only proves the API imports, so setup must
+    not assume the SDK is there.
+
+    This is not hypothetical: it took the container down at boot with
+    ``ModuleNotFoundError: No module named 'opentelemetry.sdk'`` after
+    migrations had already run, turning a missing optional extra into a hard
+    startup failure.
+    """
+    monkeypatch.setattr(tracing, "_HAS_OTEL", True)
+
+    real_import = __import__
+
+    def no_sdk(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("opentelemetry.sdk"):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", no_sdk)
+    for mod in [m for m in sys.modules if m.startswith("opentelemetry.sdk")]:
+        monkeypatch.delitem(sys.modules, mod, raising=False)
+
+    # Must return quietly rather than propagating ImportError to startup.
+    tracing.setup_tracing("statewave")

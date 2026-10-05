@@ -5,9 +5,10 @@ from __future__ import annotations
 import re
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from server.core.identifiers import SessionId, SubjectId
 
@@ -46,6 +47,22 @@ class CreateEpisodeRequest(BaseModel):
     # retrying a webhook) is a no-op rather than a duplicate. Optional; when
     # absent the server also reads `metadata.idempotency_key` for older clients.
     idempotency_key: str | None = Field(default=None, max_length=512)
+
+    @model_validator(mode="after")
+    def resolve_legacy_idempotency_key(self) -> Self:
+        """Validate the legacy key only when the top-level key does not win."""
+        if self.idempotency_key:
+            return self
+        legacy_key = self.metadata.get("idempotency_key")
+        if legacy_key is not None and (
+            not isinstance(legacy_key, str) or len(legacy_key) > 512
+        ):
+            raise PydanticCustomError(
+                "legacy_idempotency_key",
+                "metadata.idempotency_key must be a string of at most 512 characters",
+            )
+        self.idempotency_key = legacy_key
+        return self
 
 
 class BatchCreateEpisodesRequest(BaseModel):

@@ -45,10 +45,8 @@ async def create_episode(
         payload=body.payload,
         metadata_=body.metadata,
         provenance=body.provenance,
-        # Idempotency key: a first-class request field, falling back to where the
-        # connectors historically stashed it (metadata.idempotency_key) so older
-        # clients de-dup too. Drives the idempotent insert in insert_episode.
-        idempotency_key=body.idempotency_key or body.metadata.get("idempotency_key"),
+        # The request schema resolves and validates legacy metadata keys.
+        idempotency_key=body.idempotency_key,
     )
     if body.occurred_at is not None:
         row_kwargs["occurred_at"] = body.occurred_at
@@ -99,7 +97,7 @@ async def create_episodes_batch(
                 payload=ep.payload,
                 metadata_=ep.metadata,
                 provenance=ep.provenance,
-                idempotency_key=ep.idempotency_key or ep.metadata.get("idempotency_key"),
+                idempotency_key=ep.idempotency_key,
             )
             if ep.occurred_at is not None:
                 row_kwargs["occurred_at"] = ep.occurred_at

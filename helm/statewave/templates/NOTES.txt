@@ -61,7 +61,8 @@ If /readyz returns 503 with a database error, the most common causes are:
 Multi-instance deploy detected (replicas={{ .Values.replicaCount }}).
 
 Statewave coordinates correctly across replicas via Postgres (compile
-queue, webhook DLQ, rate limit, L2 query embedding cache). Mind the
+queue, webhook DLQ, L2 query embedding cache). The rate limit stays
+per-process unless STATEWAVE_RATE_LIMIT_STRATEGY=distributed. Mind the
 connection-budget math — see the Horizontal Scaling Guide:
   https://github.com/smaramwbc/statewave-docs/blob/main/deployment/horizontal-scaling.md
 

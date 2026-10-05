@@ -268,7 +268,7 @@ All settings use the `STATEWAVE_` env prefix. Copy `.env.example` to `.env` to g
 | `STATEWAVE_EMBEDDING_DIMENSIONS` | `1536` | Embedding vector dimensions |
 | `STATEWAVE_API_KEY` | — | API key for auth (empty = open access) |
 | `STATEWAVE_RATE_LIMIT_RPM` | `0` | Requests/min/IP (0 = disabled) |
-| `STATEWAVE_RATE_LIMIT_STRATEGY` | `distributed` | `distributed` (Postgres) or `memory` (in-process) |
+| `STATEWAVE_RATE_LIMIT_STRATEGY` | `memory` | `memory` (in-process, default) or `distributed` (Postgres, shared across replicas) |
 | `STATEWAVE_WEBHOOK_URL` | — | Webhook callback URL (empty = disabled) |
 | `STATEWAVE_WEBHOOK_TIMEOUT` | `5.0` | Webhook HTTP timeout in seconds |
 | `STATEWAVE_WEBHOOK_EVENTS` | — | Comma-separated event-type allowlist (empty = deliver every event) |
@@ -299,7 +299,7 @@ pytest tests/ -v
 
 Statewave is in active development (v1.5.0). Honest status:
 
-- **Rate limiting is per-IP** — distributed (Postgres-backed), but keyed by IP only, not per-tenant or per-API-key yet
+- **Rate limiting is per-IP** — the default `memory` strategy is per-process; multi-replica deploys need `STATEWAVE_RATE_LIMIT_STRATEGY=distributed` (Postgres-backed). Either way it is keyed by IP only, not per-tenant or per-API-key yet
 - **Multi-tenant is app-layer** — query-scoped data isolation (v0.5) + per-tenant config / policy bundles / receipts (v0.8) + HMAC-signed audit + tenant region pin (v0.9), but no Postgres RLS yet
 - **No built-in auth provider** — validates API keys you configure, doesn't issue them
 - **No admin-action identity yet** — the v0.9 auto-labeling promote endpoint stamps `promoted_at` + `labels` on every promotion, but `promoted_by` is `null` until an admin-identity layer ships

@@ -2,10 +2,11 @@
 
 Config:
 - STATEWAVE_RATE_LIMIT_RPM: max requests/min per key (0 = disabled)
-- STATEWAVE_RATE_LIMIT_STRATEGY: "distributed" | "memory" (default: "distributed")
+- STATEWAVE_RATE_LIMIT_STRATEGY: "memory" (default) or "distributed"
 
-The distributed strategy uses Postgres for shared state across workers/restarts.
-The memory strategy uses a per-process sliding window (legacy, for development).
+"memory" keeps a per-process sliding window. "distributed" stores the window
+in Postgres so replicas share one limit. Multi-replica deployments need
+"distributed".
 """
 
 from __future__ import annotations
@@ -22,6 +23,8 @@ _EXEMPT_PATHS = {"/healthz", "/readyz", "/health", "/ready", "/v1/version"}
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, rpm: int = 0, strategy: str = "distributed") -> None:
+        # Fallback only when a caller omits strategy. Settings defaults to
+        # "memory", and app startup always passes settings.rate_limit_strategy.
         super().__init__(app)
         self._rpm = rpm  # 0 = disabled
         self._strategy = strategy

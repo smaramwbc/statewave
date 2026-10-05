@@ -27,8 +27,9 @@ fullnameOverride: ""
 # Replica count
 # ──────────────────────────────────────────────────
 # Statewave is stateless and horizontally scales correctly against a
-# shared Postgres (compile queue, webhook DLQ, rate limit, and the L2
-# query embedding cache all coordinate via Postgres). Mind the
+# shared Postgres (compile queue, webhook DLQ, and the L2 query embedding
+# cache all coordinate via Postgres). The rate limit is per-process unless
+# STATEWAVE_RATE_LIMIT_STRATEGY=distributed. Mind the
 # connection-budget math when raising this:
 #
 #   replicas × (DB pool_size + max_overflow) + headroom < db.max_connections
@@ -109,9 +110,11 @@ auth:
   existingSecretKey: "STATEWAVE_API_KEY"
 
 # ──────────────────────────────────────────────────
-# Rate limiting (per-IP, sliding-window, Postgres-backed)
+# Rate limiting (per-IP)
 # ──────────────────────────────────────────────────
-# 0 = disabled. Postgres-backed rate limit is correct across replicas.
+# 0 = disabled. The process default is the in-process memory strategy.
+# Multi-replica deploys that turn this on need
+# STATEWAVE_RATE_LIMIT_STRATEGY=distributed so the window is shared.
 rateLimit:
   rpm: 0
 

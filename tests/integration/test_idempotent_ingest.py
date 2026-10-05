@@ -5,6 +5,8 @@ retried webhook) safe — without it, a repo seeded N times held N× the episode
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from httpx import AsyncClient
 
@@ -61,3 +63,17 @@ async def test_distinct_keys_and_keyless_all_insert(client: AsyncClient, subject
     timeline = await client.get(f"/v1/timeline?subject_id={subject_id}")
     episodes = timeline.json().get("episodes") or timeline.json().get("items") or []
     assert len(episodes) == 4  # 2 distinct keys + 2 keyless
+
+
+@pytest.mark.anyio
+@patch("server.api.episodes.webhooks.fire")
+async def test_idempotent_replay_returns_200_and_does_not_fire_webhook(mock_fire, client: AsyncClient, subject_id: str):
+    # First insert -> 201 Created and fires webhook
+    first = await client.post("/v1/episodes", json=_episode(subject_id, "git:commit:123"))
+    assert first.status_code == 201
+    assert mock_fire.call_count == 1
+    
+    # Second insert with same key -> 200 OK and does NOT fire webhook again
+    second = await client.post("/v1/episodes", json=_episode(subject_id, "git:commit:123", text="changed"))
+    assert second.status_code == 200
+    assert mock_fire.call_count == 1

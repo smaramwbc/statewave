@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from server.db import repositories as repo
@@ -20,6 +20,7 @@ router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 @router.post("", response_model=EpisodeResponse, status_code=201, summary="Ingest an episode")
 async def create_episode(
     body: CreateEpisodeRequest,
+    response: Response,
     session: AsyncSession = Depends(get_session),
     tenant_id: str | None = Depends(get_tenant_id),
 ):
@@ -55,14 +56,17 @@ async def create_episode(
     row = EpisodeRow(**row_kwargs)
     # On an idempotency conflict this returns the existing episode (the local row
     # is expunged), so rebind before commit/refresh.
-    row = await repo.insert_episode(session, row)
+    row, created = await repo.insert_episode(session, row)
     await session.commit()
     await session.refresh(row)
-    await webhooks.fire(
-        "episode.created",
-        {"id": str(row.id), "subject_id": row.subject_id},
-        tenant_id=tenant_id,
-    )
+    if created:
+        await webhooks.fire(
+            "episode.created",
+            {"id": str(row.id), "subject_id": row.subject_id},
+            tenant_id=tenant_id,
+        )
+    else:
+        response.status_code = 200
     return EpisodeResponse.from_row(row)
 
 
@@ -89,6 +93,7 @@ async def create_episodes_batch(
     """
     with span("create_episodes_batch", {"count": len(body.episodes)}):
         rows: list[EpisodeRow] = []
+        created_rows: list[EpisodeRow] = []
         for ep in body.episodes:
             row_kwargs: dict = dict(
                 subject_id=ep.subject_id,
@@ -106,19 +111,23 @@ async def create_episodes_batch(
             row = EpisodeRow(**row_kwargs)
             # insert_episode returns the EXISTING row on an idempotency conflict,
             # so append what it returns (not the local row, which is expunged).
-            rows.append(await repo.insert_episode(session, row))
+            row, created = await repo.insert_episode(session, row)
+            rows.append(row)
+            if created:
+                created_rows.append(row)
         await session.commit()
         for row in rows:
             await session.refresh(row)
-        await webhooks.fire(
-            "episodes.batch_created",
-            {
-                "count": len(rows),
-                "subject_ids": list({r.subject_id for r in rows}),
-            },
-            tenant_id=tenant_id,
-        )
+        if created_rows:
+            await webhooks.fire(
+                "episodes.batch_created",
+                {
+                    "count": len(created_rows),
+                    "subject_ids": list({r.subject_id for r in created_rows}),
+                },
+                tenant_id=tenant_id,
+            )
         return BatchCreateEpisodesResponse(
-            episodes_created=len(rows),
+            episodes_created=len(created_rows),
             episodes=[EpisodeResponse.from_row(r) for r in rows],
         )

@@ -57,7 +57,7 @@ def _tenant_filter(stmt, column, tenant_id: str | None):
 # ---------------------------------------------------------------------------
 
 
-async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
+async def insert_episode(session: AsyncSession, row: EpisodeRow) -> tuple[EpisodeRow, bool]:
     """Insert an episode, idempotently.
 
     With an `idempotency_key`, a row that collides with an existing
@@ -69,7 +69,7 @@ async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
     if not row.idempotency_key:
         session.add(row)
         await session.flush()
-        return row
+        return row, True
     # The unique index is the atomic arbiter — a SAVEPOINT lets us catch the
     # conflict without poisoning the surrounding transaction, then return the
     # winner. This is race-safe under the connectors' concurrent ingest.
@@ -77,7 +77,7 @@ async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
         async with session.begin_nested():
             session.add(row)
             await session.flush()
-        return row
+        return row, True
     except IntegrityError:
         if row in session:
             session.expunge(row)
@@ -98,7 +98,7 @@ async def insert_episode(session: AsyncSession, row: EpisodeRow) -> EpisodeRow:
         )
         if existing is None:
             raise  # a non-idempotency constraint failed — don't swallow it
-        return existing
+        return existing, False
 
 
 async def list_episodes_by_subject(

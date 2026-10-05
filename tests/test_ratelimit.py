@@ -66,6 +66,26 @@ class TestMemoryStrategy:
                 r = await c.get("/test")
                 assert r.status_code == 200
 
+    def test_evicts_idle_keys(self, monkeypatch):
+        import time
+        
+        mw = RateLimitMiddleware(app=None, rpm=10, strategy="memory")
+        
+        current_time = 100.0
+        monkeypatch.setattr(time, "monotonic", lambda: current_time)
+        
+        for i in range(50):
+            mw._check_memory(f"ip-{i}")
+            
+        assert len(mw._hits) == 50
+        
+        current_time += 61.0
+        mw._calls = 999
+        mw._check_memory("trigger")
+        
+        assert len(mw._hits) == 1
+        assert "trigger" in mw._hits
+
 
 # ---------------------------------------------------------------------------
 # Distributed strategy (mocked DB)

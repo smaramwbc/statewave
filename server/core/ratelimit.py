@@ -11,7 +11,6 @@ The memory strategy uses a per-process sliding window (legacy, for development).
 from __future__ import annotations
 
 import time
-from collections import defaultdict
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -27,7 +26,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._rpm = rpm  # 0 = disabled
         self._strategy = strategy
         # In-memory fallback store
-        self._hits: dict[str, list[float]] = defaultdict(list)
+        self._hits: dict[str, list[float]] = {}
+        self._calls = 0
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if self._rpm <= 0:
@@ -68,12 +68,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         now = time.monotonic()
         window_start = now - 60.0
 
-        timestamps = self._hits[key]
-        self._hits[key] = [t for t in timestamps if t > window_start]
+        self._calls += 1
+        if self._calls >= 1000:
+            self._calls = 0
+            keys_to_drop = [
+                k for k, timestamps in self._hits.items()
+                if not timestamps or timestamps[-1] <= window_start
+            ]
+            for k in keys_to_drop:
+                del self._hits[k]
 
-        if len(self._hits[key]) >= self._rpm:
-            retry_after = int(60 - (now - self._hits[key][0])) + 1
+        kept = [t for t in self._hits.get(key, ()) if t > window_start]
+
+        if len(kept) >= self._rpm:
+            self._hits[key] = kept
+            retry_after = int(60 - (now - kept[0])) + 1
             return False, retry_after
 
-        self._hits[key].append(now)
+        kept.append(now)
+        self._hits[key] = kept
         return True, 0

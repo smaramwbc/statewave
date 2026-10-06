@@ -333,6 +333,31 @@ async def test_custom_request_id_propagated(client: AsyncClient):
     assert resp.headers["x-request-id"] == "test-req-42"
 
 
+@pytest.mark.anyio
+async def test_oversized_request_id_replaced(client: AsyncClient):
+    """A client-supplied id that is not a short correlation token is replaced."""
+    resp = await client.get("/healthz", headers={"X-Request-ID": "a" * 1000})
+    returned = resp.headers["x-request-id"]
+    assert returned != "a" * 1000
+    assert len(returned) == 16
+    int(returned, 16)  # generated ids are hex
+
+
+@pytest.mark.anyio
+async def test_malformed_request_id_replaced(client: AsyncClient):
+    """Characters outside [A-Za-z0-9._:-] are rejected and a fresh id is used."""
+    resp = await client.get("/healthz", headers={"X-Request-ID": "bad id!"})
+    assert resp.headers["x-request-id"] != "bad id!"
+    assert len(resp.headers["x-request-id"]) == 16
+
+
+@pytest.mark.anyio
+async def test_request_id_at_length_limit_propagated(client: AsyncClient):
+    """An id of exactly 128 valid characters is still accepted."""
+    resp = await client.get("/healthz", headers={"X-Request-ID": "a" * 128})
+    assert resp.headers["x-request-id"] == "a" * 128
+
+
 # ---------------------------------------------------------------------------
 # Subject listing
 # ---------------------------------------------------------------------------

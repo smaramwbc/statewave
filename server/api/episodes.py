@@ -17,7 +17,17 @@ from server.core.dependencies import get_tenant_id
 router = APIRouter(prefix="/v1/episodes", tags=["episodes"])
 
 
-@router.post("", response_model=EpisodeResponse, status_code=201, summary="Ingest an episode")
+@router.post(
+    "",
+    response_model=EpisodeResponse,
+    status_code=201,
+    summary="Ingest an episode",
+    responses={
+        200: {
+            "description": "Episode already exists (idempotency key match). The existing episode is returned."
+        }
+    },
+)
 async def create_episode(
     body: CreateEpisodeRequest,
     response: Response,

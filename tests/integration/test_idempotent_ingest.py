@@ -77,3 +77,23 @@ async def test_idempotent_replay_returns_200_and_does_not_fire_webhook(mock_fire
     second = await client.post("/v1/episodes", json=_episode(subject_id, "git:commit:123", text="changed"))
     assert second.status_code == 200
     assert mock_fire.call_count == 1
+
+@pytest.mark.anyio
+@patch("server.api.episodes.webhooks.fire")
+async def test_batch_idempotent_replay_counts_and_webhooks(mock_fire, client: AsyncClient, subject_id: str):
+    batch = {
+        "episodes": [
+            _episode(subject_id, "batch:1"),
+            _episode(subject_id, "batch:2"),
+        ]
+    }
+    
+    first = await client.post("/v1/episodes/batch", json=batch)
+    assert first.status_code == 201
+    assert first.json()["episodes_created"] == 2
+    assert mock_fire.call_count == 1
+    
+    second = await client.post("/v1/episodes/batch", json=batch)
+    assert second.status_code == 201
+    assert second.json()["episodes_created"] == 0
+    assert mock_fire.call_count == 1

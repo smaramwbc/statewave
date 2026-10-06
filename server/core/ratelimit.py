@@ -22,9 +22,7 @@ _EXEMPT_PATHS = {"/healthz", "/readyz", "/health", "/ready", "/v1/version"}
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, rpm: int = 0, strategy: str = "distributed") -> None:
-        # Fallback only when a caller omits strategy. Settings defaults to
-        # "memory", and app startup always passes settings.rate_limit_strategy.
+    def __init__(self, app, rpm: int = 0, strategy: str = "memory") -> None:
         super().__init__(app)
         self._rpm = rpm  # 0 = disabled
         self._strategy = strategy

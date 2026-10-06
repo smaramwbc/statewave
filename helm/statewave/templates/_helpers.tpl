@@ -193,6 +193,10 @@ migrationEnv's two embedding settings above).
 # Rate limit + CORS
 - name: STATEWAVE_RATE_LIMIT_RPM
   value: {{ .Values.rateLimit.rpm | quote }}
+{{- if .Values.rateLimit.strategy }}
+- name: STATEWAVE_RATE_LIMIT_STRATEGY
+  value: {{ .Values.rateLimit.strategy | quote }}
+{{- end }}
 - name: STATEWAVE_CORS_ORIGINS
   value: {{ .Values.cors.origins | quote }}
 

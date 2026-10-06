@@ -10,7 +10,7 @@ type: application
 
 # Chart version follows the chart's own lifecycle, not the API image's.
 # Bump this for any chart-template change.
-version: 0.2.0
+version: 0.2.1
 
 # appVersion tracks the Statewave API release this chart was validated
 # against. Operators can override the deployed image via image.tag.

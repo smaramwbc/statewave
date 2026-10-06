@@ -45,7 +45,8 @@ All values are documented inline in [`values.yaml`](values.yaml). Highlights:
 | `embedding.provider` | `litellm` | `stub` for demo / no-embedding mode. |
 | `llm.apiKey` / `llm.existingSecret` | — | Required when `compiler.type=llm` or `embedding.provider=litellm`. |
 | `auth.apiKey` / `auth.existingSecret` | — | Strongly recommended in production. |
-| `rateLimit.rpm` | `0` (off) | Per-IP. In-process `memory` unless `STATEWAVE_RATE_LIMIT_STRATEGY=distributed`. |
+| `rateLimit.rpm` | `0` (off) | Per-IP. |
+| `rateLimit.strategy` | — (app default `memory`) | `memory` is per-process; set `distributed` to share the window across replicas via Postgres. |
 | `cors.origins` | `["*"]` | Lock down for production. |
 | `service.type` | `ClusterIP` | Set to `LoadBalancer` only if you skip the Ingress. |
 | `ingress.enabled` | `false` | When enabled, **raise the proxy timeouts to ≥ 60s** — `/v1/context` cold-starts can take that long. |
@@ -92,7 +93,7 @@ When all three are externalised, no chart-managed Secret is created.
 
 ## Multi-instance / horizontal scaling
 
-Statewave coordinates across replicas via Postgres (compile queue, webhook DLQ, L2 query embedding cache). The rate limit is per-process unless `STATEWAVE_RATE_LIMIT_STRATEGY=distributed`. Sticky sessions are unnecessary and reduce L1 cache hit rates.
+Statewave coordinates across replicas via Postgres (compile queue, webhook DLQ, L2 query embedding cache). The rate limit is per-process unless `rateLimit.strategy=distributed`. Sticky sessions are unnecessary and reduce L1 cache hit rates.
 
 Before raising `replicaCount` past 2–3, walk the connection-budget math:
 

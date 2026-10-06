@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import structlog
@@ -12,11 +13,14 @@ from starlette.responses import Response
 logger = structlog.stdlib.get_logger()
 
 _HEADER = "X-Request-ID"
+# A request id is a short correlation token; reject anything else a client sends.
+_VALID_ID = re.compile(r"[A-Za-z0-9._:\-]{1,128}")
 
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
-        request_id = request.headers.get(_HEADER) or uuid.uuid4().hex[:16]
+        supplied = request.headers.get(_HEADER, "")
+        request_id = supplied if _VALID_ID.fullmatch(supplied) else uuid.uuid4().hex[:16]
         request.state.request_id = request_id
 
         # Bind to structlog context so all logs in this request include it

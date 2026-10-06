@@ -69,22 +69,41 @@ class TestMemoryStrategy:
     def test_evicts_idle_keys(self, monkeypatch):
         import time
         
-        mw = RateLimitMiddleware(app=None, rpm=10, strategy="memory")
+        mw = RateLimitMiddleware(app=None, rpm=2, strategy="memory")
         
         current_time = 100.0
         monkeypatch.setattr(time, "monotonic", lambda: current_time)
         
+        # Fill with 50 idle clients
         for i in range(50):
             mw._check_memory(f"ip-{i}")
             
         assert len(mw._hits) == 50
         
-        current_time += 61.0
-        mw._calls = 999
-        mw._check_memory("trigger")
+        current_time += 30.0
+        # An active client makes a request within the window
+        allowed, _ = mw._check_memory("active")
+        assert allowed is True
         
-        assert len(mw._hits) == 1
+        current_time += 31.0
+        mw._calls = 999
+        # Trigger the sweep
+        allowed, _ = mw._check_memory("trigger")
+        assert allowed is True
+        
+        # Only the active client and the trigger should remain
+        assert len(mw._hits) == 2
+        assert "active" in mw._hits
         assert "trigger" in mw._hits
+        
+        # The active client makes a 2nd request (allowed, limit is 2)
+        allowed, _ = mw._check_memory("active")
+        assert allowed is True
+        
+        # The active client makes a 3rd request (blocked!)
+        allowed, retry = mw._check_memory("active")
+        assert allowed is False
+        assert retry > 0
 
 
 # ---------------------------------------------------------------------------

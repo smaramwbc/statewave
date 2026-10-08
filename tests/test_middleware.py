@@ -9,6 +9,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from server.core.auth import APIKeyMiddleware
+from server.core.middleware import RequestIDMiddleware
 from server.core.ratelimit import RateLimitMiddleware
 
 
@@ -213,3 +214,36 @@ def test_exemption_sets_agree_across_middlewares():
     from server.core.tenant import _PUBLIC_PATHS as tenant_paths
 
     assert auth_paths == tenant_paths == residency_paths
+
+
+# ---------------------------------------------------------------------------
+# Request ID tests (#501)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def request_id_app():
+    app = Starlette(routes=[Route("/test", _ok)])
+    app.add_middleware(RequestIDMiddleware)
+    return app
+
+
+async def test_request_id_invalid_charset_rejected(request_id_app):
+    for bad_id in [
+        "has spaces",
+        "newline\nin\nid",
+        "trailing\n",
+        "trailing\r\n",
+        "<script>alert(1)</script>",
+        "invalid@char!",
+        "",
+    ]:
+        async with AsyncClient(
+            transport=ASGITransport(app=request_id_app), base_url="http://test"
+        ) as c:
+            r = await c.get("/test", headers={"X-Request-ID": bad_id})
+        assert r.status_code == 200
+        req_id = r.headers["x-request-id"]
+        assert req_id != bad_id
+        assert len(req_id) == 16
+        assert all(ch in "0123456789abcdef" for ch in req_id)

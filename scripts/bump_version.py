@@ -106,8 +106,29 @@ def _helm_targets() -> list[Target]:
     ]
 
 
+def _lockfile_targets() -> list[Target]:
+    # uv.lock is the install path for CI and the image, and it carries the
+    # project's own version inside its `statewave` package block. CI runs
+    # `uv lock --check`, which fails when the lock disagrees with
+    # pyproject.toml — so a release that bumped pyproject alone would turn main
+    # red with a message that never mentions the version. Anchored on the name
+    # line because `version = "…"` appears once per locked package.
+    return [
+        Target(
+            path=ROOT / "uv.lock",
+            pattern=r'name = "statewave"\nversion = "(?P<version>[^"]+)"',
+            template='name = "statewave"\nversion = "{version}"',
+        ),
+    ]
+
+
 def all_targets() -> list[Target]:
-    return _readme_targets() + _issue_template_targets() + _helm_targets()
+    return (
+        _readme_targets()
+        + _issue_template_targets()
+        + _helm_targets()
+        + _lockfile_targets()
+    )
 
 
 def read_pyproject_version() -> str:

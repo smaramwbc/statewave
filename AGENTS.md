@@ -27,6 +27,17 @@ alembic upgrade head
 pytest tests/
 ```
 
+Dependencies are locked. CI and the published image install from `uv.lock`, not
+from a fresh resolve of `pyproject.toml`, and CI runs `uv lock --check`. So if
+you change anything under `[project.dependencies]` or
+`[project.optional-dependencies]`, refresh the lockfile in the same commit:
+
+```bash
+uv lock
+```
+
+A dependency change without that refresh will not go green.
+
 Run `ruff` and the test suite before opening a PR; `make test-cold` validates a
 full fresh-install path.
 

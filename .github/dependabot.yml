@@ -1,12 +1,52 @@
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # uv.lock is the install path for CI and for the Docker image, so it is the
+  # file that has to stay fresh — and it is also the only manifest GitHub's
+  # dependency graph reads transitive versions from here, which is what makes
+  # transitive security alerts work at all (pip's static transitive analysis is
+  # documented as unsupported).
+  #
+  # This REPLACES the former `pip` entry rather than sitting beside it. The pip
+  # ecosystem cannot update uv.lock — it rewrites pyproject.toml alone — and
+  # uv.lock records each requirement's constraint string verbatim, so a
+  # pyproject-only edit invalidates the lock even when the pinned version still
+  # satisfies the new bound. Keeping both entries would therefore fail the
+  # `uv lock --check` gate on every weekly pip PR.
+  #
+  # Trade-off worth knowing: the uv updater writes uv.lock only, so it will not
+  # raise pyproject.toml's lower bounds the way the pip entry did. Those floors
+  # matter to downstream consumers of the published package, so they are now a
+  # deliberate manual step at release time rather than an automated PR.
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
+    # The lockfile's whole value is its transitive pins: fsspec, Mako and
+    # multidict are all indirect, and every security alert this repo has ever
+    # had was against an indirect pin. Dependabot's default allow list covers
+    # only dependencies a manifest names explicitly, which would leave exactly
+    # those packages to drift until an advisory forced them.
+    allow:
+      - dependency-type: "all"
+    # The comment above says the uv updater writes uv.lock only. That is true of
+    # the `auto` default today, but `auto` is documented as free to raise or
+    # widen manifest requirements, so state it instead of inheriting it.
+    versioning-strategy: "lockfile-only"
+    # With `dependency-type: all` the entry covers ~100 pinned packages, so the
+    # updates are grouped into a single PR instead of racing the limit every
+    # week. `patterns` rather than `dependency-type` inside the group: the
+    # production/development split is not supported for the uv ecosystem.
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
     open-pull-requests-limit: 10
+    # `labels` REPLACES Dependabot's defaults rather than adding to them, so
+    # `python:uv` is listed explicitly — every existing uv PR carries it and
+    # dropping it would split label-based filtering at this commit.
     labels:
       - "dependencies"
+      - "python:uv"
     commit-message:
       prefix: "chore(deps):"
 

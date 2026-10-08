@@ -34,7 +34,8 @@ venv
 node_modules
 
 # NOTE: README.md is referenced by pyproject.toml (`readme = "README.md"`)
-# so hatchling needs it during `pip install`. Don't exclude it.
+# so hatchling needs it when the project itself is installed (the second
+# install step in the Dockerfile, after `COPY . .`). Don't exclude it.
 # CHANGELOG and LICENSE are runtime-irrelevant but harmless to ship.
 
 # Local data

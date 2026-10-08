@@ -32,6 +32,34 @@ pytest tests/ -v
 
 Please run `ruff` and the test suite locally before opening a PR.
 
+### Matching CI exactly
+
+The command above resolves `pyproject.toml` fresh, so it can pick up newer
+versions than the ones CI and the published image use. Those install from
+`uv.lock`, which pins every dependency including the transitive ones. To get
+the same pinned versions:
+
+```bash
+uv sync --extra dev --extra llm
+```
+
+That gives the locked version of everything. Note it is a superset of either
+install: CI uses `--extra dev` and the image uses `--extra llm`, so this covers
+both at once.
+
+If you change a dependency in `pyproject.toml`, refresh the lockfile in the
+same commit:
+
+```bash
+uv lock
+```
+
+CI runs `uv lock --check` and fails if the two disagree, so a dependency change
+without a lockfile refresh will not go green. Note that `uv pip install
+--system` is what CI and the Dockerfile use, and it is not a local developer
+command: it skips virtual environments and writes to whichever interpreter
+comes first on `PATH`.
+
 ## Verifying a cold install
 
 To validate the full fresh-user path (wipe volumes → compose up → readiness → smoke

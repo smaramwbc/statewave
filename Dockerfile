@@ -1,13 +1,49 @@
+# uv is build-time only: start.sh needs alembic and uvicorn, never uv. Declaring
+# it as a stage lets the RUN steps below bind-mount the binary instead of
+# COPYing it, so its 47MB never enters a layer of the shipped image (a later
+# `rm` could not reclaim it). Pinned to the uv that wrote the lockfile so a
+# build can never resolve it differently than a developer did.
+FROM ghcr.io/astral-sh/uv:0.11.12 AS uvbin
+
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install third-party dependencies first, from the manifest alone, so this
-# layer stays cached when only application code changes. `server/` is not
-# present yet, so the wheel built here contains no application code — this step
-# is only about the dependencies.
-COPY pyproject.toml README.md ./
-RUN pip install --no-cache-dir ".[llm]"
+# uv is the installer because uv.lock is the single source of truth for every
+# dependency version that ships. Pinned to the same uv that wrote the lockfile
+# so a build can never resolve it differently than a developer did.
+# pip byte-compiles on install and uv does not, so without this the image would
+# ship zero .pyc files where it previously shipped thousands, and every fresh
+# container would pay source compilation on its first import. This change is
+# meant to be invisible to the running service, so keep the parity.
+ENV UV_COMPILE_BYTECODE=1
+
+# Install third-party dependencies first, from the manifest and lockfile alone,
+# so this layer stays cached when only application code changes. `server/` is
+# not present yet, so nothing installed here contains application code — this
+# step is only about the dependencies.
+#
+# `--locked` rather than `--frozen` is deliberate: it fails the build when
+# uv.lock has drifted from pyproject.toml. `--frozen` succeeds on a drifted
+# lock and exports the stale pins, which would ship a dependency set nobody
+# declared — the failure mode behind #327, invisible to startup, pytest and
+# docker-smoke alike because the imports are function-local.
+#
+# `--no-emit-project` keeps the project itself out of the export. It has to:
+# the export carries hashes, which puts the installer in hash-checking mode,
+# and that mode rejects the editable project entry outright. The project is
+# installed separately below, which is what the second step was always for.
+# README.md is deliberately NOT copied here. On the previous pip-based layer it
+# had to be, because that step built the project wheel and hatchling reads
+# `readme = "README.md"`. This step only runs `uv export`, which reads
+# pyproject.toml and uv.lock alone, so including the README would just bust the
+# dependency layer on every README edit. The project build below gets it from
+# `COPY . .`.
+COPY pyproject.toml uv.lock ./
+RUN --mount=from=uvbin,source=/uv,target=/bin/uv \
+    uv export --locked --extra llm --no-emit-project --no-header -q -o /tmp/requirements.txt \
+    && uv pip install --system --no-cache -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
 COPY . .
 
@@ -17,7 +53,12 @@ COPY . .
 # console script does not put the working directory on sys.path, so dropping
 # this line makes the container exit with ModuleNotFoundError before uvicorn
 # starts. `--no-deps` because the dependencies are already installed above.
-RUN pip install --no-cache-dir --no-deps . && chmod +x start.sh
+#
+# Plain `uv pip install` is also deliberate over `uv pip sync` / `--exact`:
+# those prune anything not in the requirements, which in a system environment
+# means removing pip and setuptools out from under the image.
+RUN --mount=from=uvbin,source=/uv,target=/bin/uv \
+    uv pip install --system --no-cache --no-deps . && chmod +x start.sh
 
 EXPOSE 8100
 

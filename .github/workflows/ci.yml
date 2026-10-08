@@ -43,8 +43,33 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      # uv.lock is the install path for CI and for the image, so CI installs
+      # from it instead of re-resolving pyproject.toml. Pinned by commit SHA
+      # because setup-uv publishes no floating major tag past v7 — `@v10` does
+      # not resolve — and `version:` pins uv itself to the one that wrote the
+      # lockfile.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.11.12"
+
+      # The guard that stops uv.lock rotting back into a record of versions
+      # nothing installs. `uv lock --check` asserts the lockfile would be
+      # unchanged by a fresh resolution, so it fails on real drift between
+      # pyproject.toml and the lock without failing merely because a newer
+      # release exists upstream (resolution treats existing pins as
+      # preferences).
+      - name: Lockfile is current
+        run: uv lock --check
+
+      # `--system` installs into the setup-python interpreter for this matrix
+      # leg, which keeps `ruff`, `alembic` and `pytest` on PATH for the steps
+      # below. `uv sync` would install into a `.venv` that nothing here
+      # activates, and would prune as well.
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        run: |
+          uv export --locked --extra dev --no-emit-project --no-header -q -o /tmp/requirements-dev.txt
+          uv pip install --system -r /tmp/requirements-dev.txt
+          uv pip install --system --no-deps -e .
 
       - name: Lint
         run: ruff check .

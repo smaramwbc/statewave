@@ -43,7 +43,7 @@ dev = [
     "ruff>=0.16.9,<0.17",
 ]
 llm = [
-    "litellm>=1.103.0,<2",
+    "litellm>=1.104.0,<2",
 ]
 otel = [
     "opentelemetry-api>=1.45.0,<2",

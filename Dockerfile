@@ -3,7 +3,7 @@
 # COPYing it, so its 47MB never enters a layer of the shipped image (a later
 # `rm` could not reclaim it). Pinned to the uv that wrote the lockfile so a
 # build can never resolve it differently than a developer did.
-FROM ghcr.io/astral-sh/uv:0.11.12 AS uvbin
+FROM ghcr.io/astral-sh/uv:0.12.24 AS uvbin
 
 FROM python:3.11-slim
 

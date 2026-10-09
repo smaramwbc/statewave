@@ -1,8 +1,9 @@
 # uv is build-time only: start.sh needs alembic and uvicorn, never uv. Declaring
 # it as a stage lets the RUN steps below bind-mount the binary instead of
-# COPYing it, so its 47MB never enters a layer of the shipped image (a later
-# `rm` could not reclaim it). Pinned to the uv that wrote the lockfile so a
-# build can never resolve it differently than a developer did.
+# COPYing it, so its 36MB never enters a layer of the shipped image (a later
+# `rm` could not reclaim it). Pinned to the same release CI installs, so a build
+# can never resolve the lockfile differently than CI or a developer did;
+# tests/test_uv_pin_consistency.py fails if the two pins drift apart.
 FROM ghcr.io/astral-sh/uv:0.12.24 AS uvbin
 
 FROM python:3.11-slim
@@ -10,8 +11,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # uv is the installer because uv.lock is the single source of truth for every
-# dependency version that ships. Pinned to the same uv that wrote the lockfile
-# so a build can never resolve it differently than a developer did.
+# dependency version that ships. Pinned via the stage above to the same release
+# CI installs, so a build can never resolve it differently than CI did.
 # pip byte-compiles on install and uv does not, so without this the image would
 # ship zero .pyc files where it previously shipped thousands, and every fresh
 # container would pay source compilation on its first import. This change is

@@ -48,9 +48,16 @@ jobs:
       # because setup-uv publishes no floating major tag past v7 — `@v10` does
       # not resolve — and `version:` pins uv itself to the one that wrote the
       # lockfile.
+      #
+      # No updater owns this `version:` string: Dependabot's github-actions
+      # ecosystem bumps the `uses:` SHA and never a `with:` input, and its uv
+      # ecosystem only rewrites uv.lock. The Dockerfile's uv stage IS tracked
+      # (the docker ecosystem parses FROM), so it moves on its own and this
+      # line stays put. tests/test_uv_pin_consistency.py is what keeps the two
+      # equal.
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
-          version: "0.11.12"
+          version: "0.12.24"
 
       # The guard that stops uv.lock rotting back into a record of versions
       # nothing installs. `uv lock --check` asserts the lockfile would be

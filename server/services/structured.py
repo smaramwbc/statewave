@@ -54,6 +54,11 @@ CANDIDATE_CONTAINER_KEY = "statewave"
 CANDIDATE_LIST_KEY = "memory_candidates"
 _STRUCTURED_COMPILER_VERSION = "structured:1"
 
+# Provenance is stamped by Statewave, never accepted from a candidate: a producer that
+# supplied `model` or `prompt_version` would otherwise have them reported verbatim by the
+# admin compiler-trace endpoint for a memory no model ever touched.
+_RESERVED_PROVENANCE_KEYS = ("compiler", "compiler_version", "model", "prompt_version")
+
 # Candidate kind -> stored MemoryKind. No enum change: "domain_fact" maps to the
 # existing ``profile_fact`` kind. Unknown kinds make the container non-acceptable
 # (full legacy fallback), never a silent drop.
@@ -167,11 +172,15 @@ def compile_candidates(
         kind = _KIND_MAP[c["kind"].strip().lower()]
         text = c["text"]
 
-        metadata: dict[str, Any] = dict(c.get("metadata") or {})
+        metadata: dict[str, Any] = {
+            k: v
+            for k, v in (c.get("metadata") or {}).items()
+            if k not in _RESERVED_PROVENANCE_KEYS
+        }
         metadata.update(
             {
-            "compiler": "structured",
-            "compiler_version": _STRUCTURED_COMPILER_VERSION,
+                "compiler": "structured",
+                "compiler_version": _STRUCTURED_COMPILER_VERSION,
             }
         )
 

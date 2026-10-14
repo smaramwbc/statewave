@@ -229,6 +229,8 @@ def test_structured_compiler_provenance_is_reserved():
                             "source": "connector",
                             "compiler": "spoofed",
                             "compiler_version": "spoofed",
+                            "model": "gpt-5",
+                            "prompt_version": "sha256:deadbeef",
                         },
                     }
                 ]
@@ -244,3 +246,8 @@ def test_structured_compiler_provenance_is_reserved():
     assert metadata["source"] == "connector"
     assert metadata["compiler"] == "structured"
     assert metadata["compiler_version"] == "structured:1"
+    # `model` and `prompt_version` are stamped only by the compilers that have one. The
+    # structured path has neither, so a candidate must not be able to supply them: the admin
+    # compiler-trace endpoint reads `model` straight out of this metadata.
+    assert "model" not in metadata
+    assert "prompt_version" not in metadata

@@ -90,7 +90,7 @@ class HeuristicCompiler:
 
         # Profile facts. Text/kind/count/order are unchanged; a conservatively
         # recognized single-valued claim (if any) is attached additively in
-        # metadata_, otherwise metadata_ stays {} exactly as before.
+        # metadata_, otherwise metadata_ carries only the compiler provenance.
         for fact, claim_md in _extract_facts_with_claims(text, default_valid_from=ep_valid_from):
             results.append(
                 MemoryRow(

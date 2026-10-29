@@ -4,7 +4,7 @@
 # `rm` could not reclaim it). Pinned to the same release CI installs, so a build
 # can never resolve the lockfile differently than CI or a developer did;
 # tests/test_uv_pin_consistency.py fails if the two pins drift apart.
-FROM ghcr.io/astral-sh/uv:0.13.5 AS uvbin
+FROM ghcr.io/astral-sh/uv:0.13.6 AS uvbin
 
 FROM python:3.11-slim
 

@@ -6,7 +6,7 @@
 # tests/test_uv_pin_consistency.py fails if the two pins drift apart.
 FROM ghcr.io/astral-sh/uv:0.13.5 AS uvbin
 
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 WORKDIR /app
 
